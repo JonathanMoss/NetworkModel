@@ -1,0 +1,51 @@
+# ==============================================================================
+# Network Rail Reference Material (Not Distributed - Obtain Separately)
+# ==============================================================================
+XML_p.xml
+TPS_Data.tar.gz
+NWR_TrackModel*/
+NWR_TrackModel*.zip
+data/
+ref_data/
+
+# Generic reference data & GIS / archive formats
+*.xml
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.sbn
+*.sbx
+*.qix
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# ==============================================================================
+# Python Bytecode, Caches & Virtual Environments
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ==============================================================================
+# Local Database Volumes, Logs & OS Artifacts
+# ==============================================================================
+pgdata/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+

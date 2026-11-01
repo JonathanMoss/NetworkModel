@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Network Rail TPS &amp; NWR Track Model Explorer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- Ingestion Overlay (shown only while initial PostgreSQL load is running) -->
+  <div id="ingest-overlay" class="overlay hidden">
+    <div class="ingest-card">
+      <div class="ingest-spinner"></div>
+      <h2>Building Lossless PostgreSQL Network Model</h2>
+      <p id="ingest-phase">Initializing database schema...</p>
+      <div class="progress-bar-wrap">
+        <div id="ingest-progress-bar" class="progress-bar-fill" style="width: 2%"></div>
+      </div>
+      <div class="ingest-stats">
+        <span id="ingest-count">0 elements</span>
+        <span id="ingest-pct">0%</span>
+      </div>
+      <p class="ingest-note">
+        Streaming 624 MB <code>XML_p.xml</code> + <code>NWR_TrackModel</code> shapefiles into PostgreSQL 16 without discarding a single attribute or child node.
+      </p>
+    </div>
+  </div>
+
+  <!-- Top Header / Command Bar -->
+  <header class="topbar">
+    <div class="topbar-main-row">
+      <div class="brand">
+        <div class="brand-badge">NR • MODEL</div>
+        <div class="brand-titles">
+          <h1>UK Rail Network Explorer</h1>
+          <span id="dataset-subtitle" class="subtitle">INFRA FREEZE 261028 • NWR_TrackModel 20261026</span>
+        </div>
+      </div>
+
+      <!-- Primary View Switcher -->
+      <div class="view-switcher">
+        <button id="view-btn-tps" class="view-btn active" title="TPS Signalling &amp; Timetable Schematic (XML_p.xml)">
+          TPS Schematic View
+        </button>
+        <button id="view-btn-nwr" class="view-btn" title="Network Rail Geospatial Track Model (OSGB36 Shapefiles)">
+          NWR Track Model View
+        </button>
+      </div>
+
+      <!-- Colour Mode & Actions -->
+      <div class="toolbar-controls">
+        <label class="control-group" id="tps-color-control">
+          <span>Colour By</span>
+          <select id="color-mode">
+            <option value="electrified">Electrification (OHLE / 3rd Rail vs Diesel)</option>
+            <option value="signalling">Signalling &amp; Interlocking System (Aspects / Overlaps)</option>
+            <option value="timing">Timing Points (Mandatory TIPLOC) &amp; Differential Speeds</option>
+            <option value="vmax">Line Speed Profile (Vmax km/h)</option>
+            <option value="gradient">Gradient Profile (Rising / Level / Falling)</option>
+            <option value="uniform">Classic Signalling Schematic</option>
+          </select>
+        </label>
+
+        <label class="control-group hidden" id="nwr-color-control">
+          <span>Colour By</span>
+          <select id="nwr-color-mode">
+            <option value="track_type">Track ID Type (Main Fast / Slow / Loop / Goods / Siding)</option>
+            <option value="direction">Track Direction (Up / Down / Bi-Directional)</option>
+            <option value="ownership">Ownership (Network Rail vs Third Party)</option>
+          </select>
+        </label>
+
+        <button id="btn-fit-uk" class="btn btn-secondary" title="Fit entire UK rail network">
+          Fit Network
+        </button>
+        <button id="btn-timing-loads" class="btn btn-accent" title="Explore 853 Timing Loads, 196 Traction Units &amp; Tractive Effort Curves, Differential Speed Profiles, and 1,364 Station Bank Corridors">
+          Timing Loads &amp; Train Classes
+        </button>
+        <button id="btn-catalog" class="btn btn-primary" title="Browse all 126 tables in PostgreSQL">
+          Database Catalog (126 Tables)
+        </button>
+      </div>
+    </div>
+
+    <!-- Dedicated Full-Width Search Row -->
+    <div class="topbar-search-row">
+      <span class="search-row-label">Universal Search</span>
+      <div class="search-container">
+        <input
+          id="global-search"
+          type="text"
+          placeholder="Search Station (Name, CRS, TIPLOC, STANOX), Signal, Timing Load (390, 800, 450, 66, HST), Timetable Corridor (MD710, Marylebone), Node ID, Block, Route, or ELR..."
+          autocomplete="off"
+        />
+        <div id="search-results" class="search-dropdown hidden"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="workspace">
+    <!-- Left Floating Layer & Quick-Jump Panel -->
+    <aside id="left-panel" class="left-panel">
+      <!-- TPS Schematic Layers -->
+      <div class="panel-section" id="tps-layers-panel">
+        <h3>TPS Schematic Layers</h3>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-edges" checked />
+          <span class="dot" style="background:#38bdf8"></span>
+          <span>Track Edges</span>
+          <small id="cnt-edges">377.3k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-tracks" checked />
+          <span class="dot" style="background:#818cf8"></span>
+          <span>Station Platforms / Ways</span>
+          <small id="cnt-tracks">41.4k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-vectors" checked />
+          <span class="dot" style="background:#64748b"></span>
+          <span>CAD Schematic Vectors</span>
+          <small id="cnt-vectors">396.5k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-texts" checked />
+          <span class="dot" style="background:#cbd5e1"></span>
+          <span>CAD Track Labels</span>
+          <small id="cnt-texts">23.6k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-stations" checked />
+          <span class="dot" style="background:#f8fafc"></span>
+          <span>Stations &amp; Timing Points</span>
+          <small id="cnt-stations">18.1k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-signals" checked />
+          <span class="dot" style="background:#f59e0b"></span>
+          <span>Signals &amp; Buffer Stops</span>
+          <small id="cnt-signals">72.2k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-blocks" />
+          <span class="dot" style="background:#10b981"></span>
+          <span>Signalling Block Sections</span>
+          <small id="cnt-blocks">66.9k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-nodes" />
+          <span class="dot" style="background:#10b981"></span>
+          <span>Microscopic Track Nodes</span>
+          <small id="cnt-nodes">179.7k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-polys" checked />
+          <span class="dot" style="background:#a855f7"></span>
+          <span>Poly Regions &amp; Notes</span>
+          <small id="cnt-polys">1.38k</small>
+        </label>
+      </div>
+
+      <!-- NWR Track Model Geospatial Layers -->
+      <div class="panel-section hidden" id="nwr-layers-panel">
+        <h3>NWR Track Model Layers (OSGB36)</h3>
+        <label class="layer-toggle">
+          <input type="checkbox" id="nwr-layer-centrelines" checked />
+          <span class="dot" style="background:#38bdf8"></span>
+          <span>Track Centre Lines</span>
+          <small>49.7k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="nwr-layer-elrs" checked />
+          <span class="dot" style="background:#a855f7"></span>
+          <span>ELR Reference Lines</span>
+          <small>1.60k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="nwr-layer-nodes" checked />
+          <span class="dot" style="background:#10b981"></span>
+          <span>Track Nodes (Valency 1–4)</span>
+          <small>38.7k</small>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="nwr-layer-waymarks" checked />
+          <span class="dot" style="background:#f59e0b"></span>
+          <span>Milepost Waymarks</span>
+          <small>42.9k</small>
+        </label>
+      </div>
+
+      <div class="panel-section">
+        <h3>Colour Legend</h3>
+        <div id="legend-box" class="legend-box"></div>
+      </div>
+
+      <div class="panel-section" id="tps-hubs-panel">
+        <h3>Quick Jump Hubs (TPS)</h3>
+        <div class="hub-grid" id="quick-hubs">
+          <button data-crs="KGX">King's Cross</button>
+          <button data-crs="EUS">London Euston</button>
+          <button data-crs="PAD">Paddington</button>
+          <button data-crs="WAT">Waterloo</button>
+          <button data-crs="LST">Liverpool St</button>
+          <button data-crs="BHM">Birmingham NS</button>
+          <button data-crs="MAN">Manchester Picc</button>
+          <button data-crs="CRE">Crewe</button>
+          <button data-crs="YRK">York</button>
+          <button data-crs="LDS">Leeds</button>
+          <button data-crs="EDB">Edinburgh</button>
+          <button data-crs="GLC">Glasgow Ctrl</button>
+          <button data-crs="RDG">Reading</button>
+          <button data-crs="BRI">Bristol TM</button>
+          <button data-crs="CDF">Cardiff Ctrl</button>
+          <button data-crs="DVP">Dover Priory</button>
+        </div>
+      </div>
+
+      <div class="panel-section hidden" id="nwr-hubs-panel">
+        <h3>Quick Jump ELR Corridors (NWR)</h3>
+        <div class="hub-grid" id="nwr-quick-elrs">
+          <button data-elr="ECM1">ECM1 (King's X)</button>
+          <button data-elr="LEC1">LEC1 (Euston)</button>
+          <button data-elr="MLN1">MLN1 (Paddington)</button>
+          <button data-elr="BML1">BML1 (Waterloo)</button>
+          <button data-elr="BGJ">BGJ (Birmingham)</button>
+          <button data-elr="CMP1">CMP1 (Manchester)</button>
+          <button data-elr="ECM5">ECM5 (York)</button>
+          <button data-elr="EGH1">EGH1 (Edinburgh)</button>
+          <button data-elr="WCM1">WCM1 (Carlisle–Glas)</button>
+          <button data-elr="SPC1">SPC1 (St Pancras)</button>
+          <button data-elr="SWM2">SWM2 (Cardiff)</button>
+          <button data-elr="XTD">XTD (Dover)</button>
+        </div>
+      </div>
+
+      <div class="panel-section stats-footer">
+        <div class="stat-row">
+          <span id="hud-coord-label">Cursor (netx, nety):</span>
+          <strong id="hud-coords">—</strong>
+        </div>
+        <div class="stat-row">
+          <span>Zoom / Mode:</span>
+          <strong id="hud-zoom">1.0x (Macro)</strong>
+        </div>
+        <div class="stat-row">
+          <span>Viewport Assets:</span>
+          <strong id="hud-loaded">—</strong>
+        </div>
+        <div id="os-copyright" class="os-copyright hidden">
+          &copy; Crown copyright and database rights 2026 Ordnance Survey AC0000849662
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Interactive Schematic / Geospatial Canvas -->
+    <main class="canvas-wrap" id="canvas-container">
+      <canvas id="schematic-canvas"></canvas>
+
+      <!-- Floating Pane Fold / Unfold Controls -->
+      <button id="btn-toggle-left-pane" class="pane-toggle-btn pane-toggle-left" title="Fold / Unfold Left Layers Pane">
+        &#9664; Hide Layers
+      </button>
+      <button id="btn-toggle-right-pane" class="pane-toggle-btn pane-toggle-right" title="Fold / Unfold Right Inspector Pane">
+        Hide Inspector &#9654;
+      </button>
+
+      <!-- Floating Zoom Controls -->
+      <div class="zoom-controls">
+        <button id="btn-zoom-in" title="Zoom In">+</button>
+        <button id="btn-zoom-out" title="Zoom Out">&minus;</button>
+        <button id="btn-clear-highlight" class="hidden" title="Clear Highlighted Topology Path">Clear Highlight</button>
+      </div>
+
+      <!-- Hover Tooltip / Submenu -->
+      <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+    </main>
+
+    <!-- Right Properties & Topology Inspector Drawer -->
+    <aside id="inspector-drawer" class="inspector-drawer">
+      <div class="inspector-header">
+        <div>
+          <span id="insp-badge" class="asset-badge">READY</span>
+          <h2 id="insp-title">Select Any Asset to Inspect</h2>
+          <p id="insp-subtitle">Hover and click any track, station, node, signal, ELR, or waymark to inspect its decoded properties, cross-model links, and raw data.</p>
+        </div>
+        <button id="btn-fly-asset" class="btn btn-sm btn-secondary hidden" title="Center view on this asset">
+          Center
+        </button>
+      </div>
+
+      <!-- Nearby Candidates Picker (when multiple assets overlap at click point) -->
+      <div id="pick-candidates" class="pick-candidates hidden"></div>
+
+      <!-- Inspector Tabs -->
+      <div class="inspector-tabs">
+        <button class="tab-btn active" data-tab="tab-decoded">Properties</button>
+        <button class="tab-btn" data-tab="tab-related">Topology &amp; Cross-Links</button>
+        <button class="tab-btn" data-tab="tab-raw">Raw Data (JSONB)</button>
+      </div>
+
+      <!-- Tab Contents -->
+      <div class="inspector-body">
+        <div id="tab-decoded" class="tab-pane active">
+          <div class="empty-state">
+            <p>Use the top switcher to explore either view:</p>
+            <ul>
+              <li><strong>TPS Schematic View</strong> — Signalling schematic (`netx, nety`), stations, platforms, signals, blocks, routes, velocity profiles (`XML_p.xml`).</li>
+              <li><strong>NWR Track Model View</strong> — British National Grid (`OSGB36 Easting/Northing`), 49.7k Track Centre Lines (`ASSET_ID 9001...`), 38.7k Track Nodes (`9002...`), 1.6k ELRs (`9003...`), and 42.9k Milepost Waymarks (`9004...`) with automatic cross-model relational links to TPS.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div id="tab-related" class="tab-pane"></div>
+
+        <div id="tab-raw" class="tab-pane"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Full Lossless Database Catalog Modal -->
+  <div id="catalog-modal" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div>
+          <h2>Lossless PostgreSQL Database Catalog (122 TPS XML Tables + 4 NWR TrackModel Shapefiles)</h2>
+          <p>Every element, attribute, and geometry from <code>XML_p.xml</code> and <code>NWR_TrackModel20261026</code> stored in PostgreSQL</p>
+        </div>
+        <button id="btn-close-catalog" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="catalog-sidebar">
+          <input id="catalog-tag-filter" type="text" placeholder="Filter 126 tables..." />
+          <div id="catalog-tag-list" class="catalog-tag-list"></div>
+        </div>
+        <div class="catalog-main">
+          <div class="catalog-toolbar">
+            <strong id="catalog-current-tag">Select a table</strong>
+            <input id="catalog-row-search" type="text" placeholder="Search inside this table (ID, ELR, name, JSON)..." />
+            <div class="catalog-pager">
+              <button id="catalog-prev" class="btn btn-sm btn-secondary">&larr; Prev</button>
+              <span id="catalog-page-info">0–50</span>
+              <button id="catalog-next" class="btn btn-sm btn-secondary">Next &rarr;</button>
+            </div>
+          </div>
+          <div id="catalog-rows-container" class="catalog-rows-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Timing Loads, Train Classes & Timing Corridors Explorer Modal -->
+  <div id="timing-modal" class="modal-backdrop hidden">
+    <div class="modal-window timing-modal-window">
+      <div class="modal-header">
+        <div>
+          <h2>TPS Timing Loads, Train Classes, Velocity Profiles &amp; Timetable Corridors</h2>
+          <p>Explore 853 <code>&lt;modeltrain&gt;</code> Timing Loads, 196 <code>&lt;tractionunit&gt;</code> Tractive Effort &amp; Davis Resistance Curves, 16 Differential Speed Profiles, and 1,364 <code>&lt;stationbank&gt;</code> Timing Corridors</p>
+        </div>
+        <button id="btn-close-timing" class="btn-close">&times;</button>
+      </div>
+      <div class="timing-modal-toolbar">
+        <div class="timing-tab-group">
+          <button class="timing-tab-btn active" data-ttab="model_trains">Timing Loads (<span id="tcnt-trains">852</span>)</button>
+          <button class="timing-tab-btn" data-ttab="traction_units">Traction Units &amp; Curves (<span id="tcnt-units">196</span>)</button>
+          <button class="timing-tab-btn" data-ttab="profiles_coaches">Velocity Profiles &amp; Coaches (<span id="tcnt-profiles">15 / 41</span>)</button>
+          <button class="timing-tab-btn" data-ttab="station_banks">Timetable Corridors &amp; TIPLOC Roles (<span id="tcnt-banks">1,364</span>)</button>
+        </div>
+        <input id="timing-filter-input" type="text" placeholder="Filter by class, timing load code (e.g. 390, 800, 450, 66, HST), corridor (Marylebone, MD710)..." />
+        <div class="catalog-pager" id="timing-pager">
+          <button id="timing-prev" class="btn btn-sm btn-secondary">&larr; Prev</button>
+          <span id="timing-page-info">1–40</span>
+          <button id="timing-next" class="btn btn-sm btn-secondary">Next &rarr;</button>
+        </div>
+      </div>
+      <div id="timing-modal-content" class="timing-modal-content"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

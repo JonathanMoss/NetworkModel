@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: nr_schematic_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nr_user
+      POSTGRES_PASSWORD: nr_password
+      POSTGRES_DB: network_rail_tps
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "work_mem=64MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "max_wal_size=2GB"
+    ports:
+      - "5433:5432"
+    volumes:
+      - nr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nr_user -d network_rail_tps"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nr_schematic_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://nr_user:nr_password@db:5432/network_rail_tps
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "8090:8080"
+
+volumes:
+  nr_pgdata:
