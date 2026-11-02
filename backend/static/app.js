@@ -41,6 +41,32 @@ const STATE = {
     waymarks: true,
   },
 
+  labelScale: {
+    all: 1.0,
+    texts: 1.0,
+    stations: 1.0,
+    signals: 1.0,
+    blocks: 1.0,
+    nodes: 1.0,
+    polys: 1.0,
+    nwr_elrs: 1.0,
+    nwr_waymarks: 1.0,
+    nwr_nodes: 1.0,
+  },
+
+  labelOrientation: {
+    all: "",
+    texts: "native",
+    stations: 0,
+    signals: 0,
+    blocks: 0,
+    nodes: 0,
+    polys: 0,
+    nwr_elrs: 0,
+    nwr_waymarks: 0,
+    nwr_nodes: 0,
+  },
+
   viewportData: {
     edges: [],
     tracks: [],
@@ -64,8 +90,12 @@ const STATE = {
   drawnStationLabels: [],
   drawnSignalLabels: [],
   drawnCadLabels: [],
+  drawnBlockLabels: [],
+  drawnNodeLabels: [],
+  drawnAnnotationLabels: [],
   drawnNwrElrLabels: [],
   drawnNwrWaymarkLabels: [],
+  drawnNwrNodeLabels: [],
 
   // Hover submenu & live preview state
   hoverCandidates: [],
@@ -106,6 +136,40 @@ function resizeCanvas() {
   requestRender();
 }
 window.addEventListener("resize", resizeCanvas);
+
+/* Label Scale & Orientation Calculation Helpers */
+function getLayerLabelScale(key) {
+  const master = STATE.labelScale.all || 1.0;
+  const layer = STATE.labelScale[key] !== undefined ? STATE.labelScale[key] : 1.0;
+  return Math.max(0.4, Math.min(4.0, master * layer));
+}
+
+function getLayerLabelAngle(key, nativeAngle = 0) {
+  if (STATE.labelOrientation.all !== "") {
+    return Number(STATE.labelOrientation.all) || 0;
+  }
+  const setting = STATE.labelOrientation[key];
+  if (setting === "native") {
+    return Number(nativeAngle) || 0;
+  }
+  return Number(setting) || 0;
+}
+
+function isPointInOrientedBox(px, py, ox, oy, w, h, angleDeg = 0, alignY = "center") {
+  if (!angleDeg) {
+    const y0 = alignY === "center" ? oy - h / 2 : oy;
+    return px >= ox - 3 && px <= ox + w + 3 && py >= y0 - 3 && py <= y0 + h + 3;
+  }
+  const rad = (-angleDeg * Math.PI) / 180;
+  const dx = px - ox;
+  const dy = py - oy;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const localX = dx * cos - dy * sin;
+  const localY = dx * sin + dy * cos;
+  const y0 = alignY === "center" ? -h / 2 : 0;
+  return localX >= -3 && localX <= w + 3 && localY >= y0 - 3 && localY <= y0 + h + 3;
+}
 
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
 function worldToScreen(wx, wy) {
@@ -362,6 +426,9 @@ function renderSchematic() {
   STATE.drawnStationLabels = [];
   STATE.drawnSignalLabels = [];
   STATE.drawnCadLabels = [];
+  STATE.drawnBlockLabels = [];
+  STATE.drawnNodeLabels = [];
+  STATE.drawnAnnotationLabels = [];
 
   if (!STATE.overview) return;
 
@@ -500,20 +567,36 @@ function renderSchematic() {
     zoom >= 0.45 &&
     STATE.viewportData.texts.length
   ) {
-    ctx.fillStyle = "#cbd5e1";
-    const fontSize = Math.max(8, Math.min(13, zoom * 4.2));
+    const scale = getLayerLabelScale("texts");
+    const baseFontSize = Math.max(8, Math.min(13, zoom * 4.2));
+    const fontSize = Math.round(baseFontSize * scale);
     ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, monospace`;
+    ctx.fillStyle = "#cbd5e1";
     for (const gt of STATE.viewportData.texts) {
+      // gt: [pk, x, y, layer_type, text, angle]
       const [sx, sy] = worldToScreen(gt[1], gt[2]);
-      if (sx < -50 || sx > w + 50 || sy < -20 || sy > h + 20) continue;
+      if (sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) continue;
       const textStr = gt[4] || "";
-      ctx.fillText(textStr, sx, sy);
+      const angle = getLayerLabelAngle("texts", gt[5] || 0);
       const tw = textStr.length * (fontSize * 0.6);
+      const th = fontSize + 4;
+
+      ctx.save();
+      ctx.translate(sx, sy);
+      if (angle) {
+        ctx.rotate((angle * Math.PI) / 180);
+      }
+      ctx.textBaseline = "middle";
+      ctx.fillText(textStr, 0, 0);
+      ctx.restore();
+
       STATE.drawnCadLabels.push({
-        x: sx - 2,
-        y: sy - fontSize,
-        w: tw + 4,
-        h: fontSize + 4,
+        x: sx,
+        y: sy,
+        w: tw,
+        h: th,
+        angle,
+        alignY: "center",
         gt,
       });
     }
@@ -531,9 +614,40 @@ function renderSchematic() {
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
     }
     ctx.fill();
+
+    // Node ID text labels when nodes layer is explicitly active
+    if (STATE.layers.nodes && zoom >= 1.2) {
+      const scale = getLayerLabelScale("nodes");
+      const angle = getLayerLabelAngle("nodes");
+      const fontSize = Math.round(8.5 * scale);
+      ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+      for (const n of STATE.viewportData.nodes) {
+        const [sx, sy] = worldToScreen(n[1], n[2]);
+        if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
+        const nText = `#${n[0]}`;
+        const nw = nText.length * (fontSize * 0.6);
+        const nh = fontSize + 2;
+        ctx.save();
+        ctx.translate(sx + 5, sy);
+        if (angle) ctx.rotate((angle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#34d399";
+        ctx.fillText(nText, 0, 0);
+        ctx.restore();
+        STATE.drawnNodeLabels.push({
+          x: sx + 5,
+          y: sy,
+          w: nw,
+          h: nh,
+          angle,
+          alignY: "center",
+          node: n,
+        });
+      }
+    }
   }
 
-  // 6b. Signalling Block Sections Overlay
+  // 6b. Signalling Block Sections Overlay & Section Labels
   if (
     (STATE.layers.blocks || (STATE.colorMode === "signalling" && zoom >= 0.55)) &&
     useMicro &&
@@ -559,6 +673,42 @@ function renderSchematic() {
         ctx.lineTo(sxi, syi);
       }
       ctx.stroke();
+
+      // Block midpoint tag label
+      if (STATE.layers.blocks && zoom >= 0.5) {
+        const scale = getLayerLabelScale("blocks");
+        const angle = getLayerLabelAngle("blocks");
+        const midIdx = Math.floor(coords.length / 2);
+        const [bx, by] = worldToScreen(coords[midIdx][0], coords[midIdx][1]);
+        if (bx >= -50 && bx <= w + 50 && by >= -50 && by <= h + 50) {
+          const bText = `B#${b[1]}`;
+          const fontSize = Math.round(9 * scale);
+          const bw = bText.length * (fontSize * 0.62) + 6;
+          const bh = fontSize + 4;
+          ctx.save();
+          ctx.translate(bx, by);
+          if (angle) ctx.rotate((angle * Math.PI) / 180);
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+          ctx.fillRect(-2, -bh / 2, bw, bh);
+          ctx.strokeStyle = isShunt ? "rgba(168, 85, 247, 0.75)" : "rgba(16, 185, 129, 0.75)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-2, -bh / 2, bw, bh);
+          ctx.fillStyle = isShunt ? "#c084fc" : "#6ee7b7";
+          ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+          ctx.fillText(bText, 1, 0);
+          ctx.restore();
+          STATE.drawnBlockLabels.push({
+            x: bx,
+            y: by,
+            w: bw,
+            h: bh,
+            angle,
+            alignY: "center",
+            block: b,
+          });
+        }
+      }
     }
     ctx.restore();
   }
@@ -614,19 +764,35 @@ function renderSchematic() {
         ctx.fill();
       }
 
-      if (zoom >= 1.45 && s[3]) {
-        const lx = sx + sr + 4;
-        const ly = sy - 7;
+      const sigScale = getLayerLabelScale("signals");
+      const sigAngle = getLayerLabelAngle("signals");
+      const canShowSigLbl = (zoom >= 1.45 || (zoom >= 0.75 && sigScale >= 1.3)) && s[3];
+      if (canShowSigLbl) {
+        const fontSize = Math.round(9 * sigScale);
         const tagText = sigMode ? `${s[3]} [${ilockInfo.short}]` : s[3];
-        const lw = tagText.length * 5.5;
+        const lw = tagText.length * (fontSize * 0.6) + 4;
+        const lh = fontSize + 4;
+        const lx = sx + sr + 4;
+        const ly = sy;
+
+        ctx.save();
+        ctx.translate(lx, ly);
+        if (sigAngle) ctx.rotate((sigAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(7, 11, 20, 0.88)";
+        ctx.fillRect(-2, -lh / 2, lw + 4, lh);
         ctx.fillStyle = sigMode ? "#f8fafc" : "#fde68a";
-        ctx.font = "600 9px ui-monospace, monospace";
-        ctx.fillText(tagText, lx, sy + 3);
+        ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(tagText, 0, 0);
+        ctx.restore();
+
         STATE.drawnSignalLabels.push({
-          x: lx - 2,
+          x: lx,
           y: ly,
-          w: lw + 4,
-          h: 12,
+          w: lw,
+          h: lh,
+          angle: sigAngle,
+          alignY: "center",
           sig: s,
         });
       }
@@ -637,6 +803,9 @@ function renderSchematic() {
   if (STATE.layers.stations && STATE.overview.stations) {
     const occupiedBoxes = [];
     const timingMode = STATE.colorMode === "timing";
+    const stScale = getLayerLabelScale("stations");
+    const stAngle = getLayerLabelAngle("stations");
+
     for (const st of STATE.overview.stations) {
       if (
         st.x < bbox.min_x ||
@@ -694,34 +863,45 @@ function renderSchematic() {
             : st.crs
             ? `${st.name} [${st.crs}]${roleSuffix}`
             : `${st.name}${roleSuffix}`;
-        const estW = lbl.length * 6.2;
-        const estH = 14;
+        const baseSize = isMajor ? 11 : 10;
+        const fontSize = Math.round(baseSize * stScale);
+        const estW = lbl.length * (fontSize * 0.62) + 6;
+        const estH = fontSize + 6;
         const lx = sx + r + 4;
-        const ly = sy - 7;
+        const ly = sy;
 
         let collides = false;
-        for (const b of occupiedBoxes) {
-          if (
-            lx < b.x + b.w &&
-            lx + estW > b.x &&
-            ly < b.y + b.h &&
-            ly + estH > b.y
-          ) {
-            collides = true;
-            break;
+        if (stAngle === 0) {
+          for (const b of occupiedBoxes) {
+            if (
+              lx < b.x + b.w &&
+              lx + estW > b.x &&
+              ly - estH / 2 < b.y + b.h &&
+              ly + estH / 2 > b.y
+            ) {
+              collides = true;
+              break;
+            }
           }
         }
         if (!collides) {
-          const box = { x: lx - 2, y: ly, w: estW + 4, h: estH, st };
-          occupiedBoxes.push(box);
+          const box = { x: lx, y: ly, w: estW, h: estH, angle: stAngle, alignY: "center", st };
+          occupiedBoxes.push({ x: lx - 2, y: ly - estH / 2, w: estW + 4, h: estH });
           STATE.drawnStationLabels.push(box);
-          ctx.font = isMajor
-            ? "700 11px Inter, sans-serif"
-            : "500 10px Inter, sans-serif";
-          ctx.fillStyle = "rgba(7, 11, 20, 0.82)";
-          ctx.fillRect(lx - 2, ly, estW + 4, estH);
+
+          ctx.save();
+          ctx.translate(lx, ly);
+          if (stAngle) ctx.rotate((stAngle * Math.PI) / 180);
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "rgba(7, 11, 20, 0.88)";
+          ctx.fillRect(-2, -estH / 2, estW + 4, estH);
+          ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-2, -estH / 2, estW + 4, estH);
           ctx.fillStyle = isMajor ? "#f8fafc" : "#cbd5e1";
-          ctx.fillText(lbl, lx, sy + 3);
+          ctx.font = `${isMajor ? "700" : "500"} ${fontSize}px Inter, sans-serif`;
+          ctx.fillText(lbl, 0, 0);
+          ctx.restore();
         }
       }
     }
@@ -729,6 +909,8 @@ function renderSchematic() {
 
   // 9. Operational Annotations
   if (STATE.layers.polys && STATE.overview.annotations) {
+    const polyScale = getLayerLabelScale("polys");
+    const polyAngle = getLayerLabelAngle("polys");
     for (const an of STATE.overview.annotations) {
       const [sx, sy] = worldToScreen(an.x, an.y);
       if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
@@ -736,6 +918,32 @@ function renderSchematic() {
       ctx.beginPath();
       ctx.arc(sx, sy, 5, 0, Math.PI * 2);
       ctx.fill();
+
+      if (zoom >= 0.35 && an.text) {
+        const cleanText = an.text.replace(/<[^>]+>/g, " ").trim().slice(0, 45);
+        const fontSize = Math.round(9 * polyScale);
+        const pw = cleanText.length * (fontSize * 0.58) + 6;
+        const ph = fontSize + 4;
+        ctx.save();
+        ctx.translate(sx + 7, sy);
+        if (polyAngle) ctx.rotate((polyAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(-2, -ph / 2, pw + 4, ph);
+        ctx.fillStyle = "#f472b6";
+        ctx.font = `500 ${fontSize}px Inter, sans-serif`;
+        ctx.fillText(cleanText, 0, 0);
+        ctx.restore();
+        STATE.drawnAnnotationLabels.push({
+          x: sx + 7,
+          y: sy,
+          w: pw,
+          h: ph,
+          angle: polyAngle,
+          alignY: "center",
+          an,
+        });
+      }
     }
   }
 
@@ -757,6 +965,7 @@ function renderNwrModel() {
 
   STATE.drawnNwrElrLabels = [];
   STATE.drawnNwrWaymarkLabels = [];
+  STATE.drawnNwrNodeLabels = [];
 
   if (!STATE.nwrOverview) return;
 
@@ -878,10 +1087,45 @@ function renderNwrModel() {
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // Node asset ID labels when zoomed in
+    if (zoom >= 0.12) {
+      const nodeScale = getLayerLabelScale("nwr_nodes");
+      const nodeAngle = getLayerLabelAngle("nwr_nodes");
+      const fontSize = Math.round(8.5 * nodeScale);
+      ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+      for (const n of STATE.nwrViewportData.nodes) {
+        const [sx, sy] = worldToScreen(n[3], n[4]);
+        if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
+        const nText = `${n[1]}`;
+        const nw = nText.length * (fontSize * 0.6) + 4;
+        const nh = fontSize + 2;
+        ctx.save();
+        ctx.translate(sx + 6, sy);
+        if (nodeAngle) ctx.rotate((nodeAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(nText, 0, 0);
+        ctx.restore();
+        STATE.drawnNwrNodeLabels.push({
+          x: sx + 6,
+          y: sy,
+          w: nw,
+          h: nh,
+          angle: nodeAngle,
+          alignY: "center",
+          node: n,
+        });
+      }
+    }
   }
 
   // 4. NWR_Waymarks (Mileposts)
   if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04 && STATE.nwrViewportData.waymarks.length) {
+    const wmScale = getLayerLabelScale("nwr_waymarks");
+    const wmAngle = getLayerLabelAngle("nwr_waymarks");
+    const fontSize = Math.round(9 * wmScale);
+
     for (const wm of STATE.nwrViewportData.waymarks) {
       // [fid, asset_id, elr, unit, value, x, y]
       const [sx, sy] = worldToScreen(wm[5], wm[6]);
@@ -889,17 +1133,31 @@ function renderNwrModel() {
       ctx.fillStyle = "#fbbf24";
       ctx.fillRect(sx - 2.5, sy - 2.5, 5, 5);
 
-      if (zoom >= 0.18) {
+      if (zoom >= 0.12) {
         const lbl = `${wm[2]} ${Number(wm[4]).toFixed(2)}${wm[3]}`;
-        const lw = lbl.length * 5.6;
+        const lw = lbl.length * (fontSize * 0.6) + 6;
+        const lh = fontSize + 4;
+        const lx = sx + 5;
+        const ly = sy;
+
+        ctx.save();
+        ctx.translate(lx, ly);
+        if (wmAngle) ctx.rotate((wmAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(-2, -lh / 2, lw, lh);
         ctx.fillStyle = "#fde68a";
-        ctx.font = "600 9px ui-monospace, monospace";
-        ctx.fillText(lbl, sx + 5, sy + 3);
+        ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(lbl, 1, 0);
+        ctx.restore();
+
         STATE.drawnNwrWaymarkLabels.push({
-          x: sx + 3,
-          y: sy - 7,
-          w: lw + 4,
-          h: 12,
+          x: lx,
+          y: ly,
+          w: lw,
+          h: lh,
+          angle: wmAngle,
+          alignY: "center",
           wm,
         });
       }
@@ -908,7 +1166,11 @@ function renderNwrModel() {
 
   // 5. ELR Corridor Labels (with collision avoidance)
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
+    const elrScale = getLayerLabelScale("nwr_elrs");
+    const elrAngle = getLayerLabelAngle("nwr_elrs");
+    const fontSize = Math.round(10 * elrScale);
     const occupied = [];
+
     for (const elr of STATE.nwrOverview.elrs) {
       if (
         elr.x < bbox.min_x ||
@@ -919,35 +1181,43 @@ function renderNwrModel() {
         continue;
       const [sx, sy] = worldToScreen(elr.x, elr.y);
       const lbl = elr.elr;
-      const estW = lbl.length * 6.8 + 8;
-      const estH = 14;
-      const lx = sx - estW / 2;
-      const ly = sy - 7;
+      const estW = lbl.length * (fontSize * 0.68) + 10;
+      const estH = fontSize + 6;
+      const lx = sx;
+      const ly = sy;
 
       let collides = false;
-      for (const b of occupied) {
-        if (
-          lx < b.x + b.w + 18 &&
-          lx + estW + 18 > b.x &&
-          ly < b.y + b.h + 10 &&
-          ly + estH + 10 > b.y
-        ) {
-          collides = true;
-          break;
+      if (elrAngle === 0) {
+        for (const b of occupied) {
+          if (
+            lx - estW / 2 < b.x + b.w + 14 &&
+            lx + estW / 2 + 14 > b.x &&
+            ly - estH / 2 < b.y + b.h + 8 &&
+            ly + estH / 2 + 8 > b.y
+          ) {
+            collides = true;
+            break;
+          }
         }
       }
       if (!collides) {
-        const box = { x: lx, y: ly, w: estW, h: estH, elr };
-        occupied.push(box);
+        const box = { x: lx - estW / 2, y: ly, w: estW, h: estH, angle: elrAngle, alignY: "center", elr };
+        occupied.push({ x: lx - estW / 2, y: ly - estH / 2, w: estW, h: estH });
         STATE.drawnNwrElrLabels.push(box);
-        ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
-        ctx.fillRect(lx, ly, estW, estH);
-        ctx.strokeStyle = "rgba(168, 85, 247, 0.5)";
+
+        ctx.save();
+        ctx.translate(lx - estW / 2, ly);
+        if (elrAngle) ctx.rotate((elrAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(0, -estH / 2, estW, estH);
+        ctx.strokeStyle = "rgba(168, 85, 247, 0.55)";
         ctx.lineWidth = 1;
-        ctx.strokeRect(lx, ly, estW, estH);
+        ctx.strokeRect(0, -estH / 2, estW, estH);
         ctx.fillStyle = "#e9d5ff";
-        ctx.font = "700 10px ui-monospace, monospace";
-        ctx.fillText(lbl, lx + 4, sy + 3);
+        ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(lbl, 5, 0);
+        ctx.restore();
       }
     }
   }
@@ -1169,12 +1439,19 @@ function drawHighlightAndPreviewOverlays() {
       }
     }
 
-    // Highlight bounding box if hovering a label (CAD label, Station label, Signal label, ELR label)
+    // Highlight bounding box if hovering a label (CAD label, Station label, Signal label, ELR label, etc.)
     if (hp.previewBox) {
       const b = hp.previewBox;
+      ctx.save();
       ctx.strokeStyle = col;
       ctx.lineWidth = 2.2;
-      ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      ctx.translate(b.x, b.y);
+      if (b.angle) {
+        ctx.rotate((b.angle * Math.PI) / 180);
+      }
+      const by = b.alignY === "center" ? -b.h / 2 : 0;
+      ctx.strokeRect(-2, by - 2, b.w + 4, b.h + 4);
+      ctx.restore();
     }
 
     // Target reticle + floating callout badge at (hp.x, hp.y)
@@ -1281,7 +1558,7 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
       }
     }
     for (const lbl of STATE.drawnSignalLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const s = lbl.sig;
         const ilock = getSignalInterlockingInfo(s[4], s[9]);
         const sigWay =
@@ -1299,20 +1576,38 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
           x: s[5],
           y: s[6],
           previewWay: sigWay,
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 3,
         });
       }
     }
   }
 
-  // 1b. Signalling Block Sections (when block layer or signalling mode is active)
+  // 1b. Signalling Block Sections & Block Labels
   if (
     (STATE.layers.blocks || (STATE.colorMode === "signalling" && zoom >= 0.55)) &&
     useMicro &&
     STATE.viewportData.blocks &&
     STATE.viewportData.blocks.length
   ) {
+    for (const lbl of STATE.drawnBlockLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const b = lbl.block;
+        const coords = b[7];
+        const midPt = coords ? coords[Math.floor(coords.length / 2)] : [0, 0];
+        addHit({
+          type: "block",
+          id: b[0],
+          title: `Signalling Block #${b[1]} (${b[4] === 1 ? "Shunt" : "Main"})`,
+          sub: `Label hit • Pre-sig: ${b[2]}m • Sighting: ${b[3]}m`,
+          x: midPt[0],
+          y: midPt[1],
+          previewWay: coords,
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 1.5,
+        });
+      }
+    }
     for (const b of STATE.viewportData.blocks) {
       // [pk, block_id, pre_signal_distance, sight_distance, shunting_flag, atc_flag, moving_block, coords]
       const coords = b[7];
@@ -1365,7 +1660,7 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
       }
     }
     for (const lbl of STATE.drawnStationLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const st = lbl.st;
         addHit({
           type: "station",
@@ -1375,15 +1670,30 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
           x: st.x,
           y: st.y,
           previewParts: getStationTrackParts(st.id),
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 4,
         });
       }
     }
   }
 
-  // 3. Microscopic Track Nodes
+  // 3. Microscopic Track Nodes & Node Labels
   if ((STATE.layers.nodes || zoom >= 2.2) && useMicro && STATE.viewportData.nodes.length) {
+    for (const lbl of STATE.drawnNodeLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const n = lbl.node;
+        addHit({
+          type: "node",
+          id: n[0],
+          title: `Track Node #${n[0]}`,
+          sub: `Label hit • KM: ${n[5] || 0}m • Angle ${n[3]}°`,
+          x: n[1],
+          y: n[2],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2.5,
+        });
+      }
+    }
     for (const n of STATE.viewportData.nodes) {
       const [nsx, nsy] = worldToScreen(n[1], n[2]);
       const d = Math.hypot(sx - nsx, sy - nsy);
@@ -1466,24 +1776,40 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
   // 6. CAD Track Labels (<graphictext>)
   if (STATE.layers.texts && useMicro && STATE.drawnCadLabels.length) {
     for (const lbl of STATE.drawnCadLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const gt = lbl.gt;
         addHit({
           type: "graphictext",
           id: gt[0],
           title: `CAD Label "${gt[4]}"`,
-          sub: `Layer ${gt[3]} • (${gt[1]}, ${gt[2]})`,
+          sub: `Layer ${gt[3]} • Angle ${gt[5]}° • (${gt[1]}, ${gt[2]})`,
           x: gt[1],
           y: gt[2],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 5,
         });
       }
     }
   }
 
-  // 7. Operational Annotations (<annotation>)
+  // 7. Operational Annotations (<annotation>) & Note Labels
   if (STATE.layers.polys && STATE.overview.annotations) {
+    for (const lbl of STATE.drawnAnnotationLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const an = lbl.an;
+        const cleanText = (an.text || "").replace(/<[^>]+>/g, " ").trim().slice(0, 65);
+        addHit({
+          type: "annotation",
+          id: an.pk,
+          title: `Operational Note #${an.pk}`,
+          sub: cleanText || `(${an.x}, ${an.y})`,
+          x: an.x,
+          y: an.y,
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 3.5,
+        });
+      }
+    }
     for (const an of STATE.overview.annotations) {
       const [asx, asy] = worldToScreen(an.x, an.y);
       const d = Math.hypot(sx - asx, sy - asy);
@@ -1527,8 +1853,23 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   const useMicro = zoom >= 0.025 && STATE.nwrViewportData.centrelines.length > 0;
   const pxTol = 10;
 
-  // 1. NWR Track Nodes
+  // 1. NWR Track Nodes & Node Labels
   if (STATE.nwrLayers.nodes && useMicro && zoom >= 0.06) {
+    for (const lbl of STATE.drawnNwrNodeLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const n = lbl.node;
+        addHit({
+          type: "nwr_node",
+          id: n[0],
+          title: `Track Node ${n[1]}`,
+          sub: `Label hit • Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          x: n[3],
+          y: n[4],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2,
+        });
+      }
+    }
     for (const n of STATE.nwrViewportData.nodes) {
       // [fid, asset_id, valency, x, y]
       const [nsx, nsy] = worldToScreen(n[3], n[4]);
@@ -1549,6 +1890,21 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
 
   // 2. NWR Waymarks & Labels
   if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04) {
+    for (const lbl of STATE.drawnNwrWaymarkLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const wm = lbl.wm;
+        addHit({
+          type: "nwr_waymark",
+          id: wm[0],
+          title: `Waymark ${wm[2]} @ ${wm[4]} ${wm[3]}`,
+          sub: `Label hit • Asset ID ${wm[1]}`,
+          x: wm[5],
+          y: wm[6],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2.5,
+        });
+      }
+    }
     for (const wm of STATE.nwrViewportData.waymarks) {
       // [fid, asset_id, elr, unit, value, x, y]
       const [wsx, wsy] = worldToScreen(wm[5], wm[6]);
@@ -1562,21 +1918,6 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
           x: wm[5],
           y: wm[6],
           score: d + 0.5,
-        });
-      }
-    }
-    for (const lbl of STATE.drawnNwrWaymarkLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
-        const wm = lbl.wm;
-        addHit({
-          type: "nwr_waymark",
-          id: wm[0],
-          title: `Waymark ${wm[2]} @ ${wm[4]} ${wm[3]}`,
-          sub: `Label hit • Asset ID ${wm[1]}`,
-          x: wm[5],
-          y: wm[6],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
-          score: 3,
         });
       }
     }
@@ -1614,7 +1955,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   // 4. NWR ELR Labels & Reference Lines
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
     for (const lbl of STATE.drawnNwrElrLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const elr = lbl.elr;
         addHit({
           type: "nwr_elr",
@@ -1625,7 +1966,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
           y: elr.y,
           previewWay: (elr.parts && elr.parts[0]) || [],
           previewParts: elr.parts || [],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 2,
         });
       }
@@ -3527,6 +3868,126 @@ for (const key of ["centrelines", "elrs", "nodes", "waymarks"]) {
   }
 }
 
+/* ============================================================================
+   LABEL SIZE & ORIENTATION CONTROLS (TPS SCHEMATIC & NWR GEOGRAPHIC)
+   ============================================================================ */
+function updateLabelUi() {
+  const masterSlider = document.getElementById("master-label-slider");
+  if (masterSlider) {
+    masterSlider.value = Math.round((STATE.labelScale.all || 1.0) * 100);
+  }
+  const masterOrient = document.getElementById("master-label-orient");
+  if (masterOrient) {
+    masterOrient.value = STATE.labelOrientation.all !== undefined ? String(STATE.labelOrientation.all) : "";
+  }
+  document.querySelectorAll(".label-stepper").forEach((stepper) => {
+    const layer = stepper.dataset.layer;
+    const readout = stepper.querySelector(".lbl-scale-readout");
+    if (!readout) return;
+    const val = layer === "all" ? STATE.labelScale.all : STATE.labelScale[layer];
+    readout.textContent = `${Math.round((val !== undefined ? val : 1.0) * 100)}%`;
+  });
+  document.querySelectorAll(".lbl-orient-select").forEach((sel) => {
+    const layer = sel.dataset.layer;
+    if (!layer || layer === "all") return;
+    const val = STATE.labelOrientation[layer];
+    sel.value = val !== undefined ? String(val) : "0";
+  });
+}
+
+document.querySelectorAll(".label-stepper .lbl-step-btn").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const stepper = btn.closest(".label-stepper");
+    const layer = stepper.dataset.layer;
+    const dir = parseInt(btn.dataset.dir, 10) || 0;
+    const current = (layer === "all" ? STATE.labelScale.all : STATE.labelScale[layer]) || 1.0;
+    const next = Math.max(0.4, Math.min(3.0, Math.round((current + dir * 0.1) * 10) / 10));
+    if (layer === "all") {
+      STATE.labelScale.all = next;
+    } else {
+      STATE.labelScale[layer] = next;
+    }
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+document.querySelectorAll(".label-stepper .lbl-scale-readout").forEach((readout) => {
+  readout.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    const stepper = readout.closest(".label-stepper");
+    const layer = stepper.dataset.layer;
+    if (layer === "all") {
+      STATE.labelScale.all = 1.0;
+    } else {
+      STATE.labelScale[layer] = 1.0;
+    }
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+const masterLabelSlider = document.getElementById("master-label-slider");
+if (masterLabelSlider) {
+  masterLabelSlider.addEventListener("input", (e) => {
+    STATE.labelScale.all = Math.max(0.5, Math.min(3.0, Number(e.target.value) / 100));
+    updateLabelUi();
+    requestRender();
+  });
+}
+
+const masterOrientSel = document.getElementById("master-label-orient");
+if (masterOrientSel) {
+  masterOrientSel.addEventListener("change", (e) => {
+    STATE.labelOrientation.all = e.target.value;
+    updateLabelUi();
+    requestRender();
+  });
+}
+
+document.querySelectorAll(".lbl-orient-select").forEach((sel) => {
+  const layer = sel.dataset.layer;
+  if (!layer || layer === "all") return;
+  sel.addEventListener("change", (e) => {
+    STATE.labelOrientation[layer] = e.target.value === "native" ? "native" : Number(e.target.value);
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+const btnResetLabels = document.getElementById("btn-reset-labels");
+if (btnResetLabels) {
+  btnResetLabels.addEventListener("click", () => {
+    STATE.labelScale = {
+      all: 1.0,
+      texts: 1.0,
+      stations: 1.0,
+      signals: 1.0,
+      blocks: 1.0,
+      nodes: 1.0,
+      polys: 1.0,
+      nwr_elrs: 1.0,
+      nwr_waymarks: 1.0,
+      nwr_nodes: 1.0,
+    };
+    STATE.labelOrientation = {
+      all: "",
+      texts: "native",
+      stations: 0,
+      signals: 0,
+      blocks: 0,
+      nodes: 0,
+      polys: 0,
+      nwr_elrs: 0,
+      nwr_waymarks: 0,
+      nwr_nodes: 0,
+    };
+    updateLabelUi();
+    requestRender();
+  });
+}
+
 document.getElementById("btn-fit-uk").addEventListener("click", fitUKNetwork);
 document.getElementById("btn-zoom-in").addEventListener("click", () => {
   const maxZ = STATE.activeView === "nwr" ? 5.0 : 25.0;
@@ -4138,6 +4599,7 @@ function escapeHtml(str) {
 async function initApp() {
   resizeCanvas();
   updateLegend();
+  updateLabelUi();
 
   const overlay = document.getElementById("ingest-overlay");
   while (true) {
