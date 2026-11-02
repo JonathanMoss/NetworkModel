@@ -41,6 +41,32 @@ const STATE = {
     waymarks: true,
   },
 
+  labelScale: {
+    all: 1.0,
+    texts: 1.0,
+    stations: 1.0,
+    signals: 1.0,
+    blocks: 1.0,
+    nodes: 1.0,
+    polys: 1.0,
+    nwr_elrs: 1.0,
+    nwr_waymarks: 1.0,
+    nwr_nodes: 1.0,
+  },
+
+  labelOrientation: {
+    all: "",
+    texts: "native",
+    stations: 0,
+    signals: 0,
+    blocks: 0,
+    nodes: 0,
+    polys: 0,
+    nwr_elrs: 0,
+    nwr_waymarks: 0,
+    nwr_nodes: 0,
+  },
+
   viewportData: {
     edges: [],
     tracks: [],
@@ -64,8 +90,12 @@ const STATE = {
   drawnStationLabels: [],
   drawnSignalLabels: [],
   drawnCadLabels: [],
+  drawnBlockLabels: [],
+  drawnNodeLabels: [],
+  drawnAnnotationLabels: [],
   drawnNwrElrLabels: [],
   drawnNwrWaymarkLabels: [],
+  drawnNwrNodeLabels: [],
 
   // Hover submenu & live preview state
   hoverCandidates: [],
@@ -106,6 +136,40 @@ function resizeCanvas() {
   requestRender();
 }
 window.addEventListener("resize", resizeCanvas);
+
+/* Label Scale & Orientation Calculation Helpers */
+function getLayerLabelScale(key) {
+  const master = STATE.labelScale.all || 1.0;
+  const layer = STATE.labelScale[key] !== undefined ? STATE.labelScale[key] : 1.0;
+  return Math.max(0.4, Math.min(4.0, master * layer));
+}
+
+function getLayerLabelAngle(key, nativeAngle = 0) {
+  if (STATE.labelOrientation.all !== "") {
+    return Number(STATE.labelOrientation.all) || 0;
+  }
+  const setting = STATE.labelOrientation[key];
+  if (setting === "native") {
+    return Number(nativeAngle) || 0;
+  }
+  return Number(setting) || 0;
+}
+
+function isPointInOrientedBox(px, py, ox, oy, w, h, angleDeg = 0, alignY = "center") {
+  if (!angleDeg) {
+    const y0 = alignY === "center" ? oy - h / 2 : oy;
+    return px >= ox - 3 && px <= ox + w + 3 && py >= y0 - 3 && py <= y0 + h + 3;
+  }
+  const rad = (-angleDeg * Math.PI) / 180;
+  const dx = px - ox;
+  const dy = py - oy;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const localX = dx * cos - dy * sin;
+  const localY = dx * sin + dy * cos;
+  const y0 = alignY === "center" ? -h / 2 : 0;
+  return localX >= -3 && localX <= w + 3 && localY >= y0 - 3 && localY <= y0 + h + 3;
+}
 
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
 function worldToScreen(wx, wy) {
@@ -362,6 +426,9 @@ function renderSchematic() {
   STATE.drawnStationLabels = [];
   STATE.drawnSignalLabels = [];
   STATE.drawnCadLabels = [];
+  STATE.drawnBlockLabels = [];
+  STATE.drawnNodeLabels = [];
+  STATE.drawnAnnotationLabels = [];
 
   if (!STATE.overview) return;
 
@@ -500,20 +567,36 @@ function renderSchematic() {
     zoom >= 0.45 &&
     STATE.viewportData.texts.length
   ) {
-    ctx.fillStyle = "#cbd5e1";
-    const fontSize = Math.max(8, Math.min(13, zoom * 4.2));
+    const scale = getLayerLabelScale("texts");
+    const baseFontSize = Math.max(8, Math.min(13, zoom * 4.2));
+    const fontSize = Math.round(baseFontSize * scale);
     ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, monospace`;
+    ctx.fillStyle = "#cbd5e1";
     for (const gt of STATE.viewportData.texts) {
+      // gt: [pk, x, y, layer_type, text, angle]
       const [sx, sy] = worldToScreen(gt[1], gt[2]);
-      if (sx < -50 || sx > w + 50 || sy < -20 || sy > h + 20) continue;
+      if (sx < -80 || sx > w + 80 || sy < -80 || sy > h + 80) continue;
       const textStr = gt[4] || "";
-      ctx.fillText(textStr, sx, sy);
+      const angle = getLayerLabelAngle("texts", gt[5] || 0);
       const tw = textStr.length * (fontSize * 0.6);
+      const th = fontSize + 4;
+
+      ctx.save();
+      ctx.translate(sx, sy);
+      if (angle) {
+        ctx.rotate((angle * Math.PI) / 180);
+      }
+      ctx.textBaseline = "middle";
+      ctx.fillText(textStr, 0, 0);
+      ctx.restore();
+
       STATE.drawnCadLabels.push({
-        x: sx - 2,
-        y: sy - fontSize,
-        w: tw + 4,
-        h: fontSize + 4,
+        x: sx,
+        y: sy,
+        w: tw,
+        h: th,
+        angle,
+        alignY: "center",
         gt,
       });
     }
@@ -531,9 +614,40 @@ function renderSchematic() {
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
     }
     ctx.fill();
+
+    // Node ID text labels when nodes layer is explicitly active
+    if (STATE.layers.nodes && zoom >= 1.2) {
+      const scale = getLayerLabelScale("nodes");
+      const angle = getLayerLabelAngle("nodes");
+      const fontSize = Math.round(8.5 * scale);
+      ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+      for (const n of STATE.viewportData.nodes) {
+        const [sx, sy] = worldToScreen(n[1], n[2]);
+        if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
+        const nText = `#${n[0]}`;
+        const nw = nText.length * (fontSize * 0.6);
+        const nh = fontSize + 2;
+        ctx.save();
+        ctx.translate(sx + 5, sy);
+        if (angle) ctx.rotate((angle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#34d399";
+        ctx.fillText(nText, 0, 0);
+        ctx.restore();
+        STATE.drawnNodeLabels.push({
+          x: sx + 5,
+          y: sy,
+          w: nw,
+          h: nh,
+          angle,
+          alignY: "center",
+          node: n,
+        });
+      }
+    }
   }
 
-  // 6b. Signalling Block Sections Overlay
+  // 6b. Signalling Block Sections Overlay & Section Labels
   if (
     (STATE.layers.blocks || (STATE.colorMode === "signalling" && zoom >= 0.55)) &&
     useMicro &&
@@ -559,6 +673,42 @@ function renderSchematic() {
         ctx.lineTo(sxi, syi);
       }
       ctx.stroke();
+
+      // Block midpoint tag label
+      if (STATE.layers.blocks && zoom >= 0.5) {
+        const scale = getLayerLabelScale("blocks");
+        const angle = getLayerLabelAngle("blocks");
+        const midIdx = Math.floor(coords.length / 2);
+        const [bx, by] = worldToScreen(coords[midIdx][0], coords[midIdx][1]);
+        if (bx >= -50 && bx <= w + 50 && by >= -50 && by <= h + 50) {
+          const bText = `B#${b[1]}`;
+          const fontSize = Math.round(9 * scale);
+          const bw = bText.length * (fontSize * 0.62) + 6;
+          const bh = fontSize + 4;
+          ctx.save();
+          ctx.translate(bx, by);
+          if (angle) ctx.rotate((angle * Math.PI) / 180);
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+          ctx.fillRect(-2, -bh / 2, bw, bh);
+          ctx.strokeStyle = isShunt ? "rgba(168, 85, 247, 0.75)" : "rgba(16, 185, 129, 0.75)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-2, -bh / 2, bw, bh);
+          ctx.fillStyle = isShunt ? "#c084fc" : "#6ee7b7";
+          ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+          ctx.fillText(bText, 1, 0);
+          ctx.restore();
+          STATE.drawnBlockLabels.push({
+            x: bx,
+            y: by,
+            w: bw,
+            h: bh,
+            angle,
+            alignY: "center",
+            block: b,
+          });
+        }
+      }
     }
     ctx.restore();
   }
@@ -614,19 +764,35 @@ function renderSchematic() {
         ctx.fill();
       }
 
-      if (zoom >= 1.45 && s[3]) {
-        const lx = sx + sr + 4;
-        const ly = sy - 7;
+      const sigScale = getLayerLabelScale("signals");
+      const sigAngle = getLayerLabelAngle("signals");
+      const canShowSigLbl = (zoom >= 1.45 || (zoom >= 0.75 && sigScale >= 1.3)) && s[3];
+      if (canShowSigLbl) {
+        const fontSize = Math.round(9 * sigScale);
         const tagText = sigMode ? `${s[3]} [${ilockInfo.short}]` : s[3];
-        const lw = tagText.length * 5.5;
+        const lw = tagText.length * (fontSize * 0.6) + 4;
+        const lh = fontSize + 4;
+        const lx = sx + sr + 4;
+        const ly = sy;
+
+        ctx.save();
+        ctx.translate(lx, ly);
+        if (sigAngle) ctx.rotate((sigAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(7, 11, 20, 0.88)";
+        ctx.fillRect(-2, -lh / 2, lw + 4, lh);
         ctx.fillStyle = sigMode ? "#f8fafc" : "#fde68a";
-        ctx.font = "600 9px ui-monospace, monospace";
-        ctx.fillText(tagText, lx, sy + 3);
+        ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(tagText, 0, 0);
+        ctx.restore();
+
         STATE.drawnSignalLabels.push({
-          x: lx - 2,
+          x: lx,
           y: ly,
-          w: lw + 4,
-          h: 12,
+          w: lw,
+          h: lh,
+          angle: sigAngle,
+          alignY: "center",
           sig: s,
         });
       }
@@ -637,6 +803,9 @@ function renderSchematic() {
   if (STATE.layers.stations && STATE.overview.stations) {
     const occupiedBoxes = [];
     const timingMode = STATE.colorMode === "timing";
+    const stScale = getLayerLabelScale("stations");
+    const stAngle = getLayerLabelAngle("stations");
+
     for (const st of STATE.overview.stations) {
       if (
         st.x < bbox.min_x ||
@@ -694,34 +863,45 @@ function renderSchematic() {
             : st.crs
             ? `${st.name} [${st.crs}]${roleSuffix}`
             : `${st.name}${roleSuffix}`;
-        const estW = lbl.length * 6.2;
-        const estH = 14;
+        const baseSize = isMajor ? 11 : 10;
+        const fontSize = Math.round(baseSize * stScale);
+        const estW = lbl.length * (fontSize * 0.62) + 6;
+        const estH = fontSize + 6;
         const lx = sx + r + 4;
-        const ly = sy - 7;
+        const ly = sy;
 
         let collides = false;
-        for (const b of occupiedBoxes) {
-          if (
-            lx < b.x + b.w &&
-            lx + estW > b.x &&
-            ly < b.y + b.h &&
-            ly + estH > b.y
-          ) {
-            collides = true;
-            break;
+        if (stAngle === 0) {
+          for (const b of occupiedBoxes) {
+            if (
+              lx < b.x + b.w &&
+              lx + estW > b.x &&
+              ly - estH / 2 < b.y + b.h &&
+              ly + estH / 2 > b.y
+            ) {
+              collides = true;
+              break;
+            }
           }
         }
         if (!collides) {
-          const box = { x: lx - 2, y: ly, w: estW + 4, h: estH, st };
-          occupiedBoxes.push(box);
+          const box = { x: lx, y: ly, w: estW, h: estH, angle: stAngle, alignY: "center", st };
+          occupiedBoxes.push({ x: lx - 2, y: ly - estH / 2, w: estW + 4, h: estH });
           STATE.drawnStationLabels.push(box);
-          ctx.font = isMajor
-            ? "700 11px Inter, sans-serif"
-            : "500 10px Inter, sans-serif";
-          ctx.fillStyle = "rgba(7, 11, 20, 0.82)";
-          ctx.fillRect(lx - 2, ly, estW + 4, estH);
+
+          ctx.save();
+          ctx.translate(lx, ly);
+          if (stAngle) ctx.rotate((stAngle * Math.PI) / 180);
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "rgba(7, 11, 20, 0.88)";
+          ctx.fillRect(-2, -estH / 2, estW + 4, estH);
+          ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-2, -estH / 2, estW + 4, estH);
           ctx.fillStyle = isMajor ? "#f8fafc" : "#cbd5e1";
-          ctx.fillText(lbl, lx, sy + 3);
+          ctx.font = `${isMajor ? "700" : "500"} ${fontSize}px Inter, sans-serif`;
+          ctx.fillText(lbl, 0, 0);
+          ctx.restore();
         }
       }
     }
@@ -729,6 +909,8 @@ function renderSchematic() {
 
   // 9. Operational Annotations
   if (STATE.layers.polys && STATE.overview.annotations) {
+    const polyScale = getLayerLabelScale("polys");
+    const polyAngle = getLayerLabelAngle("polys");
     for (const an of STATE.overview.annotations) {
       const [sx, sy] = worldToScreen(an.x, an.y);
       if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
@@ -736,6 +918,32 @@ function renderSchematic() {
       ctx.beginPath();
       ctx.arc(sx, sy, 5, 0, Math.PI * 2);
       ctx.fill();
+
+      if (zoom >= 0.35 && an.text) {
+        const cleanText = an.text.replace(/<[^>]+>/g, " ").trim().slice(0, 45);
+        const fontSize = Math.round(9 * polyScale);
+        const pw = cleanText.length * (fontSize * 0.58) + 6;
+        const ph = fontSize + 4;
+        ctx.save();
+        ctx.translate(sx + 7, sy);
+        if (polyAngle) ctx.rotate((polyAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(-2, -ph / 2, pw + 4, ph);
+        ctx.fillStyle = "#f472b6";
+        ctx.font = `500 ${fontSize}px Inter, sans-serif`;
+        ctx.fillText(cleanText, 0, 0);
+        ctx.restore();
+        STATE.drawnAnnotationLabels.push({
+          x: sx + 7,
+          y: sy,
+          w: pw,
+          h: ph,
+          angle: polyAngle,
+          alignY: "center",
+          an,
+        });
+      }
     }
   }
 
@@ -757,6 +965,7 @@ function renderNwrModel() {
 
   STATE.drawnNwrElrLabels = [];
   STATE.drawnNwrWaymarkLabels = [];
+  STATE.drawnNwrNodeLabels = [];
 
   if (!STATE.nwrOverview) return;
 
@@ -878,10 +1087,45 @@ function renderNwrModel() {
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // Node asset ID labels when zoomed in
+    if (zoom >= 0.12) {
+      const nodeScale = getLayerLabelScale("nwr_nodes");
+      const nodeAngle = getLayerLabelAngle("nwr_nodes");
+      const fontSize = Math.round(8.5 * nodeScale);
+      ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+      for (const n of STATE.nwrViewportData.nodes) {
+        const [sx, sy] = worldToScreen(n[3], n[4]);
+        if (sx < -20 || sx > w + 20 || sy < -20 || sy > h + 20) continue;
+        const nText = `${n[1]}`;
+        const nw = nText.length * (fontSize * 0.6) + 4;
+        const nh = fontSize + 2;
+        ctx.save();
+        ctx.translate(sx + 6, sy);
+        if (nodeAngle) ctx.rotate((nodeAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(nText, 0, 0);
+        ctx.restore();
+        STATE.drawnNwrNodeLabels.push({
+          x: sx + 6,
+          y: sy,
+          w: nw,
+          h: nh,
+          angle: nodeAngle,
+          alignY: "center",
+          node: n,
+        });
+      }
+    }
   }
 
   // 4. NWR_Waymarks (Mileposts)
   if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04 && STATE.nwrViewportData.waymarks.length) {
+    const wmScale = getLayerLabelScale("nwr_waymarks");
+    const wmAngle = getLayerLabelAngle("nwr_waymarks");
+    const fontSize = Math.round(9 * wmScale);
+
     for (const wm of STATE.nwrViewportData.waymarks) {
       // [fid, asset_id, elr, unit, value, x, y]
       const [sx, sy] = worldToScreen(wm[5], wm[6]);
@@ -889,17 +1133,31 @@ function renderNwrModel() {
       ctx.fillStyle = "#fbbf24";
       ctx.fillRect(sx - 2.5, sy - 2.5, 5, 5);
 
-      if (zoom >= 0.18) {
+      if (zoom >= 0.12) {
         const lbl = `${wm[2]} ${Number(wm[4]).toFixed(2)}${wm[3]}`;
-        const lw = lbl.length * 5.6;
+        const lw = lbl.length * (fontSize * 0.6) + 6;
+        const lh = fontSize + 4;
+        const lx = sx + 5;
+        const ly = sy;
+
+        ctx.save();
+        ctx.translate(lx, ly);
+        if (wmAngle) ctx.rotate((wmAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(-2, -lh / 2, lw, lh);
         ctx.fillStyle = "#fde68a";
-        ctx.font = "600 9px ui-monospace, monospace";
-        ctx.fillText(lbl, sx + 5, sy + 3);
+        ctx.font = `600 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(lbl, 1, 0);
+        ctx.restore();
+
         STATE.drawnNwrWaymarkLabels.push({
-          x: sx + 3,
-          y: sy - 7,
-          w: lw + 4,
-          h: 12,
+          x: lx,
+          y: ly,
+          w: lw,
+          h: lh,
+          angle: wmAngle,
+          alignY: "center",
           wm,
         });
       }
@@ -908,7 +1166,11 @@ function renderNwrModel() {
 
   // 5. ELR Corridor Labels (with collision avoidance)
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
+    const elrScale = getLayerLabelScale("nwr_elrs");
+    const elrAngle = getLayerLabelAngle("nwr_elrs");
+    const fontSize = Math.round(10 * elrScale);
     const occupied = [];
+
     for (const elr of STATE.nwrOverview.elrs) {
       if (
         elr.x < bbox.min_x ||
@@ -919,35 +1181,43 @@ function renderNwrModel() {
         continue;
       const [sx, sy] = worldToScreen(elr.x, elr.y);
       const lbl = elr.elr;
-      const estW = lbl.length * 6.8 + 8;
-      const estH = 14;
-      const lx = sx - estW / 2;
-      const ly = sy - 7;
+      const estW = lbl.length * (fontSize * 0.68) + 10;
+      const estH = fontSize + 6;
+      const lx = sx;
+      const ly = sy;
 
       let collides = false;
-      for (const b of occupied) {
-        if (
-          lx < b.x + b.w + 18 &&
-          lx + estW + 18 > b.x &&
-          ly < b.y + b.h + 10 &&
-          ly + estH + 10 > b.y
-        ) {
-          collides = true;
-          break;
+      if (elrAngle === 0) {
+        for (const b of occupied) {
+          if (
+            lx - estW / 2 < b.x + b.w + 14 &&
+            lx + estW / 2 + 14 > b.x &&
+            ly - estH / 2 < b.y + b.h + 8 &&
+            ly + estH / 2 + 8 > b.y
+          ) {
+            collides = true;
+            break;
+          }
         }
       }
       if (!collides) {
-        const box = { x: lx, y: ly, w: estW, h: estH, elr };
-        occupied.push(box);
+        const box = { x: lx - estW / 2, y: ly, w: estW, h: estH, angle: elrAngle, alignY: "center", elr };
+        occupied.push({ x: lx - estW / 2, y: ly - estH / 2, w: estW, h: estH });
         STATE.drawnNwrElrLabels.push(box);
-        ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
-        ctx.fillRect(lx, ly, estW, estH);
-        ctx.strokeStyle = "rgba(168, 85, 247, 0.5)";
+
+        ctx.save();
+        ctx.translate(lx - estW / 2, ly);
+        if (elrAngle) ctx.rotate((elrAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+        ctx.fillRect(0, -estH / 2, estW, estH);
+        ctx.strokeStyle = "rgba(168, 85, 247, 0.55)";
         ctx.lineWidth = 1;
-        ctx.strokeRect(lx, ly, estW, estH);
+        ctx.strokeRect(0, -estH / 2, estW, estH);
         ctx.fillStyle = "#e9d5ff";
-        ctx.font = "700 10px ui-monospace, monospace";
-        ctx.fillText(lbl, lx + 4, sy + 3);
+        ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(lbl, 5, 0);
+        ctx.restore();
       }
     }
   }
@@ -1005,12 +1275,25 @@ function drawHighlightAndPreviewOverlays() {
 
     for (const way of STATE.highlight.ways) {
       if (!way.coords || way.coords.length < 2) continue;
-      if (grpFilter !== "all" && way.group && way.group !== grpFilter) continue;
+      if (grpFilter !== "all") {
+        if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
+          if (!way.group || !way.group.startsWith("overlap")) continue;
+        } else if (grpFilter.startsWith("approach:")) {
+          const targetBid = grpFilter.slice(9);
+          if (way.group !== "approach" || (way.block_id !== undefined && String(way.block_id) !== targetBid)) continue;
+        } else if (grpFilter.startsWith("outgoing:")) {
+          const targetBid = grpFilter.slice(9);
+          if (way.group !== "outgoing" || (way.block_id !== undefined && String(way.block_id) !== targetBid)) continue;
+        } else if (way.group && way.group !== grpFilter) {
+          continue;
+        }
+      }
 
+      const isIsolated = grpFilter.includes(":") || grpFilter.startsWith("overlap_");
       ctx.strokeStyle = way.color || "#38bdf8";
-      ctx.lineWidth = way.width || 4.5;
+      ctx.lineWidth = isIsolated ? (way.width ? way.width + 1.2 : 5.8) : (way.width || 4.5);
       ctx.shadowColor = way.color || "#38bdf8";
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = isIsolated ? 16 : 12;
       ctx.setLineDash(way.dash || []);
       ctx.beginPath();
       const [sx0, sy0] = worldToScreen(way.coords[0][0], way.coords[0][1]);
@@ -1048,10 +1331,20 @@ function drawHighlightAndPreviewOverlays() {
       if (
         grpFilter !== "all" &&
         pt.group &&
-        pt.group !== "signal" &&
-        pt.group !== grpFilter
-      )
-        continue;
+        pt.group !== "signal"
+      ) {
+        if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
+          if (!pt.group || !pt.group.startsWith("overlap")) continue;
+        } else if (grpFilter.startsWith("approach:")) {
+          const targetBid = grpFilter.slice(9);
+          if (pt.group !== "approach" || (pt.block_id !== undefined && String(pt.block_id) !== targetBid)) continue;
+        } else if (grpFilter.startsWith("outgoing:")) {
+          const targetBid = grpFilter.slice(9);
+          if (pt.group !== "outgoing" || (pt.block_id !== undefined && String(pt.block_id) !== targetBid)) continue;
+        } else if (pt.group !== grpFilter) {
+          continue;
+        }
+      }
       const [sx, sy] = worldToScreen(pt.x, pt.y);
       ctx.fillStyle = pt.color || "#f59e0b";
       ctx.shadowColor = pt.color || "#f59e0b";
@@ -1169,12 +1462,19 @@ function drawHighlightAndPreviewOverlays() {
       }
     }
 
-    // Highlight bounding box if hovering a label (CAD label, Station label, Signal label, ELR label)
+    // Highlight bounding box if hovering a label (CAD label, Station label, Signal label, ELR label, etc.)
     if (hp.previewBox) {
       const b = hp.previewBox;
+      ctx.save();
       ctx.strokeStyle = col;
       ctx.lineWidth = 2.2;
-      ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      ctx.translate(b.x, b.y);
+      if (b.angle) {
+        ctx.rotate((b.angle * Math.PI) / 180);
+      }
+      const by = b.alignY === "center" ? -b.h / 2 : 0;
+      ctx.strokeRect(-2, by - 2, b.w + 4, b.h + 4);
+      ctx.restore();
     }
 
     // Target reticle + floating callout badge at (hp.x, hp.y)
@@ -1281,7 +1581,7 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
       }
     }
     for (const lbl of STATE.drawnSignalLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const s = lbl.sig;
         const ilock = getSignalInterlockingInfo(s[4], s[9]);
         const sigWay =
@@ -1299,20 +1599,38 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
           x: s[5],
           y: s[6],
           previewWay: sigWay,
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 3,
         });
       }
     }
   }
 
-  // 1b. Signalling Block Sections (when block layer or signalling mode is active)
+  // 1b. Signalling Block Sections & Block Labels
   if (
     (STATE.layers.blocks || (STATE.colorMode === "signalling" && zoom >= 0.55)) &&
     useMicro &&
     STATE.viewportData.blocks &&
     STATE.viewportData.blocks.length
   ) {
+    for (const lbl of STATE.drawnBlockLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const b = lbl.block;
+        const coords = b[7];
+        const midPt = coords ? coords[Math.floor(coords.length / 2)] : [0, 0];
+        addHit({
+          type: "block",
+          id: b[0],
+          title: `Signalling Block #${b[1]} (${b[4] === 1 ? "Shunt" : "Main"})`,
+          sub: `Label hit • Pre-sig: ${b[2]}m • Sighting: ${b[3]}m`,
+          x: midPt[0],
+          y: midPt[1],
+          previewWay: coords,
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 1.5,
+        });
+      }
+    }
     for (const b of STATE.viewportData.blocks) {
       // [pk, block_id, pre_signal_distance, sight_distance, shunting_flag, atc_flag, moving_block, coords]
       const coords = b[7];
@@ -1365,7 +1683,7 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
       }
     }
     for (const lbl of STATE.drawnStationLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const st = lbl.st;
         addHit({
           type: "station",
@@ -1375,15 +1693,30 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
           x: st.x,
           y: st.y,
           previewParts: getStationTrackParts(st.id),
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 4,
         });
       }
     }
   }
 
-  // 3. Microscopic Track Nodes
+  // 3. Microscopic Track Nodes & Node Labels
   if ((STATE.layers.nodes || zoom >= 2.2) && useMicro && STATE.viewportData.nodes.length) {
+    for (const lbl of STATE.drawnNodeLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const n = lbl.node;
+        addHit({
+          type: "node",
+          id: n[0],
+          title: `Track Node #${n[0]}`,
+          sub: `Label hit • KM: ${n[5] || 0}m • Angle ${n[3]}°`,
+          x: n[1],
+          y: n[2],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2.5,
+        });
+      }
+    }
     for (const n of STATE.viewportData.nodes) {
       const [nsx, nsy] = worldToScreen(n[1], n[2]);
       const d = Math.hypot(sx - nsx, sy - nsy);
@@ -1466,24 +1799,40 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
   // 6. CAD Track Labels (<graphictext>)
   if (STATE.layers.texts && useMicro && STATE.drawnCadLabels.length) {
     for (const lbl of STATE.drawnCadLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const gt = lbl.gt;
         addHit({
           type: "graphictext",
           id: gt[0],
           title: `CAD Label "${gt[4]}"`,
-          sub: `Layer ${gt[3]} • (${gt[1]}, ${gt[2]})`,
+          sub: `Layer ${gt[3]} • Angle ${gt[5]}° • (${gt[1]}, ${gt[2]})`,
           x: gt[1],
           y: gt[2],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 5,
         });
       }
     }
   }
 
-  // 7. Operational Annotations (<annotation>)
+  // 7. Operational Annotations (<annotation>) & Note Labels
   if (STATE.layers.polys && STATE.overview.annotations) {
+    for (const lbl of STATE.drawnAnnotationLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const an = lbl.an;
+        const cleanText = (an.text || "").replace(/<[^>]+>/g, " ").trim().slice(0, 65);
+        addHit({
+          type: "annotation",
+          id: an.pk,
+          title: `Operational Note #${an.pk}`,
+          sub: cleanText || `(${an.x}, ${an.y})`,
+          x: an.x,
+          y: an.y,
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 3.5,
+        });
+      }
+    }
     for (const an of STATE.overview.annotations) {
       const [asx, asy] = worldToScreen(an.x, an.y);
       const d = Math.hypot(sx - asx, sy - asy);
@@ -1527,8 +1876,23 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   const useMicro = zoom >= 0.025 && STATE.nwrViewportData.centrelines.length > 0;
   const pxTol = 10;
 
-  // 1. NWR Track Nodes
+  // 1. NWR Track Nodes & Node Labels
   if (STATE.nwrLayers.nodes && useMicro && zoom >= 0.06) {
+    for (const lbl of STATE.drawnNwrNodeLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const n = lbl.node;
+        addHit({
+          type: "nwr_node",
+          id: n[0],
+          title: `Track Node ${n[1]}`,
+          sub: `Label hit • Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          x: n[3],
+          y: n[4],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2,
+        });
+      }
+    }
     for (const n of STATE.nwrViewportData.nodes) {
       // [fid, asset_id, valency, x, y]
       const [nsx, nsy] = worldToScreen(n[3], n[4]);
@@ -1549,6 +1913,21 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
 
   // 2. NWR Waymarks & Labels
   if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04) {
+    for (const lbl of STATE.drawnNwrWaymarkLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const wm = lbl.wm;
+        addHit({
+          type: "nwr_waymark",
+          id: wm[0],
+          title: `Waymark ${wm[2]} @ ${wm[4]} ${wm[3]}`,
+          sub: `Label hit • Asset ID ${wm[1]}`,
+          x: wm[5],
+          y: wm[6],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2.5,
+        });
+      }
+    }
     for (const wm of STATE.nwrViewportData.waymarks) {
       // [fid, asset_id, elr, unit, value, x, y]
       const [wsx, wsy] = worldToScreen(wm[5], wm[6]);
@@ -1562,21 +1941,6 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
           x: wm[5],
           y: wm[6],
           score: d + 0.5,
-        });
-      }
-    }
-    for (const lbl of STATE.drawnNwrWaymarkLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
-        const wm = lbl.wm;
-        addHit({
-          type: "nwr_waymark",
-          id: wm[0],
-          title: `Waymark ${wm[2]} @ ${wm[4]} ${wm[3]}`,
-          sub: `Label hit • Asset ID ${wm[1]}`,
-          x: wm[5],
-          y: wm[6],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
-          score: 3,
         });
       }
     }
@@ -1614,7 +1978,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   // 4. NWR ELR Labels & Reference Lines
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
     for (const lbl of STATE.drawnNwrElrLabels) {
-      if (sx >= lbl.x && sx <= lbl.x + lbl.w && sy >= lbl.y && sy <= lbl.y + lbl.h) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const elr = lbl.elr;
         addHit({
           type: "nwr_elr",
@@ -1625,7 +1989,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
           y: elr.y,
           previewWay: (elr.parts && elr.parts[0]) || [],
           previewParts: elr.parts || [],
-          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h },
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
           score: 2,
         });
       }
@@ -1917,83 +2281,9 @@ window.jumpToNwrElr = async function (elrCode) {
   }
 };
 
-/* Hover Submenu Interaction Wiring */
-hoverTooltip.addEventListener("mouseenter", () => {
-  STATE.isPointerInMenu = true;
-  if (STATE.hoverHideTimer) {
-    clearTimeout(STATE.hoverHideTimer);
-    STATE.hoverHideTimer = null;
-  }
-});
-
-hoverTooltip.addEventListener("mouseleave", () => {
-  STATE.isPointerInMenu = false;
-  STATE.hoverPreview = null;
-  hoverTooltip.classList.add("hidden");
-  requestRender();
-});
-
-function renderHoverMenu(candidates, sx, sy, reposition = true) {
-  if (!candidates.length) {
-    hoverTooltip.classList.add("hidden");
-    return;
-  }
-
-  const headerText =
-    candidates.length > 1
-      ? `${candidates.length} Overlapping Objects — Roll Over to Highlight, Click to View`
-      : `1 Object Under Cursor — Click to View`;
-
-  const activeKey = STATE.hoverPreview
-    ? `${STATE.hoverPreview.type}:${STATE.hoverPreview.id}`
-    : `${candidates[0].type}:${candidates[0].id}`;
-
-  hoverTooltip.innerHTML = `
-    <div class="hover-menu-header">
-      <span>${headerText}</span>
-    </div>
-    ${candidates
-      .map((c, idx) => {
-        const isActive = `${c.type}:${c.id}` === activeKey;
-        return `
-      <div class="hover-menu-item ${isActive ? "active" : ""}" data-idx="${idx}">
-        <span class="hover-type-badge hover-type-${escapeHtml(c.type)}">${escapeHtml(c.type.replace("nwr_", ""))}</span>
-        <div class="hover-item-body">
-          <div class="hover-item-title">${escapeHtml(c.title)}</div>
-          <div class="hover-item-sub">${escapeHtml(c.sub || "")}</div>
-        </div>
-      </div>`;
-      })
-      .join("")}
-  `;
-
-  hoverTooltip.querySelectorAll(".hover-menu-item").forEach((el) => {
-    const idx = Number(el.dataset.idx);
-    const item = candidates[idx];
-    el.addEventListener("mouseenter", () => {
-      hoverTooltip.querySelectorAll(".hover-menu-item").forEach((r) => r.classList.remove("active"));
-      el.classList.add("active");
-      STATE.hoverPreview = item;
-      requestRender();
-    });
-    el.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      STATE.isPointerInMenu = false;
-      hoverTooltip.classList.add("hidden");
-      loadAssetDetails(item.type, item.id, false);
-    });
-  });
-
-  if (reposition) {
-    const padX = 14;
-    const padY = -14;
-    const maxLeft = Math.max(10, canvas.clientWidth - 365);
-    const maxTop = Math.max(10, canvas.clientHeight - 280);
-    hoverTooltip.style.left = `${Math.min(maxLeft, sx + padX)}px`;
-    hoverTooltip.style.top = `${Math.min(maxTop, Math.max(10, sy + padY))}px`;
-    STATE.lastHoverAnchor = { sx, sy };
-  }
-  hoverTooltip.classList.remove("hidden");
+/* Cursor Hover Tooltip disabled: hovering updates cursor pointer without popup obstruction */
+if (hoverTooltip) {
+  hoverTooltip.style.display = "none";
 }
 
 /* Mouse / Wheel Pan & Zoom */
@@ -2049,7 +2339,7 @@ window.addEventListener("mouseup", (e) => {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     const [wx, wy] = screenToWorld(sx, sy);
-    handleCanvasClick(wx, wy);
+    handleCanvasClick(wx, wy, sx, sy);
   }
 });
 
@@ -2078,7 +2368,7 @@ canvas.addEventListener(
   { passive: false }
 );
 
-/* Hover Detection, Precision Pointer Cursor & Submenu */
+/* Hover Detection & Precision Pointer Cursor (No floating tooltip) */
 function handleHover(sx, sy, wx, wy) {
   if (
     sx < 0 ||
@@ -2087,227 +2377,238 @@ function handleHover(sx, sy, wx, wy) {
     sy > canvas.clientHeight
   ) {
     canvas.classList.remove("has-target");
-    if (!STATE.isPointerInMenu) {
-      hoverTooltip.classList.add("hidden");
-      STATE.hoverPreview = null;
-      requestRender();
-    }
-    return;
-  }
-
-  const menuOpen = !hoverTooltip.classList.contains("hidden");
-  if (
-    menuOpen &&
-    STATE.hoverCandidates.length > 1 &&
-    Math.hypot(sx - STATE.lastHoverAnchor.sx, sy - STATE.lastHoverAnchor.sy) < 22
-  ) {
-    canvas.classList.add("has-target");
     return;
   }
 
   const hits = findObjectsAtCursor(sx, sy, wx, wy);
-
   if (hits.length > 0) {
-    if (STATE.hoverHideTimer) {
-      clearTimeout(STATE.hoverHideTimer);
-      STATE.hoverHideTimer = null;
-    }
     canvas.classList.add("has-target");
     STATE.hoverCandidates = hits;
-    STATE.hoverPreview = hits[0];
-    STATE.hoverWorldPos = { wx, wy, sx, sy };
-    renderHoverMenu(hits, sx, sy, true);
-    requestRender();
-
-    if (STATE.hoverEnrichTimer) clearTimeout(STATE.hoverEnrichTimer);
-    STATE.hoverEnrichTimer = setTimeout(() => enrichHoverSubmenu(wx, wy, sx, sy), 130);
   } else {
     canvas.classList.remove("has-target");
-    if (STATE.hoverEnrichTimer) clearTimeout(STATE.hoverEnrichTimer);
-    if (!STATE.hoverHideTimer) {
-      STATE.hoverHideTimer = setTimeout(() => {
-        if (!STATE.isPointerInMenu) {
-          hoverTooltip.classList.add("hidden");
-          STATE.hoverCandidates = [];
-          STATE.hoverPreview = null;
-          requestRender();
-        }
-        STATE.hoverHideTimer = null;
-      }, 200);
-    }
+    STATE.hoverCandidates = [];
   }
 }
 
-async function enrichHoverSubmenu(wx, wy, sx, sy) {
-  if (!STATE.hoverCandidates.length) return;
+/* Candidate Display & Interaction Helpers */
+function getAssetIcon(type) {
+  switch (type) {
+    case "signal": return "🚦";
+    case "station": return "🚉";
+    case "platform": return "🚏";
+    case "track":
+    case "nwr_track": return "🛤️";
+    case "block": return "🔲";
+    case "node":
+    case "nwr_node": return "📍";
+    case "nwr_elr": return "🏷️";
+    case "nwr_milepost": return "📍";
+    default: return "🔹";
+  }
+}
+
+function formatAssetTypeName(type) {
+  switch (type) {
+    case "signal": return "Signal";
+    case "station": return "Station";
+    case "platform": return "Platform";
+    case "track": return "Track";
+    case "block": return "Block";
+    case "node": return "Node";
+    case "nwr_track": return "NWR Track";
+    case "nwr_node": return "NWR Node";
+    case "nwr_elr": return "ELR";
+    case "nwr_milepost": return "Milepost";
+    default: return String(type).replace("nwr_", "").toUpperCase();
+  }
+}
+
+function formatAssetSubtitle(c) {
+  if (c.sub) return c.sub;
+  if (c.type === "signal") return `Signal ID #${c.id}`;
+  if (c.type === "track") return `Track ID #${c.id}`;
+  if (c.type === "block") return `Block #${c.id}`;
+  if (c.type === "station") return `Station #${c.id}`;
+  if (c.type === "node") return `Node #${c.id}`;
+  if (c.x !== undefined && c.y !== undefined) return `(${Math.round(c.x)}, ${Math.round(c.y)})`;
+  return `ID #${c.id}`;
+}
+
+function mergeCandidates(clientHits, serverCandidates) {
+  const byKey = new Map();
+
+  // Add client hits first (they have exact canvas coordinates, label bounding boxes, etc.)
+  for (const c of clientHits || []) {
+    const key = `${c.type}:${c.id}`;
+    byKey.set(key, { ...c });
+  }
+
+  // Augment with server candidates
+  for (const s of serverCandidates || []) {
+    const key = `${s.type}:${s.id}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        type: s.type,
+        id: s.id,
+        title: s.label || `${s.type} #${s.id}`,
+        sub: s.sub || "",
+        x: s.x,
+        y: s.y,
+        previewWay: s.coords || null,
+        previewParts: s.parts || null,
+      });
+    } else {
+      if (!existing.previewWay && s.coords) existing.previewWay = s.coords;
+      if (!existing.previewParts && s.parts) existing.previewParts = s.parts;
+      if (!existing.sub && s.sub) existing.sub = s.sub;
+      if (existing.x === undefined && s.x !== undefined) existing.x = s.x;
+      if (existing.y === undefined && s.y !== undefined) existing.y = s.y;
+    }
+  }
+
+  const list = Array.from(byKey.values());
+
+  const typeOrder = {
+    signal: 1,
+    station: 2,
+    platform: 3,
+    block: 4,
+    track: 5,
+    nwr_track: 5,
+    nwr_elr: 6,
+    nwr_milepost: 7,
+    node: 8,
+    nwr_node: 8,
+    edge: 9,
+  };
+
+  list.sort((a, b) => {
+    const pa = typeOrder[a.type] || 99;
+    const pb = typeOrder[b.type] || 99;
+    return pa - pb;
+  });
+
+  return list;
+}
+
+function renderPickCandidates(cands, activeItem) {
+  const candBar = document.getElementById("pick-candidates");
+  if (!candBar) return;
+  if (!cands || cands.length <= 1) {
+    candBar.classList.add("hidden");
+    candBar.innerHTML = "";
+    return;
+  }
+
+  const activeKey = activeItem
+    ? `${activeItem.type}:${activeItem.id}`
+    : `${cands[0].type}:${cands[0].id}`;
+
+  candBar.innerHTML = `
+    <div class="pick-candidates-header">
+      <div class="pick-candidates-title-group">
+        <span class="pick-candidates-badge">${cands.length}</span>
+        <span class="pick-candidates-heading">Overlapping Objects at Click</span>
+      </div>
+      <span class="pick-candidates-hint">Hover to highlight • Click to inspect</span>
+    </div>
+    <div class="pick-candidates-list">
+      ${cands
+        .map((c, i) => {
+          const key = `${c.type}:${c.id}`;
+          const isActive = key === activeKey;
+          const icon = getAssetIcon(c.type);
+          const typeName = formatAssetTypeName(c.type);
+          const subtitle = c.sub || formatAssetSubtitle(c);
+          return `
+            <button class="candidate-row ${isActive ? "active" : ""}" data-idx="${i}" data-type="${escapeHtml(c.type)}" data-id="${escapeHtml(String(c.id))}">
+              <span class="candidate-icon candidate-icon-${escapeHtml(c.type)}">${icon}</span>
+              <div class="candidate-info">
+                <div class="candidate-main">
+                  <span class="candidate-type-badge candidate-type-${escapeHtml(c.type)}">${escapeHtml(typeName)}</span>
+                  <span class="candidate-label" title="${escapeHtml(c.title || c.label)}">${escapeHtml(c.title || c.label)}</span>
+                </div>
+                ${subtitle ? `<div class="candidate-sub" title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</div>` : ""}
+              </div>
+              <span class="candidate-arrow">&rarr;</span>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  candBar.classList.remove("hidden");
+
+  candBar.querySelectorAll(".candidate-row").forEach((btn) => {
+    const idx = parseInt(btn.dataset.idx, 10);
+    const item = cands[idx];
+    btn.addEventListener("mouseenter", () => {
+      if (item) {
+        STATE.hoverPreview = item;
+        requestRender();
+      }
+    });
+    btn.addEventListener("mouseleave", () => {
+      if (STATE.hoverPreview === item) {
+        STATE.hoverPreview = null;
+        requestRender();
+      }
+    });
+    btn.addEventListener("click", () => {
+      candBar.querySelectorAll(".candidate-row").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
+    });
+  });
+}
+
+/* Click Picking & Asset Inspection */
+async function handleCanvasClick(wx, wy, sx, sy) {
+  if (sx === undefined || sy === undefined) {
+    const [scx, scy] = worldToScreen(wx, wy);
+    sx = scx;
+    sy = scy;
+  }
+
+  // 1. Client-side hits at click location
+  const clientHits = findObjectsAtCursor(sx, sy, wx, wy);
+
+  // 2. Fetch server database candidates at click coordinates
   const radius = Math.max(10, 14 / STATE.zoom);
   const endpoint = STATE.activeView === "nwr" ? "/api/nwr/pick" : "/api/pick";
+  let serverCandidates = [];
   try {
     const res = await fetch(
       `${endpoint}?x=${wx.toFixed(1)}&y=${wy.toFixed(1)}&radius=${radius.toFixed(1)}`
     );
-    if (!res.ok) return;
-    const data = await res.json();
-    const byKey = new Map(STATE.hoverCandidates.map((c) => [`${c.type}:${c.id}`, c]));
-    let updated = false;
-    for (const c of data.candidates || []) {
-      const key = `${c.type}:${c.id}`;
-      const existing = byKey.get(key);
-      if (!existing) {
-        const candObj = {
-          type: c.type,
-          id: c.id,
-          title: c.label,
-          sub: `Database topology match at cursor`,
-          x: c.x,
-          y: c.y,
-          previewWay: c.coords || null,
-          previewParts: c.parts || null,
-        };
-        byKey.set(key, candObj);
-        STATE.hoverCandidates.push(candObj);
-        updated = true;
-      } else {
-        if (!existing.previewWay && c.coords) {
-          existing.previewWay = c.coords;
-          updated = true;
-        }
-        if (!existing.previewParts && c.parts) {
-          existing.previewParts = c.parts;
-          updated = true;
-        }
-      }
-    }
-    if (updated) {
-      STATE.hoverCandidates.sort((a, b) => {
-        const aPriority = a.type === "block" || a.type === "route" ? 0 : 1;
-        const bPriority = b.type === "block" || b.type === "route" ? 0 : 1;
-        return aPriority - bPriority;
-      });
-      if (!STATE.isPointerInMenu) {
-        STATE.hoverPreview = STATE.hoverCandidates[0];
-      }
-      if (!hoverTooltip.classList.contains("hidden")) {
-        renderHoverMenu(STATE.hoverCandidates, sx, sy, false);
-        requestRender();
-      }
+    if (res.ok) {
+      const data = await res.json();
+      serverCandidates = data.candidates || [];
     }
   } catch (err) {
     // Ignore transient network errors
   }
-}
 
-/* Click Picking & Asset Inspection */
-async function handleCanvasClick(wx, wy) {
-  if (STATE.hoverCandidates.length > 0) {
-    const cands = [...STATE.hoverCandidates];
-    const candBar = document.getElementById("pick-candidates");
-    if (cands.length > 1) {
-      candBar.innerHTML =
-        `<span>Overlapping at click (${cands.length}):</span>` +
-        cands
-          .slice(0, 8)
-          .map(
-            (c, i) =>
-              `<button class="candidate-chip ${i === 0 ? "active" : ""}" data-idx="${i}" data-type="${c.type}" data-id="${c.id}">${escapeHtml(c.title)}</button>`
-          )
-          .join("");
-      candBar.classList.remove("hidden");
-      candBar.querySelectorAll(".candidate-chip").forEach((btn) => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        btn.addEventListener("mouseenter", () => {
-          if (cands[idx]) {
-            STATE.hoverPreview = cands[idx];
-            requestRender();
-          }
-        });
-        btn.addEventListener("mouseleave", () => {
-          if (STATE.hoverPreview === cands[idx]) {
-            STATE.hoverPreview = null;
-            requestRender();
-          }
-        });
-        btn.addEventListener("click", () => {
-          candBar.querySelectorAll(".candidate-chip").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
-        });
-      });
-    } else {
-      candBar.classList.add("hidden");
-    }
-    const target = STATE.hoverPreview || cands[0];
-    await loadAssetDetails(target.type, target.id, false);
+  // 3. Merge candidates with geometry and priority
+  const cands = mergeCandidates(clientHits, serverCandidates);
+
+  if (cands.length === 0) {
+    renderPickCandidates([], null);
     return;
   }
 
-  const radius = Math.max(12, 18 / STATE.zoom);
-  const endpoint = STATE.activeView === "nwr" ? "/api/nwr/pick" : "/api/pick";
-  try {
-    const res = await fetch(
-      `${endpoint}?x=${wx.toFixed(1)}&y=${wy.toFixed(1)}&radius=${radius.toFixed(1)}`
-    );
-    if (!res.ok) return;
-    const data = await res.json();
-    const cands = data.candidates || [];
-    const candBar = document.getElementById("pick-candidates");
-
-    if (!cands.length) {
-      candBar.classList.add("hidden");
-      return;
-    }
-
-    if (cands.length > 1) {
-      candBar.innerHTML =
-        `<span>Nearby at click:</span>` +
-        cands
-          .slice(0, 8)
-          .map(
-            (c, i) =>
-              `<button class="candidate-chip ${i === 0 ? "active" : ""}" data-idx="${i}" data-type="${c.type}" data-id="${c.id}">${escapeHtml(c.label)}</button>`
-          )
-          .join("");
-      candBar.classList.remove("hidden");
-      candBar.querySelectorAll(".candidate-chip").forEach((btn) => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        const item = cands[idx];
-        const previewItem = item
-          ? {
-              type: item.type,
-              id: item.id,
-              title: item.label,
-              x: item.x,
-              y: item.y,
-              previewWay: item.coords || null,
-              previewParts: item.parts || null,
-            }
-          : null;
-        btn.addEventListener("mouseenter", () => {
-          if (previewItem) {
-            STATE.hoverPreview = previewItem;
-            requestRender();
-          }
-        });
-        btn.addEventListener("mouseleave", () => {
-          if (STATE.hoverPreview === previewItem) {
-            STATE.hoverPreview = null;
-            requestRender();
-          }
-        });
-        btn.addEventListener("click", () => {
-          candBar.querySelectorAll(".candidate-chip").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
-        });
-      });
-    } else {
-      candBar.classList.add("hidden");
-    }
-
+  if (cands.length === 1) {
+    renderPickCandidates([], null);
     await loadAssetDetails(cands[0].type, cands[0].id, false);
-  } catch (err) {
-    console.error(err);
+    return;
   }
+
+  // Multiple candidates: load primary candidate into inspector and display the clean, aligned, scrollable list
+  const primary = cands[0];
+  renderPickCandidates(cands, primary);
+  await loadAssetDetails(primary.type, primary.id, false);
 }
 
 async function loadAssetDetails(assetType, assetId, shouldFly = true) {
@@ -3247,9 +3548,66 @@ function applyLazyCardCollapse(container, maxInitial = 12) {
 /* Signalling & Interlocking Control Strip & Interactive Envelope Filter */
 window.setSignalHighlightFilter = function (group) {
   STATE.highlightGroupFilter = group;
-  document.querySelectorAll(".sig-filter-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.group === group);
+  document.querySelectorAll(".sig-filter-btn, .sig-filter-control").forEach((el) => {
+    const g = el.dataset.group;
+    if (group === "all") {
+      el.classList.toggle("active", g === "all");
+    } else if (group === "approach" || group.startsWith("approach:")) {
+      el.classList.toggle("active", g === "approach");
+    } else if (group === "outgoing" || group.startsWith("outgoing:")) {
+      el.classList.toggle("active", g === "outgoing");
+    } else if (group === "all_overlaps" || group === "overlaps" || group.startsWith("overlap_")) {
+      el.classList.toggle("active", g === "overlaps");
+    } else {
+      el.classList.toggle("active", g === group);
+    }
   });
+
+  const appControl = document.querySelector('.sig-filter-control[data-group="approach"]');
+  if (appControl) {
+    const sel = appControl.querySelector(".sig-filter-select");
+    const textSpan = appControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("approach:") ? group : "approach";
+    if (textSpan) {
+      if (group.startsWith("approach:")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `B#${group.slice(9)}` : `B#${group.slice(9)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Approach";
+      }
+    }
+  }
+
+  const outControl = document.querySelector('.sig-filter-control[data-group="outgoing"]');
+  if (outControl) {
+    const sel = outControl.querySelector(".sig-filter-select");
+    const textSpan = outControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("outgoing:") ? group : "outgoing";
+    if (textSpan) {
+      if (group.startsWith("outgoing:")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `B#${group.slice(9)}` : `B#${group.slice(9)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Protected";
+      }
+    }
+  }
+
+  const ovControl = document.querySelector('.sig-filter-control[data-group="overlaps"]');
+  if (ovControl) {
+    const sel = ovControl.querySelector(".sig-filter-select");
+    const textSpan = ovControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("overlap_") ? group : "all_overlaps";
+    if (textSpan) {
+      if (group.startsWith("overlap_")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `Ov #${group.slice(8)}` : `Ov #${group.slice(8)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Overlaps";
+      }
+    }
+  }
+
   requestRender();
 };
 
@@ -3294,6 +3652,81 @@ function buildSignallingEnvelopeWidget(data) {
     const firstApp = appBlocks[0];
     const firstOut = outBlocks[0];
     const firstOv = overlaps[0];
+    const curSigName = (data.title || "").replace(/^Signal\s+/i, "") || "Signal";
+
+    // 1. Approach Routes Control
+    const hasApp = appBlocks.length > 0;
+    const isAppActive = STATE.highlightGroupFilter === "approach" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("approach:"));
+    const appControlHtml = `
+      <div class="sig-filter-control ${!hasApp ? 'disabled' : ''} ${isAppActive ? 'active' : ''}" data-group="approach">
+        <button class="sig-filter-btn-split" data-group="approach" ${hasApp ? "onclick=\"setSignalHighlightFilter('approach')\"" : "disabled"} title="${hasApp ? 'View all approach routes' : 'No approach blocks in database'}">
+          <span class="sig-lamp" style="background:#38bdf8"></span>
+          <span class="sig-filter-text" data-default="Approach (${appBlocks.length})">Approach (${appBlocks.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="approach" ${hasApp ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific approach route">
+            <option value="approach" data-short="Approach (${appBlocks.length})">All Approach (${appBlocks.length})</option>
+            ${appBlocks
+              .map((b) => {
+                const routeLabel = b.route_label || `To ${curSigName} (Block #${b.block_id})`;
+                const shortLabel = `App B#${b.block_id}`;
+                return `<option value="approach:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
+        </div>
+      </div>
+    `;
+
+    // 2. Outgoing / Protected Blocks Control
+    const hasOut = outBlocks.length > 0;
+    const isOutActive = STATE.highlightGroupFilter === "outgoing" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("outgoing:"));
+    const outControlHtml = `
+      <div class="sig-filter-control ${!hasOut ? 'disabled' : ''} ${isOutActive ? 'active' : ''}" data-group="outgoing">
+        <button class="sig-filter-btn-split" data-group="outgoing" ${hasOut ? "onclick=\"setSignalHighlightFilter('outgoing')\"" : "disabled"} title="${hasOut ? 'View all protected blocks in advance' : 'No protected blocks ahead in database'}">
+          <span class="sig-lamp" style="background:#10b981"></span>
+          <span class="sig-filter-text" data-default="Protected (${outBlocks.length})">Protected (${outBlocks.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="outgoing" ${hasOut ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific protected block">
+            <option value="outgoing" data-short="Protected (${outBlocks.length})">All Protected (${outBlocks.length})</option>
+            ${outBlocks
+              .map((b) => {
+                const routeLabel = b.route_label || `From ${curSigName} (Block #${b.block_id})`;
+                const shortLabel = `Prot B#${b.block_id}`;
+                return `<option value="outgoing:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
+        </div>
+      </div>
+    `;
+
+    // 3. Safety Overlaps Control
+    const hasOv = overlaps.length > 0;
+    const isOvActive = STATE.highlightGroupFilter === "all_overlaps" || STATE.highlightGroupFilter === "overlaps" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("overlap_"));
+    const ovControlHtml = `
+      <div class="sig-filter-control ${!hasOv ? 'disabled' : ''} ${isOvActive ? 'active' : ''}" data-group="overlaps">
+        <button class="sig-filter-btn-split" data-group="overlaps" ${hasOv ? "onclick=\"setSignalHighlightFilter('all_overlaps')\"" : "disabled"} title="${hasOv ? 'View all safety overlaps' : 'No safety overlaps defined'}">
+          <span class="sig-lamp" style="background:#d946ef"></span>
+          <span class="sig-filter-text" data-default="Overlaps (${overlaps.length})">Overlaps (${overlaps.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="overlaps" ${hasOv ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific safety overlap">
+            <option value="all_overlaps" data-short="Overlaps (${overlaps.length})">All Overlaps (${overlaps.length})</option>
+            ${overlaps
+              .map((ov) => {
+                const shortLabel = `Overlap #${ov.index}`;
+                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">Overlap #${ov.index} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
+        </div>
+      </div>
+    `;
 
     return `
       <div class="sig-envelope-card">
@@ -3306,10 +3739,10 @@ function buildSignallingEnvelopeWidget(data) {
         </div>
 
         <div class="sig-strip-diagram">
-          <div class="sig-strip-box approach">
+          <div class="sig-strip-box approach" onclick="setSignalHighlightFilter('approach')" title="Click to view approach envelope">
             <div class="sig-strip-label">In Rear (Approach)</div>
             <div class="sig-strip-val">${
-              firstApp ? `Block #${firstApp.block_id} (${firstApp.length_meters}m)` : "None"
+              firstApp ? (firstApp.route_label ? escapeHtml(firstApp.route_label) : `Block #${firstApp.block_id} (${firstApp.length_meters}m)`) : "None"
             }</div>
             <div class="sig-strip-sub">${
               firstApp
@@ -3318,21 +3751,21 @@ function buildSignallingEnvelopeWidget(data) {
             }</div>
           </div>
 
-          <div class="sig-strip-box current">
+          <div class="sig-strip-box current" onclick="setSignalHighlightFilter('all')" title="Click to view all envelope">
             <div class="sig-strip-label">Selected Signal</div>
             <div class="sig-strip-val">${escapeHtml(data.title.replace("Signal ", ""))}</div>
             <div class="sig-strip-sub">Set ${ilock.settime || 0}s • Free ${ilock.freeingtime || 0}s</div>
           </div>
 
-          <div class="sig-strip-box outgoing">
+          <div class="sig-strip-box outgoing" onclick="setSignalHighlightFilter('outgoing')" title="Click to view protected block envelope">
             <div class="sig-strip-label">In Advance (Block)</div>
             <div class="sig-strip-val">${
-              firstOut ? `Block #${firstOut.block_id} (${firstOut.length_meters}m)` : "None"
+              firstOut ? (firstOut.route_label ? escapeHtml(firstOut.route_label) : `Block #${firstOut.block_id} (${firstOut.length_meters}m)`) : "None"
             }</div>
             <div class="sig-strip-sub">${outBlocks.length} protected route(s)</div>
           </div>
 
-          <div class="sig-strip-box overlap">
+          <div class="sig-strip-box overlap" onclick="setSignalHighlightFilter('${firstOv ? firstOv.group : 'all'}')" title="Click to view safety overlap">
             <div class="sig-strip-label">Safety Overlap</div>
             <div class="sig-strip-val">${
               firstOv ? `${firstOv.length_meters}m (${firstOv.length_yards}yd)` : "None"
@@ -3342,34 +3775,12 @@ function buildSignallingEnvelopeWidget(data) {
         </div>
 
         <div class="sig-filter-bar">
-          <button class="sig-filter-btn active" data-group="all" onclick="setSignalHighlightFilter('all')">
+          <button class="sig-filter-btn ${STATE.highlightGroupFilter === 'all' ? 'active' : ''}" data-group="all" onclick="setSignalHighlightFilter('all')">
             All Envelope
           </button>
-          ${
-            appBlocks.length
-              ? `<button class="sig-filter-btn" data-group="approach" onclick="setSignalHighlightFilter('approach')">
-                  <span class="sig-lamp" style="background:#38bdf8"></span>
-                  Approach (${appBlocks.length})
-                </button>`
-              : ""
-          }
-          ${
-            outBlocks.length
-              ? `<button class="sig-filter-btn" data-group="outgoing" onclick="setSignalHighlightFilter('outgoing')">
-                  <span class="sig-lamp" style="background:#10b981"></span>
-                  Protected Blocks (${outBlocks.length})
-                </button>`
-              : ""
-          }
-          ${overlaps
-            .map(
-              (ov) => `
-            <button class="sig-filter-btn" data-group="${ov.group}" onclick="setSignalHighlightFilter('${ov.group}')">
-              <span class="sig-lamp" style="background:${ov.color}"></span>
-              Overlap #${ov.index} (${ov.length_meters}m)
-            </button>`
-            )
-            .join("")}
+          ${appControlHtml}
+          ${outControlHtml}
+          ${ovControlHtml}
         </div>
       </div>
     `;
@@ -3388,7 +3799,7 @@ function buildSignallingEnvelopeWidget(data) {
           <span>${rel.length_meters || 0} m (${Math.round((rel.length_meters || 0) / 0.9144)} yd)</span>
         </span>
       </div>
-      <div class="sig-strip-diagram">
+      <div class="sig-strip-diagram cols-3">
         <div class="sig-strip-box approach">
           <div class="sig-strip-label">Entry Signal</div>
           <div class="sig-strip-val">${
@@ -3525,6 +3936,126 @@ for (const key of ["centrelines", "elrs", "nodes", "waymarks"]) {
       requestRender();
     });
   }
+}
+
+/* ============================================================================
+   LABEL SIZE & ORIENTATION CONTROLS (TPS SCHEMATIC & NWR GEOGRAPHIC)
+   ============================================================================ */
+function updateLabelUi() {
+  const masterSlider = document.getElementById("master-label-slider");
+  if (masterSlider) {
+    masterSlider.value = Math.round((STATE.labelScale.all || 1.0) * 100);
+  }
+  const masterOrient = document.getElementById("master-label-orient");
+  if (masterOrient) {
+    masterOrient.value = STATE.labelOrientation.all !== undefined ? String(STATE.labelOrientation.all) : "";
+  }
+  document.querySelectorAll(".label-stepper").forEach((stepper) => {
+    const layer = stepper.dataset.layer;
+    const readout = stepper.querySelector(".lbl-scale-readout");
+    if (!readout) return;
+    const val = layer === "all" ? STATE.labelScale.all : STATE.labelScale[layer];
+    readout.textContent = `${Math.round((val !== undefined ? val : 1.0) * 100)}%`;
+  });
+  document.querySelectorAll(".lbl-orient-select").forEach((sel) => {
+    const layer = sel.dataset.layer;
+    if (!layer || layer === "all") return;
+    const val = STATE.labelOrientation[layer];
+    sel.value = val !== undefined ? String(val) : "0";
+  });
+}
+
+document.querySelectorAll(".label-stepper .lbl-step-btn").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const stepper = btn.closest(".label-stepper");
+    const layer = stepper.dataset.layer;
+    const dir = parseInt(btn.dataset.dir, 10) || 0;
+    const current = (layer === "all" ? STATE.labelScale.all : STATE.labelScale[layer]) || 1.0;
+    const next = Math.max(0.4, Math.min(3.0, Math.round((current + dir * 0.1) * 10) / 10));
+    if (layer === "all") {
+      STATE.labelScale.all = next;
+    } else {
+      STATE.labelScale[layer] = next;
+    }
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+document.querySelectorAll(".label-stepper .lbl-scale-readout").forEach((readout) => {
+  readout.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    const stepper = readout.closest(".label-stepper");
+    const layer = stepper.dataset.layer;
+    if (layer === "all") {
+      STATE.labelScale.all = 1.0;
+    } else {
+      STATE.labelScale[layer] = 1.0;
+    }
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+const masterLabelSlider = document.getElementById("master-label-slider");
+if (masterLabelSlider) {
+  masterLabelSlider.addEventListener("input", (e) => {
+    STATE.labelScale.all = Math.max(0.5, Math.min(3.0, Number(e.target.value) / 100));
+    updateLabelUi();
+    requestRender();
+  });
+}
+
+const masterOrientSel = document.getElementById("master-label-orient");
+if (masterOrientSel) {
+  masterOrientSel.addEventListener("change", (e) => {
+    STATE.labelOrientation.all = e.target.value;
+    updateLabelUi();
+    requestRender();
+  });
+}
+
+document.querySelectorAll(".lbl-orient-select").forEach((sel) => {
+  const layer = sel.dataset.layer;
+  if (!layer || layer === "all") return;
+  sel.addEventListener("change", (e) => {
+    STATE.labelOrientation[layer] = e.target.value === "native" ? "native" : Number(e.target.value);
+    updateLabelUi();
+    requestRender();
+  });
+});
+
+const btnResetLabels = document.getElementById("btn-reset-labels");
+if (btnResetLabels) {
+  btnResetLabels.addEventListener("click", () => {
+    STATE.labelScale = {
+      all: 1.0,
+      texts: 1.0,
+      stations: 1.0,
+      signals: 1.0,
+      blocks: 1.0,
+      nodes: 1.0,
+      polys: 1.0,
+      nwr_elrs: 1.0,
+      nwr_waymarks: 1.0,
+      nwr_nodes: 1.0,
+    };
+    STATE.labelOrientation = {
+      all: "",
+      texts: "native",
+      stations: 0,
+      signals: 0,
+      blocks: 0,
+      nodes: 0,
+      polys: 0,
+      nwr_elrs: 0,
+      nwr_waymarks: 0,
+      nwr_nodes: 0,
+    };
+    updateLabelUi();
+    requestRender();
+  });
 }
 
 document.getElementById("btn-fit-uk").addEventListener("click", fitUKNetwork);
@@ -4138,6 +4669,7 @@ function escapeHtml(str) {
 async function initApp() {
   resizeCanvas();
   updateLegend();
+  updateLabelUi();
 
   const overlay = document.getElementById("ingest-overlay");
   while (true) {

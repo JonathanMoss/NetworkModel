@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Network Rail TPS &amp; NWR Track Model Explorer</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=20261102d" />
 </head>
 <body>
   <!-- Ingestion Overlay (shown only while initial PostgreSQL load is running) -->
@@ -101,92 +101,301 @@
   <div class="workspace">
     <!-- Left Floating Layer & Quick-Jump Panel -->
     <aside id="left-panel" class="left-panel">
+      <!-- Label Size & Orientation Master Controls -->
+      <div class="panel-section label-master-card" id="label-controls-master">
+        <div class="label-master-header">
+          <h3>Label Size &amp; Orientation</h3>
+          <button type="button" id="btn-reset-labels" class="btn-reset-all" title="Reset all labels to 100% size and default angles">↺ Reset</button>
+        </div>
+        <div class="master-control-row">
+          <span class="control-label">All Sizes:</span>
+          <div class="label-stepper master-stepper" data-layer="all">
+            <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="all" title="Decrease all label sizes">−</button>
+            <span class="lbl-scale-readout" data-readout="all">100%</span>
+            <button type="button" class="lbl-step-btn" data-dir="1" data-layer="all" title="Increase all label sizes">+</button>
+          </div>
+          <input type="range" id="master-label-slider" class="lbl-slider" min="50" max="300" step="10" value="100" title="Master label size slider (50%–300%)" />
+        </div>
+        <div class="master-control-row" style="margin-top:6px">
+          <span class="control-label">All Angles:</span>
+          <select id="master-label-orient" class="lbl-orient-select" title="Set uniform orientation for all labels">
+            <option value="">(Custom / Per-Layer)</option>
+            <option value="0">Horizontal (0°)</option>
+            <option value="-45">Slanted Up (-45°)</option>
+            <option value="-30">Gentle Slant (-30°)</option>
+            <option value="-90">Vertical (-90°)</option>
+            <option value="45">Slanted Down (45°)</option>
+          </select>
+        </div>
+      </div>
+
       <!-- TPS Schematic Layers -->
       <div class="panel-section" id="tps-layers-panel">
-        <h3>TPS Schematic Layers</h3>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-edges" checked />
-          <span class="dot" style="background:#38bdf8"></span>
-          <span>Track Edges</span>
-          <small id="cnt-edges">377.3k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-tracks" checked />
-          <span class="dot" style="background:#818cf8"></span>
-          <span>Station Platforms / Ways</span>
-          <small id="cnt-tracks">41.4k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-vectors" checked />
-          <span class="dot" style="background:#64748b"></span>
-          <span>CAD Schematic Vectors</span>
-          <small id="cnt-vectors">396.5k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-texts" checked />
-          <span class="dot" style="background:#cbd5e1"></span>
-          <span>CAD Track Labels</span>
-          <small id="cnt-texts">23.6k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-stations" checked />
-          <span class="dot" style="background:#f8fafc"></span>
-          <span>Stations &amp; Timing Points</span>
-          <small id="cnt-stations">18.1k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-signals" checked />
-          <span class="dot" style="background:#f59e0b"></span>
-          <span>Signals &amp; Buffer Stops</span>
-          <small id="cnt-signals">72.2k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-blocks" />
-          <span class="dot" style="background:#10b981"></span>
-          <span>Signalling Block Sections</span>
-          <small id="cnt-blocks">66.9k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-nodes" />
-          <span class="dot" style="background:#10b981"></span>
-          <span>Microscopic Track Nodes</span>
-          <small id="cnt-nodes">179.7k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="layer-polys" checked />
-          <span class="dot" style="background:#a855f7"></span>
-          <span>Poly Regions &amp; Notes</span>
-          <small id="cnt-polys">1.38k</small>
-        </label>
+        <div class="layers-section-header">
+          <h3>TPS Schematic Layers</h3>
+          <span class="layers-header-hint">Size • Angle</span>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-edges" checked />
+            <span class="dot" style="background:#38bdf8"></span>
+            <span>Track Edges</span>
+            <small id="cnt-edges">377.3k</small>
+          </label>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-tracks" checked />
+            <span class="dot" style="background:#818cf8"></span>
+            <span>Station Platforms / Ways</span>
+            <small id="cnt-tracks">41.4k</small>
+          </label>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-vectors" checked />
+            <span class="dot" style="background:#64748b"></span>
+            <span>CAD Schematic Vectors</span>
+            <small id="cnt-vectors">396.5k</small>
+          </label>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-texts" checked />
+            <span class="dot" style="background:#cbd5e1"></span>
+            <span>CAD Track Labels</span>
+            <small id="cnt-texts">23.6k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="texts">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="texts">−</button>
+              <span class="lbl-scale-readout" data-readout="texts">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="texts">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="texts" title="CAD Track Labels orientation">
+              <option value="native">CAD Angle</option>
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-stations" checked />
+            <span class="dot" style="background:#f8fafc"></span>
+            <span>Stations &amp; Timing Points</span>
+            <small id="cnt-stations">18.1k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="stations">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="stations">−</button>
+              <span class="lbl-scale-readout" data-readout="stations">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="stations">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="stations" title="Station &amp; Timing Point label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-signals" checked />
+            <span class="dot" style="background:#f59e0b"></span>
+            <span>Signals &amp; Buffer Stops</span>
+            <small id="cnt-signals">72.2k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="signals">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="signals">−</button>
+              <span class="lbl-scale-readout" data-readout="signals">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="signals">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="signals" title="Signal &amp; Buffer Stop label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-blocks" />
+            <span class="dot" style="background:#10b981"></span>
+            <span>Signalling Block Sections</span>
+            <small id="cnt-blocks">66.9k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="blocks">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="blocks">−</button>
+              <span class="lbl-scale-readout" data-readout="blocks">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="blocks">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="blocks" title="Signalling Block label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-nodes" />
+            <span class="dot" style="background:#10b981"></span>
+            <span>Microscopic Track Nodes</span>
+            <small id="cnt-nodes">179.7k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nodes">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nodes">−</button>
+              <span class="lbl-scale-readout" data-readout="nodes">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nodes">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nodes" title="Track Node label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-polys" checked />
+            <span class="dot" style="background:#a855f7"></span>
+            <span>Poly Regions &amp; Notes</span>
+            <small id="cnt-polys">1.38k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="polys">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="polys">−</button>
+              <span class="lbl-scale-readout" data-readout="polys">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="polys">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="polys" title="Operational Notes label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <!-- NWR Track Model Geospatial Layers -->
       <div class="panel-section hidden" id="nwr-layers-panel">
-        <h3>NWR Track Model Layers (OSGB36)</h3>
-        <label class="layer-toggle">
-          <input type="checkbox" id="nwr-layer-centrelines" checked />
-          <span class="dot" style="background:#38bdf8"></span>
-          <span>Track Centre Lines</span>
-          <small>49.7k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="nwr-layer-elrs" checked />
-          <span class="dot" style="background:#a855f7"></span>
-          <span>ELR Reference Lines</span>
-          <small>1.60k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="nwr-layer-nodes" checked />
-          <span class="dot" style="background:#10b981"></span>
-          <span>Track Nodes (Valency 1–4)</span>
-          <small>38.7k</small>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" id="nwr-layer-waymarks" checked />
-          <span class="dot" style="background:#f59e0b"></span>
-          <span>Milepost Waymarks</span>
-          <small>42.9k</small>
-        </label>
+        <div class="layers-section-header">
+          <h3>NWR Track Model Layers (OSGB36)</h3>
+          <span class="layers-header-hint">Size • Angle</span>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-centrelines" checked />
+            <span class="dot" style="background:#38bdf8"></span>
+            <span>Track Centre Lines</span>
+            <small>49.7k</small>
+          </label>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-elrs" checked />
+            <span class="dot" style="background:#a855f7"></span>
+            <span>ELR Reference Lines</span>
+            <small>1.60k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_elrs">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_elrs">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_elrs">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_elrs">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_elrs" title="ELR Corridor label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-nodes" checked />
+            <span class="dot" style="background:#10b981"></span>
+            <span>Track Nodes (Valency 1–4)</span>
+            <small>38.7k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_nodes">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_nodes">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_nodes">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_nodes">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_nodes" title="NWR Track Node label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-waymarks" checked />
+            <span class="dot" style="background:#f59e0b"></span>
+            <span>Milepost Waymarks</span>
+            <small>42.9k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_waymarks">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_waymarks">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_waymarks">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_waymarks">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_waymarks" title="Milepost Waymark label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <div class="panel-section">
@@ -377,6 +586,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261102d"></script>
 </body>
 </html>
