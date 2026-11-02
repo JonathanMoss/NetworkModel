@@ -1598,10 +1598,10 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 """
                                 SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, start_node_id, end_node_id, x, y
                                 FROM signals
-                                WHERE end_node_id = %s
+                                WHERE end_node_id = %s OR point_node_id = %s
                                 LIMIT 6
                                 """,
-                                (nids[0],),
+                                (nids[0], nids[0]),
                             )
                             for es in cur.fetchall():
                                 if len(nids) >= 2 and es["start_node_id"] == nids[1]:
@@ -1621,6 +1621,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                                         "label": f"Rear: {es['name'] or es['master_name']}",
                                         "color": "#38bdf8",
                                         "group": "approach",
+                                        "block_id": b["block_id"],
                                     })
 
                             if sight_pt:
@@ -1631,6 +1632,18 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     "color": "#fde047",
                                     "group": "approach",
                                     "shape": "diamond",
+                                    "block_id": b["block_id"],
+                                })
+
+                            if presig_pt:
+                                highlight_points.append({
+                                    "x": presig_pt[0],
+                                    "y": presig_pt[1],
+                                    "label": f"AWS ({b['pre_signal_distance']}m)",
+                                    "color": "#38bdf8",
+                                    "group": "approach",
+                                    "shape": "diamond",
+                                    "block_id": b["block_id"],
                                 })
 
                             if b_coords:
@@ -1639,8 +1652,14 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     "coords": b_coords,
                                     "color": "#38bdf8",
                                     "group": "approach",
+                                    "block_id": b["block_id"],
                                     "width": 4.0,
                                 })
+
+                            rear_names = [es["name"] or es["master_name"] for es in entry_sigs if (es.get("name") or es.get("master_name"))]
+                            rear_str = "/".join(rear_names) if rear_names else (f"Node #{nids[0]}" if nids else "Rear")
+                            cur_sig_str = sig["name"] or sig["master_name"] or f"Signal #{sig['signal_id']}"
+                            route_label = f"From {rear_str} to {cur_sig_str}"
 
                             approach_blocks.append({
                                 "pk": b["pk"],
@@ -1659,20 +1678,23 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 "pre_signal_point": presig_pt,
                                 "entry_signals": entry_sigs,
                                 "coords": b_coords,
+                                "route_label": route_label,
                             })
 
                         if is_outgoing and len(outgoing_blocks) < 15:
-                            # Find exit signal(s) at end of block (nids[-2] -> nids[-1])
+                            # Find exit signal(s) at end of block
                             exit_sigs = []
                             if len(nids) >= 2:
                                 cur.execute(
                                     """
                                     SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, start_node_id, end_node_id, x, y
                                     FROM signals
-                                    WHERE start_node_id = %s AND end_node_id = %s
-                                    LIMIT 5
+                                    WHERE (start_node_id = %s AND end_node_id = %s)
+                                       OR (end_node_id = %s)
+                                       OR (point_node_id = %s)
+                                    LIMIT 6
                                     """,
-                                    (nids[-2], nids[-1]),
+                                    (nids[-2], nids[-1], nids[-1], nids[-1]),
                                 )
                                 for xs in cur.fetchall():
                                     exit_sigs.append({
@@ -1690,6 +1712,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                                             "label": f"Next: {xs['name'] or xs['master_name']}",
                                             "color": "#10b981",
                                             "group": "outgoing",
+                                            "block_id": b["block_id"],
                                         })
 
                             if b_coords:
@@ -1698,8 +1721,14 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     "coords": b_coords,
                                     "color": "#10b981" if not b["shunting_flag"] else "#34d399",
                                     "group": "outgoing",
+                                    "block_id": b["block_id"],
                                     "width": 5.0,
                                 })
+
+                            next_names = [xs["name"] or xs["master_name"] for xs in exit_sigs if (xs.get("name") or xs.get("master_name"))]
+                            next_str = "/".join(next_names) if next_names else (f"Buffer/Node #{nids[-1]}" if nids else "Advance")
+                            cur_sig_str = sig["name"] or sig["master_name"] or f"Signal #{sig['signal_id']}"
+                            route_label = f"From {cur_sig_str} to {next_str}"
 
                             outgoing_blocks.append({
                                 "pk": b["pk"],
@@ -1717,6 +1746,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 "turnout_nodes": p_info["turnout_nodes"],
                                 "exit_signals": exit_sigs,
                                 "coords": b_coords,
+                                "route_label": route_label,
                             })
 
                 # 2. Resolve Security Section Overlaps & Flank Protection Paths

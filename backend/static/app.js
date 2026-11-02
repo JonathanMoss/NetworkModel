@@ -1275,12 +1275,23 @@ function drawHighlightAndPreviewOverlays() {
 
     for (const way of STATE.highlight.ways) {
       if (!way.coords || way.coords.length < 2) continue;
-      if (grpFilter !== "all" && way.group && way.group !== grpFilter) continue;
+      if (grpFilter !== "all") {
+        if (grpFilter.startsWith("approach:")) {
+          const targetBid = grpFilter.slice(9);
+          if (way.group !== "approach" || (way.block_id !== undefined && String(way.block_id) !== targetBid)) continue;
+        } else if (grpFilter.startsWith("outgoing:")) {
+          const targetBid = grpFilter.slice(9);
+          if (way.group !== "outgoing" || (way.block_id !== undefined && String(way.block_id) !== targetBid)) continue;
+        } else if (way.group && way.group !== grpFilter) {
+          continue;
+        }
+      }
 
+      const isIsolated = grpFilter.includes(":");
       ctx.strokeStyle = way.color || "#38bdf8";
-      ctx.lineWidth = way.width || 4.5;
+      ctx.lineWidth = isIsolated ? (way.width ? way.width + 1.2 : 5.8) : (way.width || 4.5);
       ctx.shadowColor = way.color || "#38bdf8";
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = isIsolated ? 16 : 12;
       ctx.setLineDash(way.dash || []);
       ctx.beginPath();
       const [sx0, sy0] = worldToScreen(way.coords[0][0], way.coords[0][1]);
@@ -1318,10 +1329,18 @@ function drawHighlightAndPreviewOverlays() {
       if (
         grpFilter !== "all" &&
         pt.group &&
-        pt.group !== "signal" &&
-        pt.group !== grpFilter
-      )
-        continue;
+        pt.group !== "signal"
+      ) {
+        if (grpFilter.startsWith("approach:")) {
+          const targetBid = grpFilter.slice(9);
+          if (pt.group !== "approach" || (pt.block_id !== undefined && String(pt.block_id) !== targetBid)) continue;
+        } else if (grpFilter.startsWith("outgoing:")) {
+          const targetBid = grpFilter.slice(9);
+          if (pt.group !== "outgoing" || (pt.block_id !== undefined && String(pt.block_id) !== targetBid)) continue;
+        } else if (pt.group !== grpFilter) {
+          continue;
+        }
+      }
       const [sx, sy] = worldToScreen(pt.x, pt.y);
       ctx.fillStyle = pt.color || "#f59e0b";
       ctx.shadowColor = pt.color || "#f59e0b";
@@ -3588,9 +3607,49 @@ function applyLazyCardCollapse(container, maxInitial = 12) {
 /* Signalling & Interlocking Control Strip & Interactive Envelope Filter */
 window.setSignalHighlightFilter = function (group) {
   STATE.highlightGroupFilter = group;
-  document.querySelectorAll(".sig-filter-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.group === group);
+  document.querySelectorAll(".sig-filter-btn, .sig-filter-control").forEach((el) => {
+    const g = el.dataset.group;
+    if (group === "all") {
+      el.classList.toggle("active", g === "all");
+    } else if (group === "approach" || group.startsWith("approach:")) {
+      el.classList.toggle("active", g === "approach");
+    } else if (group === "outgoing" || group.startsWith("outgoing:")) {
+      el.classList.toggle("active", g === "outgoing");
+    } else {
+      el.classList.toggle("active", g === group);
+    }
   });
+
+  const appControl = document.querySelector('.sig-filter-control[data-group="approach"]');
+  if (appControl) {
+    const sel = appControl.querySelector(".sig-filter-select");
+    const textSpan = appControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("approach:") ? group : "approach";
+    if (textSpan) {
+      if (group.startsWith("approach:")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `B#${group.slice(9)}` : `B#${group.slice(9)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Approach";
+      }
+    }
+  }
+
+  const outControl = document.querySelector('.sig-filter-control[data-group="outgoing"]');
+  if (outControl) {
+    const sel = outControl.querySelector(".sig-filter-select");
+    const textSpan = outControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("outgoing:") ? group : "outgoing";
+    if (textSpan) {
+      if (group.startsWith("outgoing:")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `B#${group.slice(9)}` : `B#${group.slice(9)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Protected";
+      }
+    }
+  }
+
   requestRender();
 };
 
@@ -3635,6 +3694,57 @@ function buildSignallingEnvelopeWidget(data) {
     const firstApp = appBlocks[0];
     const firstOut = outBlocks[0];
     const firstOv = overlaps[0];
+    const curSigName = (data.title || "").replace(/^Signal\s+/i, "") || "Signal";
+
+    let appControlHtml = "";
+    if (appBlocks.length) {
+      appControlHtml = `
+        <div class="sig-filter-control ${STATE.highlightGroupFilter === 'approach' || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith('approach:')) ? 'active' : ''}" data-group="approach">
+          <button class="sig-filter-btn-split" data-group="approach" onclick="setSignalHighlightFilter('approach')" title="View all approach routes">
+            <span class="sig-lamp" style="background:#38bdf8"></span>
+            <span class="sig-filter-text" data-default="Approach (${appBlocks.length})">Approach (${appBlocks.length})</span>
+          </button>
+          <div class="sig-filter-select-wrap">
+            <select class="sig-filter-select" data-parent-group="approach" onchange="setSignalHighlightFilter(this.value)" title="Select specific approach route">
+              <option value="approach" data-short="Approach (${appBlocks.length})">All Approach (${appBlocks.length})</option>
+              ${appBlocks
+                .map((b) => {
+                  const routeLabel = b.route_label || `To ${curSigName} (Block #${b.block_id})`;
+                  const shortLabel = `App B#${b.block_id}`;
+                  return `<option value="approach:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+                })
+                .join("")}
+            </select>
+            <span class="sig-select-arrow">&#9662;</span>
+          </div>
+        </div>
+      `;
+    }
+
+    let outControlHtml = "";
+    if (outBlocks.length) {
+      outControlHtml = `
+        <div class="sig-filter-control ${STATE.highlightGroupFilter === 'outgoing' || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith('outgoing:')) ? 'active' : ''}" data-group="outgoing">
+          <button class="sig-filter-btn-split" data-group="outgoing" onclick="setSignalHighlightFilter('outgoing')" title="View all protected blocks">
+            <span class="sig-lamp" style="background:#10b981"></span>
+            <span class="sig-filter-text" data-default="Protected (${outBlocks.length})">Protected (${outBlocks.length})</span>
+          </button>
+          <div class="sig-filter-select-wrap">
+            <select class="sig-filter-select" data-parent-group="outgoing" onchange="setSignalHighlightFilter(this.value)" title="Select specific protected block">
+              <option value="outgoing" data-short="Protected (${outBlocks.length})">All Protected (${outBlocks.length})</option>
+              ${outBlocks
+                .map((b) => {
+                  const routeLabel = b.route_label || `From ${curSigName} (Block #${b.block_id})`;
+                  const shortLabel = `Prot B#${b.block_id}`;
+                  return `<option value="outgoing:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+                })
+                .join("")}
+            </select>
+            <span class="sig-select-arrow">&#9662;</span>
+          </div>
+        </div>
+      `;
+    }
 
     return `
       <div class="sig-envelope-card">
@@ -3647,10 +3757,10 @@ function buildSignallingEnvelopeWidget(data) {
         </div>
 
         <div class="sig-strip-diagram">
-          <div class="sig-strip-box approach">
+          <div class="sig-strip-box approach" onclick="setSignalHighlightFilter('approach')" title="Click to view approach envelope">
             <div class="sig-strip-label">In Rear (Approach)</div>
             <div class="sig-strip-val">${
-              firstApp ? `Block #${firstApp.block_id} (${firstApp.length_meters}m)` : "None"
+              firstApp ? (firstApp.route_label ? escapeHtml(firstApp.route_label) : `Block #${firstApp.block_id} (${firstApp.length_meters}m)`) : "None"
             }</div>
             <div class="sig-strip-sub">${
               firstApp
@@ -3659,21 +3769,21 @@ function buildSignallingEnvelopeWidget(data) {
             }</div>
           </div>
 
-          <div class="sig-strip-box current">
+          <div class="sig-strip-box current" onclick="setSignalHighlightFilter('all')" title="Click to view all envelope">
             <div class="sig-strip-label">Selected Signal</div>
             <div class="sig-strip-val">${escapeHtml(data.title.replace("Signal ", ""))}</div>
             <div class="sig-strip-sub">Set ${ilock.settime || 0}s • Free ${ilock.freeingtime || 0}s</div>
           </div>
 
-          <div class="sig-strip-box outgoing">
+          <div class="sig-strip-box outgoing" onclick="setSignalHighlightFilter('outgoing')" title="Click to view protected block envelope">
             <div class="sig-strip-label">In Advance (Block)</div>
             <div class="sig-strip-val">${
-              firstOut ? `Block #${firstOut.block_id} (${firstOut.length_meters}m)` : "None"
+              firstOut ? (firstOut.route_label ? escapeHtml(firstOut.route_label) : `Block #${firstOut.block_id} (${firstOut.length_meters}m)`) : "None"
             }</div>
             <div class="sig-strip-sub">${outBlocks.length} protected route(s)</div>
           </div>
 
-          <div class="sig-strip-box overlap">
+          <div class="sig-strip-box overlap" onclick="setSignalHighlightFilter('${firstOv ? firstOv.group : 'all'}')" title="Click to view safety overlap">
             <div class="sig-strip-label">Safety Overlap</div>
             <div class="sig-strip-val">${
               firstOv ? `${firstOv.length_meters}m (${firstOv.length_yards}yd)` : "None"
@@ -3683,29 +3793,15 @@ function buildSignallingEnvelopeWidget(data) {
         </div>
 
         <div class="sig-filter-bar">
-          <button class="sig-filter-btn active" data-group="all" onclick="setSignalHighlightFilter('all')">
+          <button class="sig-filter-btn ${STATE.highlightGroupFilter === 'all' ? 'active' : ''}" data-group="all" onclick="setSignalHighlightFilter('all')">
             All Envelope
           </button>
-          ${
-            appBlocks.length
-              ? `<button class="sig-filter-btn" data-group="approach" onclick="setSignalHighlightFilter('approach')">
-                  <span class="sig-lamp" style="background:#38bdf8"></span>
-                  Approach (${appBlocks.length})
-                </button>`
-              : ""
-          }
-          ${
-            outBlocks.length
-              ? `<button class="sig-filter-btn" data-group="outgoing" onclick="setSignalHighlightFilter('outgoing')">
-                  <span class="sig-lamp" style="background:#10b981"></span>
-                  Protected Blocks (${outBlocks.length})
-                </button>`
-              : ""
-          }
+          ${appControlHtml}
+          ${outControlHtml}
           ${overlaps
             .map(
               (ov) => `
-            <button class="sig-filter-btn" data-group="${ov.group}" onclick="setSignalHighlightFilter('${ov.group}')">
+            <button class="sig-filter-btn ${STATE.highlightGroupFilter === ov.group ? 'active' : ''}" data-group="${ov.group}" onclick="setSignalHighlightFilter('${ov.group}')">
               <span class="sig-lamp" style="background:${ov.color}"></span>
               Overlap #${ov.index} (${ov.length_meters}m)
             </button>`

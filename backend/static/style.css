@@ -1237,6 +1237,24 @@ body {
   min-width: 0;
 }
 
+.sig-strip-box {
+  flex: 1;
+  min-width: 120px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.sig-strip-box:hover {
+  filter: brightness(1.2);
+  border-color: var(--accent);
+}
+
 .sig-strip-box.approach {
   border-left: 3px solid #38bdf8;
 }
@@ -1308,6 +1326,101 @@ body {
   background: rgba(56, 189, 248, 0.18);
   color: #f8fafc;
   border-color: #38bdf8;
+}
+
+/* Individual Route / Protected Block Filter Dropdown Controls */
+.sig-filter-control {
+  display: inline-flex;
+  align-items: stretch;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid var(--border-light);
+  border-radius: 5px;
+  overflow: hidden;
+  transition: all 0.12s ease;
+}
+
+.sig-filter-control:hover {
+  border-color: var(--accent);
+}
+
+.sig-filter-control.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+}
+
+.sig-filter-btn-split {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 6px 4px 8px;
+  font-size: 0.69rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: color 0.12s;
+  white-space: nowrap;
+}
+
+.sig-filter-control.active .sig-filter-btn-split {
+  color: #f8fafc;
+}
+
+.sig-filter-btn-split:hover {
+  color: var(--text-main);
+}
+
+.sig-filter-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.sig-filter-control.active .sig-filter-select-wrap {
+  border-left-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.sig-filter-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 18px 4px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  max-width: 145px;
+}
+
+.sig-filter-control.active .sig-filter-select {
+  color: #38bdf8;
+  font-weight: 700;
+}
+
+.sig-filter-select option {
+  background: #0f172a;
+  color: #f1f5f9;
+  font-size: 0.74rem;
+  padding: 4px 8px;
+}
+
+.sig-select-arrow {
+  position: absolute;
+  right: 5px;
+  font-size: 0.58rem;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.sig-filter-control.active .sig-select-arrow {
+  color: #38bdf8;
 }
 
 /* Timing Loads, Train Classes & Timetable Corridors Modal + Physics Chart */
