@@ -2281,83 +2281,9 @@ window.jumpToNwrElr = async function (elrCode) {
   }
 };
 
-/* Hover Submenu Interaction Wiring */
-hoverTooltip.addEventListener("mouseenter", () => {
-  STATE.isPointerInMenu = true;
-  if (STATE.hoverHideTimer) {
-    clearTimeout(STATE.hoverHideTimer);
-    STATE.hoverHideTimer = null;
-  }
-});
-
-hoverTooltip.addEventListener("mouseleave", () => {
-  STATE.isPointerInMenu = false;
-  STATE.hoverPreview = null;
-  hoverTooltip.classList.add("hidden");
-  requestRender();
-});
-
-function renderHoverMenu(candidates, sx, sy, reposition = true) {
-  if (!candidates.length) {
-    hoverTooltip.classList.add("hidden");
-    return;
-  }
-
-  const headerText =
-    candidates.length > 1
-      ? `${candidates.length} Overlapping Objects — Roll Over to Highlight, Click to View`
-      : `1 Object Under Cursor — Click to View`;
-
-  const activeKey = STATE.hoverPreview
-    ? `${STATE.hoverPreview.type}:${STATE.hoverPreview.id}`
-    : `${candidates[0].type}:${candidates[0].id}`;
-
-  hoverTooltip.innerHTML = `
-    <div class="hover-menu-header">
-      <span>${headerText}</span>
-    </div>
-    ${candidates
-      .map((c, idx) => {
-        const isActive = `${c.type}:${c.id}` === activeKey;
-        return `
-      <div class="hover-menu-item ${isActive ? "active" : ""}" data-idx="${idx}">
-        <span class="hover-type-badge hover-type-${escapeHtml(c.type)}">${escapeHtml(c.type.replace("nwr_", ""))}</span>
-        <div class="hover-item-body">
-          <div class="hover-item-title">${escapeHtml(c.title)}</div>
-          <div class="hover-item-sub">${escapeHtml(c.sub || "")}</div>
-        </div>
-      </div>`;
-      })
-      .join("")}
-  `;
-
-  hoverTooltip.querySelectorAll(".hover-menu-item").forEach((el) => {
-    const idx = Number(el.dataset.idx);
-    const item = candidates[idx];
-    el.addEventListener("mouseenter", () => {
-      hoverTooltip.querySelectorAll(".hover-menu-item").forEach((r) => r.classList.remove("active"));
-      el.classList.add("active");
-      STATE.hoverPreview = item;
-      requestRender();
-    });
-    el.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      STATE.isPointerInMenu = false;
-      hoverTooltip.classList.add("hidden");
-      loadAssetDetails(item.type, item.id, false);
-    });
-  });
-
-  if (reposition) {
-    const padX = 14;
-    const padY = -14;
-    const maxLeft = Math.max(10, canvas.clientWidth - 365);
-    const maxTop = Math.max(10, canvas.clientHeight - 280);
-    hoverTooltip.style.left = `${Math.min(maxLeft, sx + padX)}px`;
-    hoverTooltip.style.top = `${Math.min(maxTop, Math.max(10, sy + padY))}px`;
-    STATE.lastHoverAnchor = { sx, sy };
-  }
-  hoverTooltip.classList.remove("hidden");
+/* Cursor Hover Tooltip disabled: hovering updates cursor pointer without popup obstruction */
+if (hoverTooltip) {
+  hoverTooltip.style.display = "none";
 }
 
 /* Mouse / Wheel Pan & Zoom */
@@ -2413,7 +2339,7 @@ window.addEventListener("mouseup", (e) => {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     const [wx, wy] = screenToWorld(sx, sy);
-    handleCanvasClick(wx, wy);
+    handleCanvasClick(wx, wy, sx, sy);
   }
 });
 
@@ -2442,7 +2368,7 @@ canvas.addEventListener(
   { passive: false }
 );
 
-/* Hover Detection, Precision Pointer Cursor & Submenu */
+/* Hover Detection & Precision Pointer Cursor (No floating tooltip) */
 function handleHover(sx, sy, wx, wy) {
   if (
     sx < 0 ||
@@ -2451,227 +2377,238 @@ function handleHover(sx, sy, wx, wy) {
     sy > canvas.clientHeight
   ) {
     canvas.classList.remove("has-target");
-    if (!STATE.isPointerInMenu) {
-      hoverTooltip.classList.add("hidden");
-      STATE.hoverPreview = null;
-      requestRender();
-    }
-    return;
-  }
-
-  const menuOpen = !hoverTooltip.classList.contains("hidden");
-  if (
-    menuOpen &&
-    STATE.hoverCandidates.length > 1 &&
-    Math.hypot(sx - STATE.lastHoverAnchor.sx, sy - STATE.lastHoverAnchor.sy) < 22
-  ) {
-    canvas.classList.add("has-target");
     return;
   }
 
   const hits = findObjectsAtCursor(sx, sy, wx, wy);
-
   if (hits.length > 0) {
-    if (STATE.hoverHideTimer) {
-      clearTimeout(STATE.hoverHideTimer);
-      STATE.hoverHideTimer = null;
-    }
     canvas.classList.add("has-target");
     STATE.hoverCandidates = hits;
-    STATE.hoverPreview = hits[0];
-    STATE.hoverWorldPos = { wx, wy, sx, sy };
-    renderHoverMenu(hits, sx, sy, true);
-    requestRender();
-
-    if (STATE.hoverEnrichTimer) clearTimeout(STATE.hoverEnrichTimer);
-    STATE.hoverEnrichTimer = setTimeout(() => enrichHoverSubmenu(wx, wy, sx, sy), 130);
   } else {
     canvas.classList.remove("has-target");
-    if (STATE.hoverEnrichTimer) clearTimeout(STATE.hoverEnrichTimer);
-    if (!STATE.hoverHideTimer) {
-      STATE.hoverHideTimer = setTimeout(() => {
-        if (!STATE.isPointerInMenu) {
-          hoverTooltip.classList.add("hidden");
-          STATE.hoverCandidates = [];
-          STATE.hoverPreview = null;
-          requestRender();
-        }
-        STATE.hoverHideTimer = null;
-      }, 200);
-    }
+    STATE.hoverCandidates = [];
   }
 }
 
-async function enrichHoverSubmenu(wx, wy, sx, sy) {
-  if (!STATE.hoverCandidates.length) return;
+/* Candidate Display & Interaction Helpers */
+function getAssetIcon(type) {
+  switch (type) {
+    case "signal": return "🚦";
+    case "station": return "🚉";
+    case "platform": return "🚏";
+    case "track":
+    case "nwr_track": return "🛤️";
+    case "block": return "🔲";
+    case "node":
+    case "nwr_node": return "📍";
+    case "nwr_elr": return "🏷️";
+    case "nwr_milepost": return "📍";
+    default: return "🔹";
+  }
+}
+
+function formatAssetTypeName(type) {
+  switch (type) {
+    case "signal": return "Signal";
+    case "station": return "Station";
+    case "platform": return "Platform";
+    case "track": return "Track";
+    case "block": return "Block";
+    case "node": return "Node";
+    case "nwr_track": return "NWR Track";
+    case "nwr_node": return "NWR Node";
+    case "nwr_elr": return "ELR";
+    case "nwr_milepost": return "Milepost";
+    default: return String(type).replace("nwr_", "").toUpperCase();
+  }
+}
+
+function formatAssetSubtitle(c) {
+  if (c.sub) return c.sub;
+  if (c.type === "signal") return `Signal ID #${c.id}`;
+  if (c.type === "track") return `Track ID #${c.id}`;
+  if (c.type === "block") return `Block #${c.id}`;
+  if (c.type === "station") return `Station #${c.id}`;
+  if (c.type === "node") return `Node #${c.id}`;
+  if (c.x !== undefined && c.y !== undefined) return `(${Math.round(c.x)}, ${Math.round(c.y)})`;
+  return `ID #${c.id}`;
+}
+
+function mergeCandidates(clientHits, serverCandidates) {
+  const byKey = new Map();
+
+  // Add client hits first (they have exact canvas coordinates, label bounding boxes, etc.)
+  for (const c of clientHits || []) {
+    const key = `${c.type}:${c.id}`;
+    byKey.set(key, { ...c });
+  }
+
+  // Augment with server candidates
+  for (const s of serverCandidates || []) {
+    const key = `${s.type}:${s.id}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        type: s.type,
+        id: s.id,
+        title: s.label || `${s.type} #${s.id}`,
+        sub: s.sub || "",
+        x: s.x,
+        y: s.y,
+        previewWay: s.coords || null,
+        previewParts: s.parts || null,
+      });
+    } else {
+      if (!existing.previewWay && s.coords) existing.previewWay = s.coords;
+      if (!existing.previewParts && s.parts) existing.previewParts = s.parts;
+      if (!existing.sub && s.sub) existing.sub = s.sub;
+      if (existing.x === undefined && s.x !== undefined) existing.x = s.x;
+      if (existing.y === undefined && s.y !== undefined) existing.y = s.y;
+    }
+  }
+
+  const list = Array.from(byKey.values());
+
+  const typeOrder = {
+    signal: 1,
+    station: 2,
+    platform: 3,
+    block: 4,
+    track: 5,
+    nwr_track: 5,
+    nwr_elr: 6,
+    nwr_milepost: 7,
+    node: 8,
+    nwr_node: 8,
+    edge: 9,
+  };
+
+  list.sort((a, b) => {
+    const pa = typeOrder[a.type] || 99;
+    const pb = typeOrder[b.type] || 99;
+    return pa - pb;
+  });
+
+  return list;
+}
+
+function renderPickCandidates(cands, activeItem) {
+  const candBar = document.getElementById("pick-candidates");
+  if (!candBar) return;
+  if (!cands || cands.length <= 1) {
+    candBar.classList.add("hidden");
+    candBar.innerHTML = "";
+    return;
+  }
+
+  const activeKey = activeItem
+    ? `${activeItem.type}:${activeItem.id}`
+    : `${cands[0].type}:${cands[0].id}`;
+
+  candBar.innerHTML = `
+    <div class="pick-candidates-header">
+      <div class="pick-candidates-title-group">
+        <span class="pick-candidates-badge">${cands.length}</span>
+        <span class="pick-candidates-heading">Overlapping Objects at Click</span>
+      </div>
+      <span class="pick-candidates-hint">Hover to highlight • Click to inspect</span>
+    </div>
+    <div class="pick-candidates-list">
+      ${cands
+        .map((c, i) => {
+          const key = `${c.type}:${c.id}`;
+          const isActive = key === activeKey;
+          const icon = getAssetIcon(c.type);
+          const typeName = formatAssetTypeName(c.type);
+          const subtitle = c.sub || formatAssetSubtitle(c);
+          return `
+            <button class="candidate-row ${isActive ? "active" : ""}" data-idx="${i}" data-type="${escapeHtml(c.type)}" data-id="${escapeHtml(String(c.id))}">
+              <span class="candidate-icon candidate-icon-${escapeHtml(c.type)}">${icon}</span>
+              <div class="candidate-info">
+                <div class="candidate-main">
+                  <span class="candidate-type-badge candidate-type-${escapeHtml(c.type)}">${escapeHtml(typeName)}</span>
+                  <span class="candidate-label" title="${escapeHtml(c.title || c.label)}">${escapeHtml(c.title || c.label)}</span>
+                </div>
+                ${subtitle ? `<div class="candidate-sub" title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</div>` : ""}
+              </div>
+              <span class="candidate-arrow">&rarr;</span>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  candBar.classList.remove("hidden");
+
+  candBar.querySelectorAll(".candidate-row").forEach((btn) => {
+    const idx = parseInt(btn.dataset.idx, 10);
+    const item = cands[idx];
+    btn.addEventListener("mouseenter", () => {
+      if (item) {
+        STATE.hoverPreview = item;
+        requestRender();
+      }
+    });
+    btn.addEventListener("mouseleave", () => {
+      if (STATE.hoverPreview === item) {
+        STATE.hoverPreview = null;
+        requestRender();
+      }
+    });
+    btn.addEventListener("click", () => {
+      candBar.querySelectorAll(".candidate-row").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
+    });
+  });
+}
+
+/* Click Picking & Asset Inspection */
+async function handleCanvasClick(wx, wy, sx, sy) {
+  if (sx === undefined || sy === undefined) {
+    const [scx, scy] = worldToScreen(wx, wy);
+    sx = scx;
+    sy = scy;
+  }
+
+  // 1. Client-side hits at click location
+  const clientHits = findObjectsAtCursor(sx, sy, wx, wy);
+
+  // 2. Fetch server database candidates at click coordinates
   const radius = Math.max(10, 14 / STATE.zoom);
   const endpoint = STATE.activeView === "nwr" ? "/api/nwr/pick" : "/api/pick";
+  let serverCandidates = [];
   try {
     const res = await fetch(
       `${endpoint}?x=${wx.toFixed(1)}&y=${wy.toFixed(1)}&radius=${radius.toFixed(1)}`
     );
-    if (!res.ok) return;
-    const data = await res.json();
-    const byKey = new Map(STATE.hoverCandidates.map((c) => [`${c.type}:${c.id}`, c]));
-    let updated = false;
-    for (const c of data.candidates || []) {
-      const key = `${c.type}:${c.id}`;
-      const existing = byKey.get(key);
-      if (!existing) {
-        const candObj = {
-          type: c.type,
-          id: c.id,
-          title: c.label,
-          sub: `Database topology match at cursor`,
-          x: c.x,
-          y: c.y,
-          previewWay: c.coords || null,
-          previewParts: c.parts || null,
-        };
-        byKey.set(key, candObj);
-        STATE.hoverCandidates.push(candObj);
-        updated = true;
-      } else {
-        if (!existing.previewWay && c.coords) {
-          existing.previewWay = c.coords;
-          updated = true;
-        }
-        if (!existing.previewParts && c.parts) {
-          existing.previewParts = c.parts;
-          updated = true;
-        }
-      }
-    }
-    if (updated) {
-      STATE.hoverCandidates.sort((a, b) => {
-        const aPriority = a.type === "block" || a.type === "route" ? 0 : 1;
-        const bPriority = b.type === "block" || b.type === "route" ? 0 : 1;
-        return aPriority - bPriority;
-      });
-      if (!STATE.isPointerInMenu) {
-        STATE.hoverPreview = STATE.hoverCandidates[0];
-      }
-      if (!hoverTooltip.classList.contains("hidden")) {
-        renderHoverMenu(STATE.hoverCandidates, sx, sy, false);
-        requestRender();
-      }
+    if (res.ok) {
+      const data = await res.json();
+      serverCandidates = data.candidates || [];
     }
   } catch (err) {
     // Ignore transient network errors
   }
-}
 
-/* Click Picking & Asset Inspection */
-async function handleCanvasClick(wx, wy) {
-  if (STATE.hoverCandidates.length > 0) {
-    const cands = [...STATE.hoverCandidates];
-    const candBar = document.getElementById("pick-candidates");
-    if (cands.length > 1) {
-      candBar.innerHTML =
-        `<span>Overlapping at click (${cands.length}):</span>` +
-        cands
-          .slice(0, 8)
-          .map(
-            (c, i) =>
-              `<button class="candidate-chip ${i === 0 ? "active" : ""}" data-idx="${i}" data-type="${c.type}" data-id="${c.id}">${escapeHtml(c.title)}</button>`
-          )
-          .join("");
-      candBar.classList.remove("hidden");
-      candBar.querySelectorAll(".candidate-chip").forEach((btn) => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        btn.addEventListener("mouseenter", () => {
-          if (cands[idx]) {
-            STATE.hoverPreview = cands[idx];
-            requestRender();
-          }
-        });
-        btn.addEventListener("mouseleave", () => {
-          if (STATE.hoverPreview === cands[idx]) {
-            STATE.hoverPreview = null;
-            requestRender();
-          }
-        });
-        btn.addEventListener("click", () => {
-          candBar.querySelectorAll(".candidate-chip").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
-        });
-      });
-    } else {
-      candBar.classList.add("hidden");
-    }
-    const target = STATE.hoverPreview || cands[0];
-    await loadAssetDetails(target.type, target.id, false);
+  // 3. Merge candidates with geometry and priority
+  const cands = mergeCandidates(clientHits, serverCandidates);
+
+  if (cands.length === 0) {
+    renderPickCandidates([], null);
     return;
   }
 
-  const radius = Math.max(12, 18 / STATE.zoom);
-  const endpoint = STATE.activeView === "nwr" ? "/api/nwr/pick" : "/api/pick";
-  try {
-    const res = await fetch(
-      `${endpoint}?x=${wx.toFixed(1)}&y=${wy.toFixed(1)}&radius=${radius.toFixed(1)}`
-    );
-    if (!res.ok) return;
-    const data = await res.json();
-    const cands = data.candidates || [];
-    const candBar = document.getElementById("pick-candidates");
-
-    if (!cands.length) {
-      candBar.classList.add("hidden");
-      return;
-    }
-
-    if (cands.length > 1) {
-      candBar.innerHTML =
-        `<span>Nearby at click:</span>` +
-        cands
-          .slice(0, 8)
-          .map(
-            (c, i) =>
-              `<button class="candidate-chip ${i === 0 ? "active" : ""}" data-idx="${i}" data-type="${c.type}" data-id="${c.id}">${escapeHtml(c.label)}</button>`
-          )
-          .join("");
-      candBar.classList.remove("hidden");
-      candBar.querySelectorAll(".candidate-chip").forEach((btn) => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        const item = cands[idx];
-        const previewItem = item
-          ? {
-              type: item.type,
-              id: item.id,
-              title: item.label,
-              x: item.x,
-              y: item.y,
-              previewWay: item.coords || null,
-              previewParts: item.parts || null,
-            }
-          : null;
-        btn.addEventListener("mouseenter", () => {
-          if (previewItem) {
-            STATE.hoverPreview = previewItem;
-            requestRender();
-          }
-        });
-        btn.addEventListener("mouseleave", () => {
-          if (STATE.hoverPreview === previewItem) {
-            STATE.hoverPreview = null;
-            requestRender();
-          }
-        });
-        btn.addEventListener("click", () => {
-          candBar.querySelectorAll(".candidate-chip").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          loadAssetDetails(btn.dataset.type, btn.dataset.id, false);
-        });
-      });
-    } else {
-      candBar.classList.add("hidden");
-    }
-
+  if (cands.length === 1) {
+    renderPickCandidates([], null);
     await loadAssetDetails(cands[0].type, cands[0].id, false);
-  } catch (err) {
-    console.error(err);
+    return;
   }
+
+  // Multiple candidates: load primary candidate into inspector and display the clean, aligned, scrollable list
+  const primary = cands[0];
+  renderPickCandidates(cands, primary);
+  await loadAssetDetails(primary.type, primary.id, false);
 }
 
 async function loadAssetDetails(assetType, assetId, shouldFly = true) {
@@ -3862,7 +3799,7 @@ function buildSignallingEnvelopeWidget(data) {
           <span>${rel.length_meters || 0} m (${Math.round((rel.length_meters || 0) / 0.9144)} yd)</span>
         </span>
       </div>
-      <div class="sig-strip-diagram">
+      <div class="sig-strip-diagram cols-3">
         <div class="sig-strip-box approach">
           <div class="sig-strip-label">Entry Signal</div>
           <div class="sig-strip-val">${
