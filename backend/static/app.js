@@ -1276,7 +1276,9 @@ function drawHighlightAndPreviewOverlays() {
     for (const way of STATE.highlight.ways) {
       if (!way.coords || way.coords.length < 2) continue;
       if (grpFilter !== "all") {
-        if (grpFilter.startsWith("approach:")) {
+        if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
+          if (!way.group || !way.group.startsWith("overlap")) continue;
+        } else if (grpFilter.startsWith("approach:")) {
           const targetBid = grpFilter.slice(9);
           if (way.group !== "approach" || (way.block_id !== undefined && String(way.block_id) !== targetBid)) continue;
         } else if (grpFilter.startsWith("outgoing:")) {
@@ -1287,7 +1289,7 @@ function drawHighlightAndPreviewOverlays() {
         }
       }
 
-      const isIsolated = grpFilter.includes(":");
+      const isIsolated = grpFilter.includes(":") || grpFilter.startsWith("overlap_");
       ctx.strokeStyle = way.color || "#38bdf8";
       ctx.lineWidth = isIsolated ? (way.width ? way.width + 1.2 : 5.8) : (way.width || 4.5);
       ctx.shadowColor = way.color || "#38bdf8";
@@ -1331,7 +1333,9 @@ function drawHighlightAndPreviewOverlays() {
         pt.group &&
         pt.group !== "signal"
       ) {
-        if (grpFilter.startsWith("approach:")) {
+        if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
+          if (!pt.group || !pt.group.startsWith("overlap")) continue;
+        } else if (grpFilter.startsWith("approach:")) {
           const targetBid = grpFilter.slice(9);
           if (pt.group !== "approach" || (pt.block_id !== undefined && String(pt.block_id) !== targetBid)) continue;
         } else if (grpFilter.startsWith("outgoing:")) {
@@ -3615,6 +3619,8 @@ window.setSignalHighlightFilter = function (group) {
       el.classList.toggle("active", g === "approach");
     } else if (group === "outgoing" || group.startsWith("outgoing:")) {
       el.classList.toggle("active", g === "outgoing");
+    } else if (group === "all_overlaps" || group === "overlaps" || group.startsWith("overlap_")) {
+      el.classList.toggle("active", g === "overlaps");
     } else {
       el.classList.toggle("active", g === group);
     }
@@ -3646,6 +3652,21 @@ window.setSignalHighlightFilter = function (group) {
         textSpan.textContent = opt ? opt.dataset.short || `B#${group.slice(9)}` : `B#${group.slice(9)}`;
       } else {
         textSpan.textContent = textSpan.dataset.default || "Protected";
+      }
+    }
+  }
+
+  const ovControl = document.querySelector('.sig-filter-control[data-group="overlaps"]');
+  if (ovControl) {
+    const sel = ovControl.querySelector(".sig-filter-select");
+    const textSpan = ovControl.querySelector(".sig-filter-text");
+    if (sel) sel.value = group.startsWith("overlap_") ? group : "all_overlaps";
+    if (textSpan) {
+      if (group.startsWith("overlap_")) {
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        textSpan.textContent = opt ? opt.dataset.short || `Ov #${group.slice(8)}` : `Ov #${group.slice(8)}`;
+      } else {
+        textSpan.textContent = textSpan.dataset.default || "Overlaps";
       }
     }
   }
@@ -3696,55 +3717,79 @@ function buildSignallingEnvelopeWidget(data) {
     const firstOv = overlaps[0];
     const curSigName = (data.title || "").replace(/^Signal\s+/i, "") || "Signal";
 
-    let appControlHtml = "";
-    if (appBlocks.length) {
-      appControlHtml = `
-        <div class="sig-filter-control ${STATE.highlightGroupFilter === 'approach' || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith('approach:')) ? 'active' : ''}" data-group="approach">
-          <button class="sig-filter-btn-split" data-group="approach" onclick="setSignalHighlightFilter('approach')" title="View all approach routes">
-            <span class="sig-lamp" style="background:#38bdf8"></span>
-            <span class="sig-filter-text" data-default="Approach (${appBlocks.length})">Approach (${appBlocks.length})</span>
-          </button>
-          <div class="sig-filter-select-wrap">
-            <select class="sig-filter-select" data-parent-group="approach" onchange="setSignalHighlightFilter(this.value)" title="Select specific approach route">
-              <option value="approach" data-short="Approach (${appBlocks.length})">All Approach (${appBlocks.length})</option>
-              ${appBlocks
-                .map((b) => {
-                  const routeLabel = b.route_label || `To ${curSigName} (Block #${b.block_id})`;
-                  const shortLabel = `App B#${b.block_id}`;
-                  return `<option value="approach:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
-                })
-                .join("")}
-            </select>
-            <span class="sig-select-arrow">&#9662;</span>
-          </div>
+    // 1. Approach Routes Control
+    const hasApp = appBlocks.length > 0;
+    const isAppActive = STATE.highlightGroupFilter === "approach" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("approach:"));
+    const appControlHtml = `
+      <div class="sig-filter-control ${!hasApp ? 'disabled' : ''} ${isAppActive ? 'active' : ''}" data-group="approach">
+        <button class="sig-filter-btn-split" data-group="approach" ${hasApp ? "onclick=\"setSignalHighlightFilter('approach')\"" : "disabled"} title="${hasApp ? 'View all approach routes' : 'No approach blocks in database'}">
+          <span class="sig-lamp" style="background:#38bdf8"></span>
+          <span class="sig-filter-text" data-default="Approach (${appBlocks.length})">Approach (${appBlocks.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="approach" ${hasApp ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific approach route">
+            <option value="approach" data-short="Approach (${appBlocks.length})">All Approach (${appBlocks.length})</option>
+            ${appBlocks
+              .map((b) => {
+                const routeLabel = b.route_label || `To ${curSigName} (Block #${b.block_id})`;
+                const shortLabel = `App B#${b.block_id}`;
+                return `<option value="approach:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
         </div>
-      `;
-    }
+      </div>
+    `;
 
-    let outControlHtml = "";
-    if (outBlocks.length) {
-      outControlHtml = `
-        <div class="sig-filter-control ${STATE.highlightGroupFilter === 'outgoing' || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith('outgoing:')) ? 'active' : ''}" data-group="outgoing">
-          <button class="sig-filter-btn-split" data-group="outgoing" onclick="setSignalHighlightFilter('outgoing')" title="View all protected blocks">
-            <span class="sig-lamp" style="background:#10b981"></span>
-            <span class="sig-filter-text" data-default="Protected (${outBlocks.length})">Protected (${outBlocks.length})</span>
-          </button>
-          <div class="sig-filter-select-wrap">
-            <select class="sig-filter-select" data-parent-group="outgoing" onchange="setSignalHighlightFilter(this.value)" title="Select specific protected block">
-              <option value="outgoing" data-short="Protected (${outBlocks.length})">All Protected (${outBlocks.length})</option>
-              ${outBlocks
-                .map((b) => {
-                  const routeLabel = b.route_label || `From ${curSigName} (Block #${b.block_id})`;
-                  const shortLabel = `Prot B#${b.block_id}`;
-                  return `<option value="outgoing:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
-                })
-                .join("")}
-            </select>
-            <span class="sig-select-arrow">&#9662;</span>
-          </div>
+    // 2. Outgoing / Protected Blocks Control
+    const hasOut = outBlocks.length > 0;
+    const isOutActive = STATE.highlightGroupFilter === "outgoing" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("outgoing:"));
+    const outControlHtml = `
+      <div class="sig-filter-control ${!hasOut ? 'disabled' : ''} ${isOutActive ? 'active' : ''}" data-group="outgoing">
+        <button class="sig-filter-btn-split" data-group="outgoing" ${hasOut ? "onclick=\"setSignalHighlightFilter('outgoing')\"" : "disabled"} title="${hasOut ? 'View all protected blocks in advance' : 'No protected blocks ahead in database'}">
+          <span class="sig-lamp" style="background:#10b981"></span>
+          <span class="sig-filter-text" data-default="Protected (${outBlocks.length})">Protected (${outBlocks.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="outgoing" ${hasOut ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific protected block">
+            <option value="outgoing" data-short="Protected (${outBlocks.length})">All Protected (${outBlocks.length})</option>
+            ${outBlocks
+              .map((b) => {
+                const routeLabel = b.route_label || `From ${curSigName} (Block #${b.block_id})`;
+                const shortLabel = `Prot B#${b.block_id}`;
+                return `<option value="outgoing:${b.block_id}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(routeLabel)} (B#${b.block_id} • ${b.length_meters}m)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
         </div>
-      `;
-    }
+      </div>
+    `;
+
+    // 3. Safety Overlaps Control
+    const hasOv = overlaps.length > 0;
+    const isOvActive = STATE.highlightGroupFilter === "all_overlaps" || STATE.highlightGroupFilter === "overlaps" || (STATE.highlightGroupFilter && STATE.highlightGroupFilter.startsWith("overlap_"));
+    const ovControlHtml = `
+      <div class="sig-filter-control ${!hasOv ? 'disabled' : ''} ${isOvActive ? 'active' : ''}" data-group="overlaps">
+        <button class="sig-filter-btn-split" data-group="overlaps" ${hasOv ? "onclick=\"setSignalHighlightFilter('all_overlaps')\"" : "disabled"} title="${hasOv ? 'View all safety overlaps' : 'No safety overlaps defined'}">
+          <span class="sig-lamp" style="background:#d946ef"></span>
+          <span class="sig-filter-text" data-default="Overlaps (${overlaps.length})">Overlaps (${overlaps.length})</span>
+        </button>
+        <div class="sig-filter-select-wrap">
+          <select class="sig-filter-select" data-parent-group="overlaps" ${hasOv ? 'onchange="setSignalHighlightFilter(this.value)"' : 'disabled'} title="Select specific safety overlap">
+            <option value="all_overlaps" data-short="Overlaps (${overlaps.length})">All Overlaps (${overlaps.length})</option>
+            ${overlaps
+              .map((ov) => {
+                const shortLabel = `Overlap #${ov.index}`;
+                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">Overlap #${ov.index} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
+              })
+              .join("")}
+          </select>
+          <span class="sig-select-arrow">&#9662;</span>
+        </div>
+      </div>
+    `;
 
     return `
       <div class="sig-envelope-card">
@@ -3798,15 +3843,7 @@ function buildSignallingEnvelopeWidget(data) {
           </button>
           ${appControlHtml}
           ${outControlHtml}
-          ${overlaps
-            .map(
-              (ov) => `
-            <button class="sig-filter-btn ${STATE.highlightGroupFilter === ov.group ? 'active' : ''}" data-group="${ov.group}" onclick="setSignalHighlightFilter('${ov.group}')">
-              <span class="sig-lamp" style="background:${ov.color}"></span>
-              Overlap #${ov.index} (${ov.length_meters}m)
-            </button>`
-            )
-            .join("")}
+          ${ovControlHtml}
         </div>
       </div>
     `;

@@ -1549,38 +1549,32 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "shape": "signal",
                     })
 
-                # 1. Resolve Approach Blocks & Protected Outgoing Blocks connected at anchor_nid
+                # 1. Resolve Approach Blocks & Protected Outgoing Blocks connected at signal nodes
                 approach_blocks = []
                 outgoing_blocks = []
-                if anchor_nid:
+                sig_nids = set(nid for nid in (sig.get("end_node_id"), sig.get("start_node_id"), sig.get("point_node_id")) if nid is not None)
+                if sig_nids:
                     cur.execute(
                         """
                         SELECT pk, block_id, line_id, pre_signal_distance, sight_distance,
                                priority, atc_length, atc_flag, moving_block, shunting_flag,
                                additional_aspects, node_ids, coords
                         FROM blocks
-                        WHERE %s = ANY(node_ids)
+                        WHERE node_ids && %s::integer[]
                         ORDER BY shunting_flag ASC, block_id ASC
-                        LIMIT 40
+                        LIMIT 50
                         """,
-                        (anchor_nid,),
+                        (list(sig_nids),),
                     )
                     cand_blocks = cur.fetchall()
                     for b in cand_blocks:
                         nids = b["node_ids"] or []
                         if not nids:
                             continue
-                        # Approach block terminating at this signal: ends at anchor_nid (and second-to-last is start_node_id if directed)
-                        is_approach = (
-                            nids[-1] == anchor_nid
-                            and (not sig["start_node_id"] or len(nids) < 2 or nids[-2] == sig["start_node_id"])
-                        )
-                        # Outgoing block governed by this signal: starts at anchor_nid (going forward, not back to start_node_id)
-                        # or starts with [start_node_id, end_node_id, ...]
-                        is_outgoing = (
-                            (nids[0] == anchor_nid and (len(nids) < 2 or nids[1] != sig["start_node_id"]))
-                            or (sig["start_node_id"] and len(nids) >= 2 and nids[0] == sig["start_node_id"] and nids[1] == anchor_nid)
-                        )
+                        # Approach block terminating at this signal: ends at one of the signal nodes
+                        is_approach = nids[-1] in sig_nids and nids[0] not in sig_nids
+                        # Outgoing block governed by this signal: starts at one of the signal nodes
+                        is_outgoing = nids[0] in sig_nids and nids[-1] not in sig_nids
 
                         if not is_approach and not is_outgoing:
                             continue
