@@ -67,6 +67,8 @@
             <option value="track_type">Track ID Type (Main Fast / Slow / Loop / Goods / Siding)</option>
             <option value="direction">Track Direction (Up / Down / Bi-Directional)</option>
             <option value="ownership">Ownership (Network Rail vs Third Party)</option>
+            <option value="curvature">Curvature Radius (Tight ≤400m / Med ≤1200m / Straight)</option>
+            <option value="elevation">Elevation Profile (Lowland → High Upland)</option>
           </select>
         </label>
 
@@ -388,6 +390,55 @@
               <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_waymarks">+</button>
             </div>
             <select class="lbl-orient-select" data-layer="nwr_waymarks" title="Milepost Waymark label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Network Fusion (GeoFurlong / Alan Morrison) Layers -->
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-curvature" checked />
+            <span class="dot" style="background:#f43f5e"></span>
+            <span>Track Curvature &amp; Cant</span>
+            <small>On Track Click</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nf_curvature">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nf_curvature">−</button>
+              <span class="lbl-scale-readout" data-readout="nf_curvature">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nf_curvature">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nf_curvature" title="Curvature label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-nf-points" />
+            <span class="dot" style="background:#06b6d4"></span>
+            <span>Tenth-Mile Points (Elev/Climate)</span>
+            <small>On Track Click</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nf_points">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nf_points">−</button>
+              <span class="lbl-scale-readout" data-readout="nf_points">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nf_points">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nf_points" title="NF Point label orientation">
               <option value="0">0° Horiz</option>
               <option value="-45">-45° Slant</option>
               <option value="-30">-30° Slant</option>

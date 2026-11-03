@@ -5,6 +5,8 @@ XML_p.xml
 TPS_Data.tar.gz
 NWR_TrackModel*/
 NWR_TrackModel*.zip
+network_fusion*/
+network_fusion*.zip
 data/
 ref_data/
 

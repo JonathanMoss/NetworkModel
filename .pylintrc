@@ -1,0 +1,37 @@
+[MAIN]
+# Allow C extensions like orjson, lxml, and psycopg to be introspected dynamically
+extension-pkg-allow-list=orjson,lxml,psycopg
+
+# Output format and reporting
+output-format=text
+reports=no
+score=yes
+
+[MESSAGES CONTROL]
+# Focus on code correctness, undefined variables, bad imports, and type safety
+disable=
+    not-context-manager,
+    line-too-long,
+    too-many-lines,
+    missing-module-docstring,
+    missing-function-docstring,
+    missing-class-docstring,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-nested-blocks,
+    too-many-return-statements,
+    broad-exception-caught,
+    invalid-name,
+    no-else-return,
+    consider-using-min-builtin,
+    consider-using-max-builtin,
+    global-statement,
+    unused-argument,
+    trailing-newlines,
+    duplicate-code
+
+[FORMAT]
+max-line-length=120

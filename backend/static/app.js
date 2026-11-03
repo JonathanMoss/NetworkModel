@@ -39,6 +39,8 @@ const STATE = {
     elrs: true,
     nodes: true,
     waymarks: true,
+    curvature: true,
+    nf_points: false,
   },
 
   labelScale: {
@@ -52,6 +54,8 @@ const STATE = {
     nwr_elrs: 1.0,
     nwr_waymarks: 1.0,
     nwr_nodes: 1.0,
+    nf_curvature: 1.0,
+    nf_points: 1.0,
   },
 
   labelOrientation: {
@@ -65,6 +69,8 @@ const STATE = {
     nwr_elrs: 0,
     nwr_waymarks: 0,
     nwr_nodes: 0,
+    nf_curvature: 0,
+    nf_points: 0,
   },
 
   viewportData: {
@@ -81,6 +87,8 @@ const STATE = {
     centrelines: [],
     nodes: [],
     waymarks: [],
+    curvature: [],
+    nf_points: [],
     bbox: null,
   },
   viewportTimer: null,
@@ -96,6 +104,8 @@ const STATE = {
   drawnNwrElrLabels: [],
   drawnNwrWaymarkLabels: [],
   drawnNwrNodeLabels: [],
+  drawnNfCurvatureLabels: [],
+  drawnNfPointLabels: [],
 
   // Hover submenu & live preview state
   hoverCandidates: [],
@@ -295,8 +305,47 @@ function getEdgeColor(vmax, electrified, gradient, vpCount = 0) {
   return "#94a3b8";
 }
 
-function getNwrTrackColor(trackId, ownerCodeOrStr) {
+function getCurvatureColor(radiusAvgM) {
+  if (radiusAvgM === null || radiusAvgM === undefined) return "#64748b";
+  const r = Number(radiusAvgM);
+  if (r <= 400) return "#f43f5e"; // Extremely/Very Tight
+  if (r <= 800) return "#f97316"; // Moderately Tight
+  if (r <= 1200) return "#f59e0b"; // Moderate
+  if (r <= 2500) return "#06b6d4"; // Moderately Flat
+  return "#3b82f6"; // Flat / Straight
+}
+
+function getElevationColor(elevM) {
+  if (elevM === null || elevM === undefined) return "#64748b";
+  const e = Number(elevM);
+  if (e <= 30) return "#22c55e";   // Coastal / Lowland
+  if (e <= 100) return "#84cc16";  // Gentle plain
+  if (e <= 200) return "#eab308";  // Rolling hills
+  if (e <= 300) return "#f97316";  // High moorland
+  return "#ec4899";                // Mountain summit
+}
+
+function getNwrTrackColor(trackId, ownerCodeOrStr, elr) {
   const tid = String(trackId || "");
+  const elrCode = String(elr || "").toUpperCase();
+  const fusionStats = (STATE.nwrOverview && STATE.nwrOverview.elr_fusion_stats) || {};
+  const elrStat = fusionStats[elrCode];
+
+  if (STATE.nwrColorMode === "curvature") {
+    if (elrStat) {
+      const r = elrStat.avg_r ?? elrStat.min_r;
+      if (r !== undefined && r !== null) return getCurvatureColor(r);
+    }
+    return "#64748b";
+  }
+
+  if (STATE.nwrColorMode === "elevation") {
+    if (elrStat && elrStat.avg_elev !== undefined && elrStat.avg_elev !== null) {
+      return getElevationColor(elrStat.avg_elev);
+    }
+    return "#64748b";
+  }
+
   if (STATE.nwrColorMode === "ownership") {
     if (typeof ownerCodeOrStr === "number") {
       if (ownerCodeOrStr === 0) return "#38bdf8";
@@ -346,6 +395,24 @@ function updateLegend() {
         ["#38bdf8", "Up Direction (1xxx)"],
         ["#f97316", "Down Direction (2xxx)"],
         ["#a855f7", "Reversible / Bi-Directional (3xxx)"],
+      ];
+    } else if (STATE.nwrColorMode === "curvature") {
+      items = [
+        ["#f43f5e", "Tight Curve (≤ 400 m)"],
+        ["#f97316", "Moderately Tight (401–800 m)"],
+        ["#f59e0b", "Moderate Curve (801–1,200 m)"],
+        ["#06b6d4", "Moderately Flat (1,201–2,500 m)"],
+        ["#3b82f6", "Flat / Straight (> 2,500 m)"],
+        ["#64748b", "No Fusion Data / Other"],
+      ];
+    } else if (STATE.nwrColorMode === "elevation") {
+      items = [
+        ["#22c55e", "Lowland / Coastal (≤ 30 m)"],
+        ["#84cc16", "Undulating Plain (31–100 m)"],
+        ["#eab308", "Rolling Hills (101–200 m)"],
+        ["#f97316", "High Moorland (201–300 m)"],
+        ["#ec4899", "Mountain Summit (> 300 m)"],
+        ["#64748b", "No Fusion Data / Other"],
       ];
     } else {
       items = [
@@ -958,6 +1025,71 @@ function renderSchematic() {
 /* ============================================================================
    VIEW 2: NWR GEOSPATIAL TRACK MODEL RENDER LOOP (OSGB36 BRITISH NATIONAL GRID)
    ============================================================================ */
+function getHighlightedTrackFusionData() {
+  if (!STATE.selectedAsset) return null;
+  const sa = STATE.selectedAsset;
+  const isTrack =
+    sa.asset_type === "nwr_centreline" ||
+    sa.asset_type === "nwr_elr" ||
+    sa.asset_type === "track" ||
+    sa.asset_type === "edge" ||
+    sa.asset_type === "nf_curvature" ||
+    sa.asset_type === "nf_point";
+  if (!isTrack) return null;
+
+  const hasHighlight =
+    (STATE.highlight.ways && STATE.highlight.ways.length > 0) ||
+    (STATE.highlight.segments && STATE.highlight.segments.length > 0) ||
+    (STATE.highlight.points && STATE.highlight.points.length > 0);
+  if (!hasHighlight) return null;
+
+  const nf = sa.related?.network_fusion || {};
+  let curvList = Array.isArray(nf.curvature) ? [...nf.curvature] : [];
+  let ptList = Array.isArray(nf.points) ? [...nf.points] : [];
+
+  if (sa.asset_type === "nf_curvature" && sa.raw_attrs) {
+    if (!curvList.some((c) => (c.pk || c[0]) === (sa.raw_attrs.pk || sa.id))) {
+      curvList.push(sa.raw_attrs);
+    }
+  }
+  if (sa.asset_type === "nf_point" && sa.raw_attrs) {
+    if (!ptList.some((p) => (p.pk || p[0]) === (sa.raw_attrs.pk || sa.id))) {
+      ptList.push(sa.raw_attrs);
+    }
+  }
+
+  const selElr =
+    (sa.decoded && sa.decoded["Engineer's Line Reference (ELR)"]) ||
+    sa.raw_attrs?.ELR ||
+    sa.elr ||
+    (sa.related?.elr_record && sa.related.elr_record.elr);
+
+  if (selElr && (!curvList.length || !ptList.length)) {
+    const elrUpper = String(selElr).toUpperCase();
+    if (!curvList.length && STATE.nwrViewportData?.curvature) {
+      for (const c of STATE.nwrViewportData.curvature) {
+        const cElr = c.elr || c[1];
+        if (cElr && String(cElr).toUpperCase() === elrUpper) {
+          curvList.push(c);
+        }
+      }
+    }
+    if (!ptList.length && STATE.nwrViewportData?.nf_points) {
+      for (const p of STATE.nwrViewportData.nf_points) {
+        const pElr = p.elr || p[1];
+        if (pElr && String(pElr).toUpperCase() === elrUpper) {
+          ptList.push(p);
+        }
+      }
+    }
+  }
+
+  return {
+    curvature: curvList,
+    points: ptList,
+  };
+}
+
 function renderNwrModel() {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -966,17 +1098,19 @@ function renderNwrModel() {
   STATE.drawnNwrElrLabels = [];
   STATE.drawnNwrWaymarkLabels = [];
   STATE.drawnNwrNodeLabels = [];
+  STATE.drawnNfCurvatureLabels = [];
+  STATE.drawnNfPointLabels = [];
 
   if (!STATE.nwrOverview) return;
 
   const bbox = getViewportBBox(0.05);
   const zoom = STATE.zoom;
-  const useMicro = zoom >= 0.025 && STATE.nwrViewportData.centrelines.length > 0;
+  const useDetailedCentrelines = zoom >= 0.008 && STATE.nwrViewportData.centrelines && STATE.nwrViewportData.centrelines.length > 0;
 
   // 1. NWR_ELRs Reference Lines
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
     ctx.strokeStyle = "rgba(168, 85, 247, 0.35)";
-    ctx.lineWidth = useMicro ? 2.5 : 1.2;
+    ctx.lineWidth = useDetailedCentrelines ? 2.5 : 1.2;
     ctx.beginPath();
     for (const elr of STATE.nwrOverview.elrs) {
       if (
@@ -1001,7 +1135,7 @@ function renderNwrModel() {
 
   // 2. NWR_TrackCentreLines (Macro links when zoomed out, full polylines when zoomed in)
   if (STATE.nwrLayers.centrelines) {
-    if (!useMicro) {
+    if (!useDetailedCentrelines) {
       const batches = new Map();
       for (const m of STATE.nwrOverview.macro_links) {
         // [fid, elr, track_id, own_code, x0, y0, x1, y1]
@@ -1016,7 +1150,7 @@ function renderNwrModel() {
           Math.min(y0, y1) > bbox.max_y
         )
           continue;
-        const col = getNwrTrackColor(m[2], m[3]);
+        const col = getNwrTrackColor(m[2], m[3], m[1]);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -1042,7 +1176,7 @@ function renderNwrModel() {
         // [fid, asset_id, elr, track_id, s_my, e_my, owner, coords, len_m]
         const coords = cl[7];
         if (!coords || coords.length < 2) continue;
-        const col = getNwrTrackColor(cl[3], cl[6]);
+        const col = getNwrTrackColor(cl[3], cl[6], cl[2]);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -1067,8 +1201,162 @@ function renderNwrModel() {
     }
   }
 
-  // 3. NWR_TrackNodes (Valency 1-4)
-  if (STATE.nwrLayers.nodes && useMicro && zoom >= 0.06 && STATE.nwrViewportData.nodes.length) {
+  const highlightedFusion = getHighlightedTrackFusionData();
+
+  // 3. Network Fusion Track Curvature & Cant Segments (Contextual: shown ONLY when a track is clicked/highlighted AND layer is checked)
+  if (STATE.nwrLayers.curvature && highlightedFusion && highlightedFusion.curvature.length > 0) {
+    const curvBatches = new Map();
+    for (const c of highlightedFusion.curvature) {
+      const x0 = c.x0 !== undefined ? c.x0 : c[10];
+      const y0 = c.y0 !== undefined ? c.y0 : c[11];
+      const x1 = c.x1 !== undefined ? c.x1 : c[12];
+      const y1 = c.y1 !== undefined ? c.y1 : c[13];
+      if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) continue;
+      const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
+      const col = getCurvatureColor(rAvg);
+      let arr = curvBatches.get(col);
+      if (!arr) {
+        arr = [];
+        curvBatches.set(col, arr);
+      }
+      arr.push(x0, y0, x1, y1);
+    }
+
+    ctx.save();
+    ctx.lineWidth = Math.max(3.8, Math.min(8.0, zoom * 24));
+    for (const [col, coords] of curvBatches.entries()) {
+      ctx.strokeStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      for (let i = 0; i < coords.length; i += 4) {
+        const [sx0, sy0] = worldToScreen(coords[i], coords[i + 1]);
+        const [sx1, sy1] = worldToScreen(coords[i + 2], coords[i + 3]);
+        ctx.moveTo(sx0, sy0);
+        ctx.lineTo(sx1, sy1);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Radius badges & labels for highlighted track
+    if (zoom >= 0.003) {
+      const curvScale = getLayerLabelScale("nf_curvature");
+      const curvAngle = getLayerLabelAngle("nf_curvature");
+      const fontSize = Math.max(9, Math.round(9.5 * curvScale));
+      ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+
+      for (const c of highlightedFusion.curvature) {
+        const x0 = c.x0 !== undefined ? c.x0 : c[10];
+        const y0 = c.y0 !== undefined ? c.y0 : c[11];
+        const x1 = c.x1 !== undefined ? c.x1 : c[12];
+        const y1 = c.y1 !== undefined ? c.y1 : c[13];
+        if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) continue;
+        const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
+        const rClass = c.radius_avg_class !== undefined ? c.radius_avg_class : c[9];
+        const mx = (x0 + x1) / 2;
+        const my = (y0 + y1) / 2;
+        const [sx, sy] = worldToScreen(mx, my);
+        if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) continue;
+        const lbl = `R=${rAvg}m (${rClass || "Curve"})`;
+        const lw = lbl.length * (fontSize * 0.6) + 8;
+        const lh = fontSize + 6;
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        if (curvAngle) ctx.rotate((curvAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+        ctx.fillRect(-2, -lh / 2, lw, lh);
+        ctx.strokeStyle = getCurvatureColor(rAvg);
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-2, -lh / 2, lw, lh);
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillText(lbl, 2, 0);
+        ctx.restore();
+
+        STATE.drawnNfCurvatureLabels.push({
+          x: sx,
+          y: sy,
+          w: lw,
+          h: lh,
+          angle: curvAngle,
+          alignY: "center",
+          curv: c,
+        });
+      }
+    }
+  }
+
+  // 4. Network Fusion Tenth-Mile Sample Points (Contextual: shown ONLY when a track is clicked/highlighted AND layer is checked)
+  if (STATE.nwrLayers.nf_points && highlightedFusion && highlightedFusion.points.length > 0) {
+    const ptScale = getLayerLabelScale("nf_points");
+    const ptAngle = getLayerLabelAngle("nf_points");
+    const fontSize = Math.max(9, Math.round(9.5 * ptScale));
+    const r = Math.max(3.8, Math.min(7.5, zoom * 20));
+
+    for (const p of highlightedFusion.points) {
+      const px = p.easting !== undefined ? p.easting : p[4];
+      const py = p.northing !== undefined ? p.northing : p[5];
+      if (px === undefined || py === undefined) continue;
+      const elev = p.elevation_m !== undefined ? p.elevation_m : p[6];
+      const loc = (p.place_name || p.postcode) || (p[7] || p[8] || "");
+      const mileage = p.mileage || p[3] || "";
+      const [sx, sy] = worldToScreen(px, py);
+      if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) continue;
+      const col = getElevationColor(elev);
+
+      ctx.save();
+      ctx.fillStyle = col;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      // Draw diamond
+      ctx.moveTo(sx, sy - r);
+      ctx.lineTo(sx + r, sy);
+      ctx.lineTo(sx, sy + r);
+      ctx.lineTo(sx - r, sy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      if (zoom >= 0.003) {
+        const lbl = `${elev !== null && elev !== undefined ? elev + "m" : ""}${mileage ? " • " + mileage : ""}${loc ? " • " + loc : ""}`;
+        const lw = lbl.length * (fontSize * 0.6) + 8;
+        const lh = fontSize + 6;
+
+        ctx.save();
+        ctx.translate(sx + r + 4, sy);
+        if (ptAngle) ctx.rotate((ptAngle * Math.PI) / 180);
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+        ctx.fillRect(-2, -lh / 2, lw, lh);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-2, -lh / 2, lw, lh);
+        ctx.fillStyle = col;
+        ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
+        ctx.fillText(lbl, 2, 0);
+        ctx.restore();
+
+        STATE.drawnNfPointLabels.push({
+          x: sx + r + 4,
+          y: sy,
+          w: lw,
+          h: lh,
+          angle: ptAngle,
+          alignY: "center",
+          point: p,
+        });
+      }
+    }
+  }
+
+  // 5. NWR_TrackNodes (Valency 1-4)
+  if (STATE.nwrLayers.nodes && zoom >= 0.035 && STATE.nwrViewportData.nodes && STATE.nwrViewportData.nodes.length) {
     const r = Math.max(2.0, Math.min(4.8, zoom * 16));
     for (const n of STATE.nwrViewportData.nodes) {
       // [fid, asset_id, valency, x, y]
@@ -1120,8 +1408,8 @@ function renderNwrModel() {
     }
   }
 
-  // 4. NWR_Waymarks (Mileposts)
-  if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04 && STATE.nwrViewportData.waymarks.length) {
+  // 6. NWR_Waymarks (Mileposts)
+  if (STATE.nwrLayers.waymarks && zoom >= 0.02 && STATE.nwrViewportData.waymarks && STATE.nwrViewportData.waymarks.length) {
     const wmScale = getLayerLabelScale("nwr_waymarks");
     const wmAngle = getLayerLabelAngle("nwr_waymarks");
     const fontSize = Math.round(9 * wmScale);
@@ -1226,7 +1514,7 @@ function renderNwrModel() {
   drawHighlightAndPreviewOverlays();
 
   document.getElementById("hud-zoom").textContent = `${(zoom * 1000).toFixed(2)} px/km (${
-    useMicro ? "NWR Detailed" : "NWR Macro"
+    useDetailedCentrelines ? "NWR Detailed" : "NWR Macro"
   })`;
 }
 
@@ -1244,6 +1532,10 @@ function getHoverHighlightColor(type) {
       return "#c084fc";
     case "track":
       return "#818cf8";
+    case "nf_curvature":
+      return "#f43f5e";
+    case "nf_point":
+      return "#06b6d4";
     default:
       return "#22d3ee";
   }
@@ -1873,11 +2165,10 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   };
 
   const zoom = STATE.zoom;
-  const useMicro = zoom >= 0.025 && STATE.nwrViewportData.centrelines.length > 0;
   const pxTol = 10;
 
   // 1. NWR Track Nodes & Node Labels
-  if (STATE.nwrLayers.nodes && useMicro && zoom >= 0.06) {
+  if (STATE.nwrLayers.nodes && zoom >= 0.035 && STATE.nwrViewportData.nodes) {
     for (const lbl of STATE.drawnNwrNodeLabels) {
       if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const n = lbl.node;
@@ -1912,7 +2203,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   }
 
   // 2. NWR Waymarks & Labels
-  if (STATE.nwrLayers.waymarks && useMicro && zoom >= 0.04) {
+  if (STATE.nwrLayers.waymarks && zoom >= 0.02 && STATE.nwrViewportData.waymarks) {
     for (const lbl of STATE.drawnNwrWaymarkLabels) {
       if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const wm = lbl.wm;
@@ -1947,7 +2238,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
   }
 
   // 3. NWR Track Centre Lines
-  if (STATE.nwrLayers.centrelines && useMicro) {
+  if (STATE.nwrLayers.centrelines && STATE.nwrViewportData.centrelines && STATE.nwrViewportData.centrelines.length > 0) {
     for (const cl of STATE.nwrViewportData.centrelines) {
       // [fid, asset_id, elr, track_id, s_my, e_my, owner, coords, len_m]
       const coords = cl[7];
@@ -2022,6 +2313,117 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
     }
   }
 
+  const highlightedFusion = getHighlightedTrackFusionData();
+
+  // 5. Network Fusion Curvature Segments & Labels (only when visible for highlighted track)
+  if (STATE.nwrLayers.curvature && highlightedFusion && highlightedFusion.curvature.length > 0) {
+    for (const lbl of STATE.drawnNfCurvatureLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const c = lbl.curv;
+        const pk = c.pk !== undefined ? c.pk : c[0];
+        const elr = c.elr !== undefined ? c.elr : c[1];
+        const rClass = c.radius_avg_class !== undefined ? c.radius_avg_class : c[9];
+        const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
+        const rMin = c.radius_min_m !== undefined ? c.radius_min_m : c[6];
+        const mFrom = c.mileage_from !== undefined ? c.mileage_from : c[4];
+        const mTo = c.mileage_to !== undefined ? c.mileage_to : c[5];
+        const x0 = c.x0 !== undefined ? c.x0 : c[10];
+        const y0 = c.y0 !== undefined ? c.y0 : c[11];
+        const x1 = c.x1 !== undefined ? c.x1 : c[12];
+        const y1 = c.y1 !== undefined ? c.y1 : c[13];
+        addHit({
+          type: "nf_curvature",
+          id: pk,
+          title: `Curvature ${elr} (${rClass || "Curve"})`,
+          sub: `Label hit • R=${rAvg}m • ${mFrom} → ${mTo}`,
+          x: (x0 + x1) / 2,
+          y: (y0 + y1) / 2,
+          previewWay: [[x0, y0], [x1, y1]],
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 1.8,
+        });
+      }
+    }
+    for (const c of highlightedFusion.curvature) {
+      const x0 = c.x0 !== undefined ? c.x0 : c[10];
+      const y0 = c.y0 !== undefined ? c.y0 : c[11];
+      const x1 = c.x1 !== undefined ? c.x1 : c[12];
+      const y1 = c.y1 !== undefined ? c.y1 : c[13];
+      if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) continue;
+      const [sx0, sy0] = worldToScreen(x0, y0);
+      const [sx1, sy1] = worldToScreen(x1, y1);
+      const d = distToSegment(sx, sy, sx0, sy0, sx1, sy1);
+      if (d <= pxTol) {
+        const pk = c.pk !== undefined ? c.pk : c[0];
+        const elr = c.elr !== undefined ? c.elr : c[1];
+        const rClass = c.radius_avg_class !== undefined ? c.radius_avg_class : c[9];
+        const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
+        const rMin = c.radius_min_m !== undefined ? c.radius_min_m : c[6];
+        const mFrom = c.mileage_from !== undefined ? c.mileage_from : c[4];
+        const mTo = c.mileage_to !== undefined ? c.mileage_to : c[5];
+        addHit({
+          type: "nf_curvature",
+          id: pk,
+          title: `Curvature ${elr} (${rClass || "Curve"})`,
+          sub: `R=${rAvg}m (Min: ${rMin}m) • ${mFrom} → ${mTo}`,
+          x: (x0 + x1) / 2,
+          y: (y0 + y1) / 2,
+          previewWay: [[x0, y0], [x1, y1]],
+          score: d + 1.2,
+        });
+      }
+    }
+  }
+
+  // 6. Network Fusion Tenth-Mile Sample Points & Labels (only when visible for highlighted track)
+  if (STATE.nwrLayers.nf_points && highlightedFusion && highlightedFusion.points.length > 0) {
+    for (const lbl of STATE.drawnNfPointLabels) {
+      if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
+        const p = lbl.point;
+        const pk = p.pk !== undefined ? p.pk : p[0];
+        const elr = p.elr !== undefined ? p.elr : p[1];
+        const mileage = p.mileage !== undefined ? p.mileage : p[3];
+        const elev = p.elevation_m !== undefined ? p.elevation_m : p[6];
+        const loc = (p.place_name || p.postcode) || (p[7] || p[8] || "");
+        const px = p.easting !== undefined ? p.easting : p[4];
+        const py = p.northing !== undefined ? p.northing : p[5];
+        addHit({
+          type: "nf_point",
+          id: pk,
+          title: `Tenth-Mile Point ${elr} @ ${mileage}`,
+          sub: `Label hit • ${elev}m elev • ${loc}`,
+          x: px,
+          y: py,
+          previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
+          score: 2.0,
+        });
+      }
+    }
+    for (const p of highlightedFusion.points) {
+      const px = p.easting !== undefined ? p.easting : p[4];
+      const py = p.northing !== undefined ? p.northing : p[5];
+      if (px === undefined || py === undefined) continue;
+      const [psx, psy] = worldToScreen(px, py);
+      const d = Math.hypot(sx - psx, sy - psy);
+      if (d <= pxTol) {
+        const pk = p.pk !== undefined ? p.pk : p[0];
+        const elr = p.elr !== undefined ? p.elr : p[1];
+        const mileage = p.mileage !== undefined ? p.mileage : p[3];
+        const elev = p.elevation_m !== undefined ? p.elevation_m : p[6];
+        const loc = (p.place_name || p.postcode) || (p[7] || p[8] || "");
+        addHit({
+          type: "nf_point",
+          id: pk,
+          title: `Tenth-Mile Point ${elr} @ ${mileage}`,
+          sub: `${elev}m elev • ${loc}`,
+          x: px,
+          y: py,
+          score: d + 1.0,
+        });
+      }
+    }
+  }
+
   hits.sort((a, b) => a.score - b.score);
   return hits.slice(0, 12);
 }
@@ -2030,7 +2432,7 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
 function scheduleViewportFetch() {
   if (STATE.viewportTimer) clearTimeout(STATE.viewportTimer);
   if (STATE.activeView === "nwr") {
-    if (STATE.zoom < 0.025) {
+    if (STATE.zoom < 0.005) {
       document.getElementById("hud-loaded").textContent = `${
         STATE.nwrOverview ? STATE.nwrOverview.macro_links.length.toLocaleString() : 0
       } NWR links`;
@@ -2090,7 +2492,7 @@ async function fetchViewportData() {
 }
 
 async function fetchNwrViewportData() {
-  if (STATE.activeView !== "nwr" || STATE.zoom < 0.025) return;
+  if (STATE.activeView !== "nwr" || STATE.zoom < 0.005) return;
   if (STATE.viewportAbort) STATE.viewportAbort.abort();
   STATE.viewportAbort = new AbortController();
 
@@ -2101,9 +2503,11 @@ async function fetchNwrViewportData() {
     min_y: bbox.min_y.toFixed(1),
     max_y: bbox.max_y.toFixed(1),
     zoom: STATE.zoom.toFixed(5),
-    include_centrelines: STATE.nwrLayers.centrelines,
-    include_nodes: STATE.nwrLayers.nodes && STATE.zoom >= 0.06,
-    include_waymarks: STATE.nwrLayers.waymarks && STATE.zoom >= 0.04,
+    include_centrelines: STATE.nwrLayers.centrelines && STATE.zoom >= 0.008,
+    include_nodes: STATE.nwrLayers.nodes && STATE.zoom >= 0.035,
+    include_waymarks: STATE.nwrLayers.waymarks && STATE.zoom >= 0.02,
+    include_curvature: false,
+    include_nf_points: false,
   });
 
   try {
@@ -2113,7 +2517,13 @@ async function fetchNwrViewportData() {
     if (!res.ok) return;
     const data = await res.json();
     STATE.nwrViewportData = { ...data, bbox };
-    document.getElementById("hud-loaded").textContent = `${data.centrelines.length.toLocaleString()} links, ${data.nodes.length.toLocaleString()} nodes`;
+    const extra = [];
+    if (data.centrelines && data.centrelines.length) extra.push(`${data.centrelines.length.toLocaleString()} links`);
+    if (data.nodes && data.nodes.length) extra.push(`${data.nodes.length.toLocaleString()} nodes`);
+    if (data.waymarks && data.waymarks.length) extra.push(`${data.waymarks.length.toLocaleString()} waymarks`);
+    if (data.curvature && data.curvature.length) extra.push(`${data.curvature.length.toLocaleString()} curves`);
+    if (data.nf_points && data.nf_points.length) extra.push(`${data.nf_points.length.toLocaleString()} pts`);
+    document.getElementById("hud-loaded").textContent = extra.length ? extra.join(", ") : "0 features loaded";
     requestRender();
   } catch (err) {
     if (err.name !== "AbortError") console.error(err);
@@ -2612,7 +3022,7 @@ async function handleCanvasClick(wx, wy, sx, sy) {
 }
 
 async function loadAssetDetails(assetType, assetId, shouldFly = true) {
-  const isNwrAsset = String(assetType).startsWith("nwr_");
+  const isNwrAsset = String(assetType).startsWith("nwr_") || String(assetType).startsWith("nf_");
   const apiPrefix = isNwrAsset ? "/api/nwr/asset" : "/api/asset";
   try {
     const res = await fetch(`${apiPrefix}/${assetType}/${assetId}`);
@@ -2629,7 +3039,9 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
       flyBtn.classList.remove("hidden");
       const getTargetZ = () => {
         if (isNwrAsset) {
-          return data.asset_type === "nwr_elr" ? 0.04 : 0.35;
+          if (data.asset_type === "nwr_elr") return 0.04;
+          if (data.asset_type === "nf_curvature" || data.asset_type === "nf_point") return 0.25;
+          return 0.35;
         }
         if (data.asset_type === "stationbank" && Array.isArray(data.bbox) && data.bbox.length === 4) {
           const spanX = Math.max(500, data.bbox[2] - data.bbox[0]);
@@ -2754,6 +3166,88 @@ function renderRawTab(data, showFull = false) {
   `;
 }
 
+function renderElevationProfileSvg(nfData) {
+  if (!nfData || !nfData.points || nfData.points.length < 2) return "";
+  const pts = nfData.points.filter((p) => p.elevation_m !== null && p.elevation_m !== undefined);
+  if (pts.length < 2) return "";
+
+  const elevs = pts.map((p) => p.elevation_m);
+  const minE = Math.floor(Math.min(...elevs));
+  const maxE = Math.ceil(Math.max(...elevs));
+  const rangeE = Math.max(10, maxE - minE);
+
+  const W = 360;
+  const H = 115;
+  const padL = 36;
+  const padR = 14;
+  const padT = 14;
+  const padB = 26;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  const minYard = pts[0].total_yards;
+  const maxYard = pts[pts.length - 1].total_yards;
+  const yardSpan = Math.max(1, maxYard - minYard);
+
+  const coords = pts.map((p) => {
+    const x = padL + ((p.total_yards - minYard) / yardSpan) * chartW;
+    const y = padT + (1 - (p.elevation_m - minE) / rangeE) * chartH;
+    return [x.toFixed(1), y.toFixed(1)];
+  });
+
+  const polylinePts = coords.map((c) => c.join(",")).join(" ");
+  const areaPts = `${padL},${padT + chartH} ${polylinePts} ${coords[coords.length - 1][0]},${padT + chartH}`;
+
+  // Curvature severity markers along bottom strip
+  let curvBars = "";
+  if (nfData.curvature && nfData.curvature.length) {
+    for (const c of nfData.curvature) {
+      const bx0 = Math.max(padL, padL + ((c.total_yards_from - minYard) / yardSpan) * chartW);
+      const bx1 = Math.min(padL + chartW, padL + ((c.total_yards_to - minYard) / yardSpan) * chartW);
+      const bw = Math.max(2.0, bx1 - bx0);
+      const col = getCurvatureColor(c.radius_avg_m);
+      curvBars += `<rect x="${bx0.toFixed(1)}" y="${H - 7}" width="${bw.toFixed(1)}" height="5" fill="${col}" opacity="0.9"><title>R=${c.radius_avg_m}m (${c.radius_avg_class})</title></rect>`;
+    }
+  }
+
+  return `
+    <div class="nf-profile-container">
+      <div class="nf-profile-header">
+        <span class="nf-profile-title">Elevation &amp; Curvature Profile</span>
+        <span class="nf-profile-stats">${minE}m &rarr; ${maxE}m &bull; &Delta; ${(maxE - minE)}m &bull; ${pts.length} samples</span>
+      </div>
+      <svg class="nf-profile-svg" viewBox="0 0 ${W} ${H}">
+        <defs>
+          <linearGradient id="nf-elev-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.45"/>
+            <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
+          </linearGradient>
+        </defs>
+        <!-- Grid lines -->
+        <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,2"/>
+        <line x1="${padL}" y1="${(padT + chartH / 2).toFixed(1)}" x2="${W - padR}" y2="${(padT + chartH / 2).toFixed(1)}" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,2"/>
+        <line x1="${padL}" y1="${padT + chartH}" x2="${W - padR}" y2="${padT + chartH}" stroke="rgba(255,255,255,0.18)"/>
+
+        <!-- Y axis elevation labels -->
+        <text x="${padL - 4}" y="${padT + 4}" font-size="9" fill="#94a3b8" text-anchor="end">${maxE}m</text>
+        <text x="${padL - 4}" y="${(padT + chartH / 2 + 3).toFixed(1)}" font-size="9" fill="#94a3b8" text-anchor="end">${Math.round((minE + maxE) / 2)}m</text>
+        <text x="${padL - 4}" y="${padT + chartH + 2}" font-size="9" fill="#94a3b8" text-anchor="end">${minE}m</text>
+
+        <!-- Shaded area and line -->
+        <polygon points="${areaPts}" fill="url(#nf-elev-grad)"/>
+        <polyline points="${polylinePts}" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+
+        <!-- X axis mileage labels -->
+        <text x="${padL}" y="${H - 12}" font-size="8.5" fill="#64748b" text-anchor="start">${pts[0].mileage || ''}</text>
+        <text x="${W - padR}" y="${H - 12}" font-size="8.5" fill="#64748b" text-anchor="end">${pts[pts.length - 1].mileage || ''}</text>
+
+        <!-- Bottom Curvature Severity Strip -->
+        ${curvBars}
+      </svg>
+    </div>
+  `;
+}
+
 function renderRelatedTab(data) {
   const rel = data.related || {};
   const sections = [];
@@ -2859,6 +3353,73 @@ function renderRelatedTab(data) {
             <div class="rel-card" onclick="jumpToTpsAsset('attributesection', ${a.pk})">
               <div class="rel-card-top"><span>${escapeHtml(a.description)} (${escapeHtml(a.short_description)})</span><span style="color:#38bdf8">Open in TPS View &rarr;</span></div>
               <div class="rel-card-sub">TPS Attribute Section ID #${a.id}</div>
+            </div>`
+            )
+            .join("")}
+        </div>
+      `);
+    }
+
+    const nf = rel.network_fusion;
+    if (nf) {
+      if (nf.points && nf.points.length > 1) {
+        sections.push(renderElevationProfileSvg(nf));
+      }
+
+      if (nf.curvature && nf.curvature.length) {
+        sections.push(`
+          <div class="rel-section">
+            <h4>Network Fusion Curvature Segments (${nf.curvature.length})</h4>
+            ${nf.curvature
+              .slice(0, 15)
+              .map(
+                (c) => `
+              <div class="rel-card" onclick="loadAssetDetails('nf_curvature', ${c.pk}, true)">
+                <div class="rel-card-top">
+                  <span style="color:${getCurvatureColor(c.radius_avg_m)}">R_avg=${c.radius_avg_m}m (${escapeHtml(c.radius_avg_class)})</span>
+                  <span>Min R=${c.radius_min_m}m</span>
+                </div>
+                <div class="rel-card-sub">${escapeHtml(c.mileage_from)} &rarr; ${escapeHtml(c.mileage_to)} (${c.total_yards_from} &rarr; ${c.total_yards_to} yd)</div>
+              </div>`
+              )
+              .join("")}
+          </div>
+        `);
+      }
+
+      if (nf.points && nf.points.length) {
+        sections.push(`
+          <div class="rel-section">
+            <h4>Network Fusion Tenth-Mile Samples (${nf.points.length})</h4>
+            ${nf.points
+              .slice(0, 12)
+              .map(
+                (p) => `
+              <div class="rel-card" onclick="loadAssetDetails('nf_point', ${p.pk}, true)">
+                <div class="rel-card-top">
+                  <span style="color:${getElevationColor(p.elevation_m)}">${p.elevation_m}m elev @ ${escapeHtml(p.mileage)}</span>
+                  <span>${escapeHtml(p.place_name || p.postcode || '')}</span>
+                </div>
+                <div class="rel-card-sub">Bedrock: ${escapeHtml(p.bedrock || '—')} • Rain: ${p.annual_rainfall_mm || '—'}mm/yr • Wind: ${p.mean_wind_speed_ms || '—'}m/s</div>
+              </div>`
+              )
+              .join("")}
+          </div>
+        `);
+      }
+    }
+  } else if (data.asset_type === "nf_point" || data.asset_type === "nf_curvature") {
+    const tps = rel.tps_cross_links || {};
+    if (tps.tps_stations && tps.tps_stations.length) {
+      sections.push(`
+        <div class="rel-section">
+          <h4>Cross-Model Link: TPS Stations on this ELR (${tps.tps_stations.length})</h4>
+          ${tps.tps_stations
+            .map(
+              (s) => `
+            <div class="rel-card" onclick="jumpToTpsAsset('station', ${s.station_id})">
+              <div class="rel-card-top"><span>${escapeHtml(s.longname || s.abbrev)} (${escapeHtml(s.crscode || s.abbrev)})</span><span style="color:#38bdf8">Open in TPS View &rarr;</span></div>
+              <div class="rel-card-sub">TPS Station #${s.station_id} • STANOX ${escapeHtml(s.stanox || "N/A")} • KM ${(s.km_value / 1000).toFixed(3)} km</div>
             </div>`
             )
             .join("")}
@@ -3927,8 +4488,15 @@ for (const key of ["edges", "tracks", "vectors", "texts", "stations", "signals",
   }
 }
 
-for (const key of ["centrelines", "elrs", "nodes", "waymarks"]) {
-  const el = document.getElementById(`nwr-layer-${key}`);
+for (const [key, id] of [
+  ["centrelines", "nwr-layer-centrelines"],
+  ["elrs", "nwr-layer-elrs"],
+  ["nodes", "nwr-layer-nodes"],
+  ["waymarks", "nwr-layer-waymarks"],
+  ["curvature", "nwr-layer-curvature"],
+  ["nf_points", "nwr-layer-nf-points"],
+]) {
+  const el = document.getElementById(id);
   if (el) {
     el.addEventListener("change", () => {
       STATE.nwrLayers[key] = el.checked;
@@ -4073,6 +4641,7 @@ document.getElementById("btn-zoom-out").addEventListener("click", () => {
 });
 document.getElementById("btn-clear-highlight").addEventListener("click", () => {
   STATE.highlight = { ways: [], points: [], segments: [] };
+  STATE.selectedAsset = null;
   document.getElementById("btn-clear-highlight").classList.add("hidden");
   requestRender();
 });

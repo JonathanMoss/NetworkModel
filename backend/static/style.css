@@ -1754,5 +1754,44 @@ body {
   border: 1px solid var(--border);
 }
 
+/* Network Fusion Elevation & Curvature Profile Chart */
+.nf-profile-container {
+  margin: 10px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.nf-profile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.nf-profile-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #38bdf8;
+}
+
+.nf-profile-stats {
+  font-size: 0.70rem;
+  color: var(--text-muted);
+}
+
+.nf-profile-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: rgba(6, 10, 18, 0.75);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+
 
 

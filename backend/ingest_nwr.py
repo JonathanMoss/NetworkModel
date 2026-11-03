@@ -2,6 +2,7 @@ import math
 import os
 import struct
 import tarfile
+import threading
 import time
 import zipfile
 import orjson
@@ -146,8 +147,6 @@ def iter_shapefile(shp_path: str, dbf_path: str):
 
             yield fid, attrs, geom
 
-
-import threading
 
 _NWR_LOCK = threading.Lock()
 _NWR_COMPLETE = False

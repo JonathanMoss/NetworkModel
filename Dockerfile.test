@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install project dependencies and pylint
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt pylint==3.3.4
+
+# Copy backend Python code and pylint configuration
+COPY backend/ /app/backend/
+COPY .pylintrc /app/.pylintrc
+
+ENV PYTHONPATH=/app/backend:/app
+
+CMD ["pylint", "--rcfile=/app/.pylintrc", "backend"]
+

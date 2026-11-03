@@ -4,7 +4,6 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import orjson
 import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, Query, HTTPException
@@ -18,12 +17,14 @@ from ingest_nwr import (
     format_mile_yards,
     VALENCY_DESC,
 )
+from ingest_network_fusion import ensure_network_fusion_tables_and_ingest
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://nr_user:nr_password@localhost:5433/network_rail_tps"
 )
 XML_PATH = os.environ.get("XML_PATH", "/data/tps")
 NWR_DIR = os.environ.get("NWR_DIR", "/data/nwr")
+NF_DIR = os.environ.get("NF_DIR", "/data/network_fusion")
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 OVERVIEW_CACHE = None
@@ -90,6 +91,7 @@ def start_background_ingestion():
         if not check_already_ingested(DATABASE_URL):
             run_ingestion(DATABASE_URL, XML_PATH, SCHEMA_PATH)
         ensure_nwr_tables_and_ingest(DATABASE_URL, NWR_DIR)
+        ensure_network_fusion_tables_and_ingest(DATABASE_URL, NF_DIR)
         try:
             load_lookup_cache()
             get_timing_catalog()
@@ -101,7 +103,7 @@ def start_background_ingestion():
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     start_background_ingestion()
     yield
 
@@ -1078,7 +1080,7 @@ def find_nwr_cross_links_for_tps(cur, elr: Optional[str], km_meters: Optional[fl
         for c in cur.fetchall():
             centrelines.append({
                 **c,
-                "track_id_decoded": decode_nwr_track_id(c["track_id"]),
+                "track_id_decoded": decode_track_id(c["track_id"]),
             })
         return {"elr_record": elr_rec, "centrelines": centrelines}
     except Exception:
@@ -2904,8 +2906,7 @@ def parse_traction_curves(ta: dict, tc: list) -> dict:
                     pwr_kw = round((frc * spd) / 3.6, 1)
                     if frc > max_force_kn:
                         max_force_kn = round(frc, 2)
-                    if pwr_kw > max_power_kw:
-                        max_power_kw = pwr_kw
+                    max_power_kw = max(max_power_kw, pwr_kw)
                     pts.append({
                         "speed_kmh": round(spd, 2),
                         "speed_mph": round(spd * 0.621371, 1),
@@ -3394,6 +3395,37 @@ def api_catalog_rows(
 
 
 # ==============================================================================
+# Network Fusion (GeoFurlong / Alan Morrison) Endpoints
+# ==============================================================================
+
+@app.get("/api/network-fusion/status")
+def api_network_fusion_status():
+    ensure_network_fusion_tables_and_ingest(DATABASE_URL, NF_DIR)
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT value FROM ingestion_meta WHERE key = 'network_fusion_complete'")
+            row = cur.fetchone()
+            meta = row["value"] if row else {"completed": False}
+
+            cur.execute("SELECT COUNT(*) AS total_points FROM network_fusion_points")
+            pt_count = cur.fetchone()["total_points"]
+
+            cur.execute("SELECT COUNT(*) AS total_curv FROM network_fusion_curvature")
+            curv_count = cur.fetchone()["total_curv"]
+
+            cur.execute("SELECT COUNT(DISTINCT elr) AS elrs FROM network_fusion_points")
+            elrs_count = cur.fetchone()["elrs"]
+
+            return {
+                "status": "ready" if meta.get("completed") else "pending",
+                "meta": meta,
+                "points_count": pt_count,
+                "curvature_count": curv_count,
+                "elrs_count": elrs_count,
+            }
+
+
+# ==============================================================================
 # NWR_TrackModel (OSGB36 British National Grid Geospatial Model) Endpoints
 # ==============================================================================
 
@@ -3404,6 +3436,7 @@ def api_nwr_overview():
         return NWR_OVERVIEW_CACHE
 
     ensure_nwr_tables_and_ingest(DATABASE_URL, NWR_DIR)
+    ensure_network_fusion_tables_and_ingest(DATABASE_URL, NF_DIR)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -3500,11 +3533,41 @@ def api_nwr_overview():
                 "waymarks": c_row[3],
             }
 
+            # ELR-level Network Fusion summary for whole-network Colour By modes
+            elr_fusion_stats = {}
+            try:
+                cur.execute("""
+                    SELECT elr,
+                           ROUND(AVG(radius_avg_m))::int AS avg_r,
+                           MIN(radius_min_m) AS min_r
+                    FROM network_fusion_curvature
+                    GROUP BY elr
+                """)
+                for r in cur.fetchall():
+                    elr_fusion_stats[r[0]] = {"avg_r": r[1], "min_r": r[2]}
+
+                cur.execute("""
+                    SELECT elr,
+                           ROUND(AVG(elevation_m))::int AS avg_elev,
+                           ROUND(MIN(elevation_m))::int AS min_elev,
+                           ROUND(MAX(elevation_m))::int AS max_elev
+                    FROM network_fusion_points
+                    GROUP BY elr
+                """)
+                for r in cur.fetchall():
+                    st = elr_fusion_stats.setdefault(r[0], {})
+                    st["avg_elev"] = r[1]
+                    st["min_elev"] = r[2]
+                    st["max_elev"] = r[3]
+            except Exception:
+                pass
+
     NWR_OVERVIEW_CACHE = {
         "bounds": bounds,
         "counts": counts,
         "elrs": elrs,
         "macro_links": macro_links,
+        "elr_fusion_stats": elr_fusion_stats,
     }
     return NWR_OVERVIEW_CACHE
 
@@ -3519,6 +3582,8 @@ def api_nwr_viewport(
     include_centrelines: bool = Query(True),
     include_nodes: bool = Query(True),
     include_waymarks: bool = Query(True),
+    include_curvature: bool = Query(True),
+    include_nf_points: bool = Query(False),
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -3567,10 +3632,44 @@ def api_nwr_viewport(
                 )
                 waymarks = cur.fetchall()
 
+            curvature = []
+            if include_curvature:
+                cur.execute(
+                    """
+                    SELECT pk, elr, total_yards_from, total_yards_to, mileage_from, mileage_to,
+                           radius_min_m, radius_max_m, radius_avg_m, radius_avg_class,
+                           x0, y0, x1, y1
+                    FROM network_fusion_curvature
+                    WHERE ((x0 BETWEEN %s AND %s) OR (x1 BETWEEN %s AND %s))
+                      AND ((y0 BETWEEN %s AND %s) OR (y1 BETWEEN %s AND %s))
+                    LIMIT 25000
+                    """,
+                    (min_x, max_x, min_x, max_x, min_y, max_y, min_y, max_y),
+                )
+                curvature = cur.fetchall()
+
+            nf_points = []
+            if include_nf_points:
+                cur.execute(
+                    """
+                    SELECT pk, elr, total_yards, mileage, easting, northing,
+                           elevation_m, place_name, postcode, track_count_primary,
+                           bedrock, annual_rainfall_mm
+                    FROM network_fusion_points
+                    WHERE easting BETWEEN %s AND %s
+                      AND northing BETWEEN %s AND %s
+                    LIMIT 20000
+                    """,
+                    (min_x, max_x, min_y, max_y),
+                )
+                nf_points = cur.fetchall()
+
     return {
         "centrelines": centrelines,
         "nodes": nodes,
         "waymarks": waymarks,
+        "curvature": curvature,
+        "nf_points": nf_points,
     }
 
 
@@ -3807,6 +3906,62 @@ def api_nwr_pick(
                         "parts": parts,
                     })
 
+            # 5. Network Fusion Curvature Segments
+            cur.execute(
+                """
+                SELECT pk, elr, total_yards_from, total_yards_to, mileage_from, mileage_to,
+                       radius_min_m, radius_max_m, radius_avg_m, radius_avg_class,
+                       x0, y0, x1, y1
+                FROM network_fusion_curvature
+                WHERE ((x0 BETWEEN %s AND %s) OR (x1 BETWEEN %s AND %s))
+                  AND ((y0 BETWEEN %s AND %s) OR (y1 BETWEEN %s AND %s))
+                LIMIT 25
+                """,
+                (min_x, max_x, min_x, max_x, min_y, max_y, min_y, max_y),
+            )
+            for r in cur.fetchall():
+                dx, dy = r["x1"] - r["x0"], r["y1"] - r["y0"]
+                l2 = dx * dx + dy * dy
+                if l2 == 0:
+                    cdist = math.hypot(x - r["x0"], y - r["y0"])
+                else:
+                    t = max(0.0, min(1.0, ((x - r["x0"]) * dx + (y - r["y0"]) * dy) / l2))
+                    cdist = math.hypot(x - (r["x0"] + t * dx), y - (r["y0"] + t * dy))
+                if cdist <= radius:
+                    candidates.append({
+                        "type": "nf_curvature",
+                        "id": r["pk"],
+                        "label": f"Curve {r['elr']} R={r['radius_avg_m']}m ({r['radius_avg_class']})",
+                        "dist": round(cdist, 2),
+                        "x": (r["x0"] + r["x1"]) / 2.0,
+                        "y": (r["y0"] + r["y1"]) / 2.0,
+                    })
+
+            # 6. Network Fusion Sample Points (Tenth-Mile)
+            cur.execute(
+                """
+                SELECT pk, elr, total_yards, mileage, easting, northing,
+                       elevation_m, place_name, postcode,
+                       SQRT(POWER(easting - %s, 2) + POWER(northing - %s, 2)) AS dist
+                FROM network_fusion_points
+                WHERE easting BETWEEN %s AND %s AND northing BETWEEN %s AND %s
+                ORDER BY dist ASC
+                LIMIT 6
+                """,
+                (x, y, min_x, max_x, min_y, max_y),
+            )
+            for r in cur.fetchall():
+                loc = r["place_name"] or r["postcode"] or ""
+                loc_str = f" • {loc}" if loc else ""
+                candidates.append({
+                    "type": "nf_point",
+                    "id": r["pk"],
+                    "label": f"NF Point {r['elr']} @ {r['mileage']} ({r['elevation_m']}m{loc_str})",
+                    "dist": round(r["dist"], 2),
+                    "x": r["easting"],
+                    "y": r["northing"],
+                })
+
     candidates.sort(key=lambda c: (0 if c["type"] in ("block", "route") else 1, c["dist"]))
     return {"candidates": candidates[:15]}
 
@@ -3881,6 +4036,157 @@ def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Op
     }
 
 
+def mile_yards_to_total_yards(val: float) -> int:
+    """Convert mile.yards float (e.g. 28.1440) to integer total yards (50720)."""
+    if val is None:
+        return 0
+    v = abs(float(val))
+    miles = int(v)
+    yards = int(round((v - miles) * 10000.0))
+    return miles * 1760 + yards
+
+
+def find_network_fusion_for_elr(cur, elr: str, min_yd: Optional[int] = None, max_yd: Optional[int] = None):
+    """Fetch and summarize Network Fusion (GeoFurlong) points and curvature for an ELR corridor."""
+    if not elr:
+        return {"summary": None, "points": [], "curvature": []}
+
+    elr_clean = elr.strip().upper()
+    if min_yd is not None and max_yd is not None:
+        lo_yd = max(0, min(min_yd, max_yd) - 220)
+        hi_yd = max(min_yd, max_yd) + 220
+        cur.execute(
+            """
+            SELECT pk, elr, total_yards, mileage, easting, northing,
+                   elevation_m, min_air_temperature_c, max_air_temperature_c,
+                   mean_wind_speed_ms, annual_rainfall_mm, material, deposit, bedrock,
+                   place_name, place_distance_m, postcode, track_count_primary, olc
+            FROM network_fusion_points
+            WHERE UPPER(elr) = %s AND total_yards BETWEEN %s AND %s
+            ORDER BY total_yards ASC
+            LIMIT 500
+            """,
+            (elr_clean, lo_yd, hi_yd),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT pk, elr, total_yards, mileage, easting, northing,
+                   elevation_m, min_air_temperature_c, max_air_temperature_c,
+                   mean_wind_speed_ms, annual_rainfall_mm, material, deposit, bedrock,
+                   place_name, place_distance_m, postcode, track_count_primary, olc
+            FROM network_fusion_points
+            WHERE UPPER(elr) = %s
+            ORDER BY total_yards ASC
+            LIMIT 4000
+            """,
+            (elr_clean,),
+        )
+    points = cur.fetchall()
+
+    if min_yd is not None and max_yd is not None:
+        lo_yd = max(0, min(min_yd, max_yd) - 220)
+        hi_yd = max(min_yd, max_yd) + 220
+        cur.execute(
+            """
+            SELECT pk, elr, total_yards_from, total_yards_to, mileage_from, mileage_to,
+                   radius_min_m, radius_max_m, radius_avg_m, radius_avg_class,
+                   x0, y0, x1, y1
+            FROM network_fusion_curvature
+            WHERE UPPER(elr) = %s AND total_yards_to >= %s AND total_yards_from <= %s
+            ORDER BY total_yards_from ASC
+            LIMIT 500
+            """,
+            (elr_clean, lo_yd, hi_yd),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT pk, elr, total_yards_from, total_yards_to, mileage_from, mileage_to,
+                   radius_min_m, radius_max_m, radius_avg_m, radius_avg_class,
+                   x0, y0, x1, y1
+            FROM network_fusion_curvature
+            WHERE UPPER(elr) = %s
+            ORDER BY total_yards_from ASC
+            LIMIT 4000
+            """,
+            (elr_clean,),
+        )
+    curvature = cur.fetchall()
+
+    summary = None
+    if points or curvature:
+        elevs = [p["elevation_m"] for p in points if p["elevation_m"] is not None]
+        radii_avg = [c["radius_avg_m"] for c in curvature if c["radius_avg_m"] is not None]
+        radii_min = [c["radius_min_m"] for c in curvature if c["radius_min_m"] is not None]
+        tightest_c = min(curvature, key=lambda c: c["radius_min_m"] or 999999) if curvature else None
+        places = [p["place_name"] for p in points if p["place_name"]]
+        postcodes = [p["postcode"] for p in points if p["postcode"]]
+        bedrocks = [p["bedrock"] for p in points if p["bedrock"]]
+
+        summary = {
+            "point_count": len(points),
+            "curvature_count": len(curvature),
+            "min_elevation_m": min(elevs) if elevs else None,
+            "max_elevation_m": max(elevs) if elevs else None,
+            "avg_radius_m": int(round(sum(radii_avg) / len(radii_avg))) if radii_avg else None,
+            "min_radius_m": min(radii_min) if radii_min else None,
+            "tightest_curve": {
+                "class": tightest_c["radius_avg_class"] if tightest_c else None,
+                "mileage": f"{tightest_c['mileage_from']} → {tightest_c['mileage_to']}" if tightest_c else None,
+                "radius_min_m": tightest_c["radius_min_m"] if tightest_c else None,
+            } if tightest_c else None,
+            "nearest_places": list(dict.fromkeys(places))[:3],
+            "postcodes": list(dict.fromkeys(postcodes))[:3],
+            "bedrocks": list(dict.fromkeys(bedrocks))[:2],
+        }
+
+    return {
+        "summary": summary,
+        "points": points,
+        "curvature": curvature,
+    }
+
+
+@app.get("/api/network-fusion/profile")
+def api_network_fusion_profile(
+    elr: str = Query(...),
+    start_yards: Optional[int] = Query(None),
+    end_yards: Optional[int] = Query(None),
+):
+    elr_clean = elr.strip().upper()
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            return find_network_fusion_for_elr(cur, elr_clean, start_yards, end_yards)
+
+
+@app.get("/api/network-fusion/nearest")
+def api_network_fusion_nearest(
+    x: float = Query(...),
+    y: float = Query(...),
+    radius: float = Query(2500.0),
+):
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT pk, elr, total_yards, mileage, easting, northing,
+                       elevation_m, place_name, postcode, admin_area, county_district,
+                       country, nr_region, bedrock, deposit, annual_rainfall_mm,
+                       min_air_temperature_c, max_air_temperature_c, olc,
+                       SQRT(POWER(easting - %s, 2) + POWER(northing - %s, 2)) AS dist_m
+                FROM network_fusion_points
+                WHERE easting BETWEEN %s AND %s
+                  AND northing BETWEEN %s AND %s
+                ORDER BY dist_m ASC
+                LIMIT 1
+                """,
+                (x, y, x - radius, x + radius, y - radius, y + radius),
+            )
+            row = cur.fetchone()
+            return {"point": row}
+
+
 @app.get("/api/nwr/asset/{asset_type}/{asset_id}")
 def api_nwr_asset(asset_type: str, asset_id: int):
     with get_conn() as conn:
@@ -3922,6 +4228,11 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                 # Cross-model TPS links
                 tps_links = find_tps_cross_links(cur, tcl["elr"], tcl["start_meters"], tcl["end_meters"])
 
+                # Network Fusion Cross-Links (GeoFurlong tenth-mile points & curvature)
+                s_yd = mile_yards_to_total_yards(tcl["start_mile_yards"])
+                e_yd = mile_yards_to_total_yards(tcl["end_mile_yards"])
+                nf_links = find_network_fusion_for_elr(cur, tcl["elr"], s_yd, e_yd)
+
                 cx = (tcl["min_x"] + tcl["max_x"]) / 2.0
                 cy = (tcl["min_y"] + tcl["max_y"]) / 2.0
                 decoded = {
@@ -3938,6 +4249,19 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                     "OSGB36 Bounding Box (E, N)": f"[{tcl['min_x']}, {tcl['min_y']}] → [{tcl['max_x']}, {tcl['max_y']}]",
                     "TPS Cross-Model Match": f"{len(tps_links['tps_stations'])} TPS stations on {tcl['elr']} • {tps_links['tps_nodes_count']} TPS nodes in mileage window",
                 }
+
+                if nf_links.get("summary"):
+                    nfs = nf_links["summary"]
+                    if nfs.get("min_elevation_m") is not None and nfs.get("max_elevation_m") is not None:
+                        decoded["Network Fusion Elevation"] = f"{nfs['min_elevation_m']} m → {nfs['max_elevation_m']} m above sea level"
+                    if nfs.get("min_radius_m") is not None:
+                        tc = nfs.get("tightest_curve") or {}
+                        decoded["Network Fusion Curvature"] = f"Min R: {nfs['min_radius_m']} m ({tc.get('class', 'Curve')}) • Section Avg R: {nfs['avg_radius_m']} m"
+                    if nfs.get("bedrocks"):
+                        decoded["Network Fusion Geology"] = " / ".join(nfs["bedrocks"])
+                    if nfs.get("nearest_places"):
+                        pcs = f" ({', '.join(nfs['postcodes'])})" if nfs.get("postcodes") else ""
+                        decoded["Network Fusion Location / Gazetteer"] = f"{', '.join(nfs['nearest_places'])}{pcs}"
 
                 pts = []
                 if s_node:
@@ -3959,6 +4283,7 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                         "elr_record": elr_rec,
                         "waymarks": waymarks,
                         "tps_cross_links": tps_links,
+                        "network_fusion": nf_links,
                     },
                     "highlight": {
                         "ways": [{"label": f"{tcl['elr']} {tcl['track_id']}", "coords": tcl["coords"], "color": "#22d3ee"}],
@@ -4036,6 +4361,10 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                 links = cur.fetchall()
 
                 tps_links = find_tps_cross_links(cur, elr_rec["elr"])
+                s_yd = mile_yards_to_total_yards(elr_rec["start_mile_yards"])
+                e_yd = mile_yards_to_total_yards(elr_rec["end_mile_yards"])
+                nf_links = find_network_fusion_for_elr(cur, elr_rec["elr"], s_yd, e_yd)
+
                 cx = (elr_rec["min_x"] + elr_rec["max_x"]) / 2.0
                 cy = (elr_rec["min_y"] + elr_rec["max_y"]) / 2.0
 
@@ -4050,6 +4379,14 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                     "TPS Track Nodes on ELR": tps_links.get("tps_nodes_count", 0),
                 }
 
+                if nf_links.get("summary"):
+                    nfs = nf_links["summary"]
+                    if nfs.get("min_elevation_m") is not None and nfs.get("max_elevation_m") is not None:
+                        decoded["Network Fusion Corridor Terrain"] = f"Elevation: {nfs['min_elevation_m']}m – {nfs['max_elevation_m']}m • {nfs['point_count']} sample points"
+                    if nfs.get("min_radius_m") is not None:
+                        tc = nfs.get("tightest_curve") or {}
+                        decoded["Network Fusion Tightest Curve"] = f"R={nfs['min_radius_m']}m ({tc.get('class', '')} @ {tc.get('mileage', '')})"
+
                 return {
                     "asset_type": "nwr_elr",
                     "id": elr_rec["fid"],
@@ -4061,6 +4398,7 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                     "related": {
                         "connected_centrelines": links,
                         "tps_cross_links": tps_links,
+                        "network_fusion": nf_links,
                     },
                     "highlight": {
                         "ways": [
@@ -4107,6 +4445,89 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                         "points": [{"x": wm["x"], "y": wm["y"], "label": f"{wm['elr']} {wm['value']}{wm['unit']}", "color": "#f59e0b"}],
                     },
                     "raw_attrs": wm["raw_attrs"],
+                    "raw_children": [],
+                }
+
+            elif asset_type == "nf_point":
+                cur.execute("SELECT * FROM network_fusion_points WHERE pk = %s", (asset_id,))
+                p = cur.fetchone()
+                if not p:
+                    raise HTTPException(status_code=404, detail="Network Fusion point not found")
+
+                tps_links = find_tps_cross_links(cur, p["elr"])
+                decoded = {
+                    "ELR & Mileage Position": f"{p['elr']} @ {p['mileage']} ({p['total_yards']} total yards)",
+                    "OSGB36 National Grid (E, N)": f"({p['easting']:.1f} E, {p['northing']:.1f} N)",
+                    "WGS84 Coordinates": f"Lat {p['latitude']:.6f}, Lon {p['longitude']:.6f}",
+                    "OS Grid Reference": p["os_grid_ref"] or "—",
+                    "Open Location Code (Plus Code)": p["olc"] or "—",
+                    "Elevation & Vertical Accuracy": f"{p['elevation_m']} m (linear accuracy {p['linear_accuracy_m']} m)",
+                    "Track Configuration": f"Primary: {p['track_count_primary']}, Total: {p['track_count_all']}",
+                    "Primary Track IDs": p["track_ids_primary"] or "—",
+                    "Siding / Crossover Tracks": f"Siding: {p['track_ids_siding'] or '—'} • Crossover: {p['track_ids_crossover'] or '—'}",
+                    "Local Climate": f"Temp: {p['min_air_temperature_c']}°C to {p['max_air_temperature_c']}°C • Wind: {p['mean_wind_speed_ms']} m/s • Rainfall: {p['annual_rainfall_mm']} mm/yr",
+                    "Geology & Ground": f"Bedrock: {p['bedrock'] or '—'} • Deposit: {p['deposit'] or '—'} • Material: {p['material'] or '—'}",
+                    "Gazetteer & Place": f"{p['place_name']} ({p['place_distance_m']}m away)",
+                    "Postcode & Admin": f"{p['postcode']} • {p['admin_area']}, {p['county_district']}, {p['country']} ({p['nr_region']})",
+                }
+
+                return {
+                    "asset_type": "nf_point",
+                    "id": p["pk"],
+                    "title": f"Network Fusion Tenth-Mile Point {p['elr']} @ {p['mileage']}",
+                    "subtitle": f"Elevation {p['elevation_m']}m • {p['place_name'] or p['postcode'] or p['elr']}",
+                    "x": p["easting"],
+                    "y": p["northing"],
+                    "decoded": decoded,
+                    "related": {
+                        "tps_cross_links": tps_links,
+                    },
+                    "highlight": {
+                        "ways": [],
+                        "points": [{"x": p["easting"], "y": p["northing"], "label": f"{p['elr']} {p['mileage']}", "color": "#06b6d4"}],
+                    },
+                    "raw_attrs": p,
+                    "raw_children": [],
+                }
+
+            elif asset_type == "nf_curvature":
+                cur.execute("SELECT * FROM network_fusion_curvature WHERE pk = %s", (asset_id,))
+                c = cur.fetchone()
+                if not c:
+                    raise HTTPException(status_code=404, detail="Network Fusion curvature not found")
+
+                tps_links = find_tps_cross_links(cur, c["elr"])
+                cx = (c["x0"] + c["x1"]) / 2.0
+                cy = (c["y0"] + c["y1"]) / 2.0
+                decoded = {
+                    "ELR & Mileage Span": f"{c['elr']} {c['mileage_from']} → {c['mileage_to']} ({c['total_yards_from']} → {c['total_yards_to']} yd)",
+                    "Average Curve Radius": f"{c['radius_avg_m']} m ({c['radius_avg_class']})",
+                    "Minimum Curve Radius": f"{c['radius_min_m']} m ({c['radius_min_class']})",
+                    "Maximum Curve Radius": f"{c['radius_max_m']} m ({c['radius_max_class']})",
+                    "OSGB36 Start (E, N)": f"({c['x0']:.1f}, {c['y0']:.1f})",
+                    "OSGB36 End (E, N)": f"({c['x1']:.1f}, {c['y1']:.1f})",
+                }
+
+                col = "#ef4444" if (c["radius_avg_m"] or 50000) <= 400 else "#f59e0b" if (c["radius_avg_m"] or 50000) <= 1200 else "#38bdf8"
+                return {
+                    "asset_type": "nf_curvature",
+                    "id": c["pk"],
+                    "title": f"Curvature Segment {c['elr']} ({c['radius_avg_class']})",
+                    "subtitle": f"R_avg = {c['radius_avg_m']}m • {c['mileage_from']} → {c['mileage_to']}",
+                    "x": cx,
+                    "y": cy,
+                    "decoded": decoded,
+                    "related": {
+                        "tps_cross_links": tps_links,
+                    },
+                    "highlight": {
+                        "ways": [{"label": f"Curve R={c['radius_avg_m']}m", "coords": c["coords"] or [[c["x0"], c["y0"]], [c["x1"], c["y1"]]], "color": col}],
+                        "points": [
+                            {"x": c["x0"], "y": c["y0"], "label": c["mileage_from"], "color": col},
+                            {"x": c["x1"], "y": c["y1"], "label": c["mileage_to"], "color": col},
+                        ],
+                    },
+                    "raw_attrs": c,
                     "raw_children": [],
                 }
 

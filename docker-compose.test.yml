@@ -1,0 +1,16 @@
+name: networkmodel-tests
+
+services:
+  lint:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: nr_testing_pylint
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app/backend:/app
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./.pylintrc:/app/.pylintrc:ro
+    command: ["pylint", "--rcfile=/app/.pylintrc", "backend"]
