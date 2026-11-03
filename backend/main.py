@@ -4064,7 +4064,7 @@ def find_network_fusion_for_elr(cur, elr: str, min_yd: Optional[int] = None, max
             FROM network_fusion_points
             WHERE UPPER(elr) = %s AND total_yards BETWEEN %s AND %s
             ORDER BY total_yards ASC
-            LIMIT 500
+            LIMIT 3500
             """,
             (elr_clean, lo_yd, hi_yd),
         )
@@ -4078,7 +4078,7 @@ def find_network_fusion_for_elr(cur, elr: str, min_yd: Optional[int] = None, max
             FROM network_fusion_points
             WHERE UPPER(elr) = %s
             ORDER BY total_yards ASC
-            LIMIT 4000
+            LIMIT 7000
             """,
             (elr_clean,),
         )
@@ -4095,7 +4095,7 @@ def find_network_fusion_for_elr(cur, elr: str, min_yd: Optional[int] = None, max
             FROM network_fusion_curvature
             WHERE UPPER(elr) = %s AND total_yards_to >= %s AND total_yards_from <= %s
             ORDER BY total_yards_from ASC
-            LIMIT 500
+            LIMIT 3500
             """,
             (elr_clean, lo_yd, hi_yd),
         )
@@ -4108,7 +4108,7 @@ def find_network_fusion_for_elr(cur, elr: str, min_yd: Optional[int] = None, max
             FROM network_fusion_curvature
             WHERE UPPER(elr) = %s
             ORDER BY total_yards_from ASC
-            LIMIT 4000
+            LIMIT 7000
             """,
             (elr_clean,),
         )
@@ -4361,9 +4361,7 @@ def api_nwr_asset(asset_type: str, asset_id: int):
                 links = cur.fetchall()
 
                 tps_links = find_tps_cross_links(cur, elr_rec["elr"])
-                s_yd = mile_yards_to_total_yards(elr_rec["start_mile_yards"])
-                e_yd = mile_yards_to_total_yards(elr_rec["end_mile_yards"])
-                nf_links = find_network_fusion_for_elr(cur, elr_rec["elr"], s_yd, e_yd)
+                nf_links = find_network_fusion_for_elr(cur, elr_rec["elr"])
 
                 cx = (elr_rec["min_x"] + elr_rec["max_x"]) / 2.0
                 cy = (elr_rec["min_y"] + elr_rec["max_y"]) / 2.0

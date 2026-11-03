@@ -534,6 +534,39 @@
 
       <!-- Hover Tooltip / Submenu -->
       <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+
+      <!-- Bottom Profile Toggle Dock Button (visible when an asset with profile data is loaded) -->
+      <button id="btn-dock-profile" class="profile-dock-btn hidden" title="Toggle Elevation &amp; Curvature Profile Drawer">
+        <span class="dock-icon">📈</span>
+        <span id="dock-profile-text">Track Profile (Elevation &amp; Curvature)</span>
+      </button>
+
+      <!-- Bottom Track Elevation & Curvature Profile Drawer -->
+      <div id="profile-drawer" class="profile-drawer hidden">
+        <div class="profile-header">
+          <div class="profile-title-group">
+            <span class="profile-badge">PROFILE</span>
+            <div class="profile-titles">
+              <span id="profile-title" class="profile-title">Track Profile</span>
+              <span id="profile-subtitle" class="profile-subtitle">Select a track to inspect elevation &amp; curvature profile</span>
+            </div>
+          </div>
+          <div class="profile-metrics" id="profile-metrics">
+            <span class="prof-metric"><strong id="prof-len">--</strong> length</span>
+            <span class="prof-metric"><strong id="prof-elev">--</strong> elevation</span>
+            <span class="prof-metric"><strong id="prof-tightest">--</strong> tightest curve</span>
+          </div>
+          <div class="profile-actions">
+            <button id="btn-profile-scope" class="btn btn-xs btn-secondary" title="Switch between single track segment and whole ELR corridor">Corridor</button>
+            <button id="btn-profile-collapse" class="btn btn-xs btn-ghost" title="Collapse Profile Drawer">&minus;</button>
+            <button id="btn-profile-close" class="btn btn-xs btn-ghost" title="Close Profile Drawer">&times;</button>
+          </div>
+        </div>
+        <div class="profile-body">
+          <canvas id="profile-canvas"></canvas>
+          <div id="profile-scrub-tooltip" class="profile-scrub-tooltip hidden"></div>
+        </div>
+      </div>
     </main>
 
     <!-- Right Properties & Topology Inspector Drawer -->
