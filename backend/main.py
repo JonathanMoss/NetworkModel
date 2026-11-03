@@ -1046,7 +1046,7 @@ def find_nwr_cross_links_for_tps(cur, elr: Optional[str], km_meters: Optional[fl
         return {"elr_record": None, "centrelines": []}
     try:
         cur.execute(
-            "SELECT fid, asset_id, elr, start_mile_yards, end_mile_yards FROM nwr_elrs WHERE elr = %s LIMIT 1",
+            "SELECT fid, asset_id, elr, start_mile_yards, end_mile_yards, parts, min_x, max_x, min_y, max_y FROM nwr_elrs WHERE elr = %s LIMIT 1",
             (elr,),
         )
         elr_rec = cur.fetchone()
@@ -1054,11 +1054,12 @@ def find_nwr_cross_links_for_tps(cur, elr: Optional[str], km_meters: Optional[fl
             cur.execute(
                 """
                 SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
-                       start_meters, end_meters, length_meters, owner
+                       start_meters, end_meters, length_meters, owner, coords,
+                       min_x, max_x, min_y, max_y
                 FROM nwr_track_centrelines
                 WHERE elr = %s
-                  AND LEAST(start_meters, end_meters) - 250 <= %s
-                  AND GREATEST(start_meters, end_meters) + 250 >= %s
+                  AND LEAST(start_meters, end_meters) - 300 <= %s
+                  AND GREATEST(start_meters, end_meters) + 300 >= %s
                 ORDER BY ABS(((start_meters + end_meters) / 2.0) - %s) ASC
                 LIMIT 8
                 """,
@@ -1068,7 +1069,8 @@ def find_nwr_cross_links_for_tps(cur, elr: Optional[str], km_meters: Optional[fl
             cur.execute(
                 """
                 SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
-                       start_meters, end_meters, length_meters, owner
+                       start_meters, end_meters, length_meters, owner, coords,
+                       min_x, max_x, min_y, max_y
                 FROM nwr_track_centrelines
                 WHERE elr = %s
                 ORDER BY start_meters ASC
@@ -1237,6 +1239,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "routes": routes,
                         "station_banks": station_banks,
                         "positions": st["positions"],
+                        "nwr_cross_links": find_nwr_cross_links_for_tps(cur, elr, st["km_value"]),
                     },
                     "highlight": {
                         "ways": highlight_ways,
@@ -1366,6 +1369,9 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (ed["x0"] + ed["x1"]) / 2.0 if ed["x0"] is not None else None
                 cy = (ed["y0"] + ed["y1"]) / 2.0 if ed["y0"] is not None else None
 
+                km_val = n_start["km_value"] if (n_start and n_start.get("km_value")) else (n_end["km_value"] if n_end else None)
+                nwr_cross_links = find_nwr_cross_links_for_tps(cur, elr_start, km_val)
+
                 return {
                     "asset_type": "edge",
                     "id": ed["pk"],
@@ -1383,6 +1389,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "blocks": blocks,
                         "routes": routes,
                         "attribute_sections": attr_secs,
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "ways": [
@@ -1465,6 +1472,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "Last Modified": nd["last_modified"],
                 }
 
+                nwr_cross_links = find_nwr_cross_links_for_tps(cur, elr1, nd["km_value"])
+
                 return {
                     "asset_type": "node",
                     "id": nd["node_id"],
@@ -1478,6 +1487,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "signals_at_node": conn_signals,
                         "station_tracks": conn_tracks,
                         "blocks": conn_blocks,
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "ways": [
@@ -1976,6 +1986,19 @@ def api_get_asset(asset_type: str, asset_id: int):
                     )
                     trk_routes = cur.fetchall()
 
+                trk_elr = None
+                trk_km = None
+                if trk.get("node_ids"):
+                    cur.execute(
+                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s LIMIT 1",
+                        (trk["node_ids"][0],),
+                    )
+                    tn = cur.fetchone()
+                    if tn:
+                        trk_elr = decode_code("kmregionmasterdesc", tn["km_region_id"]) if tn.get("km_region_id") else None
+                        trk_km = tn.get("km_value")
+                nwr_cross_links = find_nwr_cross_links_for_tps(cur, trk_elr, trk_km)
+
                 return {
                     "asset_type": "track",
                     "id": trk["pk"],
@@ -1990,6 +2013,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "routes": trk_routes,
                         "node_ids": trk["node_ids"],
                         "station_id": trk["station_id"],
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "ways": [
@@ -2165,6 +2189,20 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (blk["min_x"] + blk["max_x"]) / 2.0 if blk["min_x"] is not None else None
                 cy = (blk["min_y"] + blk["max_y"]) / 2.0 if blk["min_y"] is not None else None
 
+                blk_elr = None
+                blk_km = None
+                if nids:
+                    cur.execute(
+                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s OR node_id = %s LIMIT 2",
+                        (nids[0], nids[-1]),
+                    )
+                    for bn in cur.fetchall():
+                        if bn.get("km_region_id") and not blk_elr:
+                            blk_elr = decode_code("kmregionmasterdesc", bn["km_region_id"])
+                        if bn.get("km_value") and blk_km is None:
+                            blk_km = bn["km_value"]
+                nwr_cross_links = find_nwr_cross_links_for_tps(cur, blk_elr, blk_km)
+
                 return {
                     "asset_type": "block",
                     "id": blk["pk"],
@@ -2181,6 +2219,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "exit_overlaps": exit_overlaps,
                         "turnout_nodes": p_info["turnout_nodes"],
                         "node_ids": nids,
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "ways": highlight_ways,
@@ -2217,6 +2256,19 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (rt["min_x"] + rt["max_x"]) / 2.0 if rt["min_x"] is not None else None
                 cy = (rt["min_y"] + rt["max_y"]) / 2.0 if rt["min_y"] is not None else None
 
+                rt_elr = None
+                rt_km = None
+                if rt.get("node_ids"):
+                    cur.execute(
+                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s LIMIT 1",
+                        (rt["node_ids"][0],),
+                    )
+                    rn = cur.fetchone()
+                    if rn:
+                        rt_elr = decode_code("kmregionmasterdesc", rn["km_region_id"]) if rn.get("km_region_id") else None
+                        rt_km = rn.get("km_value")
+                nwr_cross_links = find_nwr_cross_links_for_tps(cur, rt_elr, rt_km)
+
                 return {
                     "asset_type": "route",
                     "id": rt["pk"],
@@ -2226,7 +2278,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "y": cy,
                     "bbox": [rt["min_x"], rt["min_y"], rt["max_x"], rt["max_y"]],
                     "decoded": decoded,
-                    "related": {"node_ids": rt["node_ids"], "station_id": rt["station_id"]},
+                    "related": {
+                        "node_ids": rt["node_ids"],
+                        "station_id": rt["station_id"],
+                        "nwr_cross_links": nwr_cross_links,
+                    },
                     "highlight": {
                         "ways": [
                             {
@@ -3969,7 +4025,14 @@ def api_nwr_pick(
 def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Optional[float] = None):
     """Relational bridge from NWR_TrackModel (ELR + mileage in metres) to TPS (XML_p.xml)."""
     if not elr:
-        return {"km_regions": [], "tps_stations": [], "tps_attribute_sections": [], "tps_nodes_count": 0}
+        return {
+            "km_regions": [],
+            "tps_stations": [],
+            "tps_attribute_sections": [],
+            "tps_nodes_count": 0,
+            "tps_edges": [],
+            "tps_signals": [],
+        }
 
     cur.execute(
         """
@@ -3985,6 +4048,8 @@ def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Op
 
     tps_stations = []
     tps_nodes_count = 0
+    tps_edges = []
+    tps_signals = []
     if km_ids:
         cur.execute(
             """
@@ -3999,8 +4064,8 @@ def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Op
         tps_stations = cur.fetchall()
 
         if min_m is not None and max_m is not None:
-            lo = min(min_m, max_m) - 400.0
-            hi = max(min_m, max_m) + 400.0
+            lo = min(min_m, max_m) - 450.0
+            hi = max(min_m, max_m) + 450.0
             cur.execute(
                 """
                 SELECT COUNT(*) AS cnt
@@ -4009,12 +4074,62 @@ def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Op
                 """,
                 (km_ids, lo, hi),
             )
+            tps_nodes_count = cur.fetchone()["cnt"]
+
+            cur.execute(
+                """
+                SELECT e.pk, e.edge_id, e.x0, e.y0, e.x1, e.y1, e.length, e.vmax, n1.km_value
+                FROM edges e
+                JOIN nodes n1 ON n1.node_id = e.start_node_id
+                WHERE n1.km_region_id = ANY(%s) AND n1.km_value BETWEEN %s AND %s
+                LIMIT 25
+                """,
+                (km_ids, lo, hi),
+            )
+            tps_edges = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT s.pk, s.signal_id, s.name, s.master_name, s.x, s.y, n.km_value
+                FROM signals s
+                LEFT JOIN nodes n ON n.node_id = COALESCE(s.end_node_id, s.start_node_id, s.point_node_id)
+                WHERE (s.km_region_id = ANY(%s) OR n.km_region_id = ANY(%s))
+                  AND n.km_value BETWEEN %s AND %s
+                LIMIT 20
+                """,
+                (km_ids, km_ids, lo, hi),
+            )
+            tps_signals = cur.fetchall()
         else:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM nodes WHERE km_region_id = ANY(%s)",
                 (km_ids,),
             )
-        tps_nodes_count = cur.fetchone()["cnt"]
+            tps_nodes_count = cur.fetchone()["cnt"]
+
+            cur.execute(
+                """
+                SELECT e.pk, e.edge_id, e.x0, e.y0, e.x1, e.y1, e.length, e.vmax
+                FROM edges e
+                JOIN nodes n1 ON n1.node_id = e.start_node_id
+                WHERE n1.km_region_id = ANY(%s)
+                LIMIT 30
+                """,
+                (km_ids,),
+            )
+            tps_edges = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT s.pk, s.signal_id, s.name, s.master_name, s.x, s.y
+                FROM signals s
+                LEFT JOIN nodes n ON n.node_id = COALESCE(s.end_node_id, s.start_node_id, s.point_node_id)
+                WHERE s.km_region_id = ANY(%s) OR n.km_region_id = ANY(%s)
+                LIMIT 20
+                """,
+                (km_ids, km_ids),
+            )
+            tps_signals = cur.fetchall()
 
     cur.execute(
         """
@@ -4033,6 +4148,8 @@ def find_tps_cross_links(cur, elr: str, min_m: Optional[float] = None, max_m: Op
         "tps_stations": tps_stations,
         "tps_attribute_sections": tps_attr_secs,
         "tps_nodes_count": tps_nodes_count,
+        "tps_edges": tps_edges,
+        "tps_signals": tps_signals,
     }
 
 

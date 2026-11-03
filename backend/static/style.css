@@ -629,7 +629,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Canvas Area */
+/* Canvas Area & Dual-View Split System */
 .canvas-wrap {
   flex: 1;
   position: relative;
@@ -637,19 +637,179 @@ body {
   overflow: hidden;
 }
 
-#schematic-canvas {
+.dual-view-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.dual-pane {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at center, #0c1424 0%, #060911 100%);
+}
+
+.dual-pane canvas {
   width: 100%;
   height: 100%;
   display: block;
   cursor: grab;
 }
 
-#schematic-canvas.has-target {
+.dual-pane canvas.has-target {
   cursor: pointer;
 }
 
-#schematic-canvas:active {
+.dual-pane canvas:active {
   cursor: grabbing;
+}
+
+/* Single View vs Split View Visibility & Sizing */
+.canvas-wrap.view-mode-tps .dual-pane-tps {
+  flex: 1 1 100%;
+  width: 100%;
+  display: block;
+}
+.canvas-wrap.view-mode-tps .dual-pane-nwr,
+.canvas-wrap.view-mode-tps .split-divider {
+  display: none !important;
+}
+
+.canvas-wrap.view-mode-nwr .dual-pane-nwr {
+  flex: 1 1 100%;
+  width: 100%;
+  display: block;
+}
+.canvas-wrap.view-mode-nwr .dual-pane-tps,
+.canvas-wrap.view-mode-nwr .split-divider {
+  display: none !important;
+}
+
+.canvas-wrap.view-mode-split .dual-pane-tps {
+  display: block;
+  flex: 0 0 calc(var(--split-ratio, 50%) - 4px);
+  width: calc(var(--split-ratio, 50%) - 4px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.canvas-wrap.view-mode-split .dual-pane-nwr {
+  display: block;
+  flex: 1 1 auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.canvas-wrap.view-mode-split .split-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  background: #0b1322;
+  border-left: 1px solid rgba(56, 189, 248, 0.25);
+  border-right: 1px solid rgba(56, 189, 248, 0.25);
+  cursor: col-resize;
+  user-select: none;
+  z-index: 20;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.canvas-wrap.view-mode-split .split-divider:hover,
+.canvas-wrap.view-mode-split .split-divider.dragging {
+  background: #0284c7;
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+}
+
+.divider-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 38px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.divider-icon {
+  font-size: 0.75rem;
+  color: #fff;
+  opacity: 0.7;
+}
+
+/* Floating Pane Header Badges in Split View */
+.pane-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 15;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-main);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.canvas-wrap.view-mode-split .pane-badge {
+  display: flex;
+}
+
+.badge-icon {
+  font-size: 0.9rem;
+}
+
+.badge-title {
+  letter-spacing: 0.02em;
+}
+
+.badge-sync-tag {
+  background: rgba(6, 182, 212, 0.2);
+  color: #22d3ee;
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  animation: pulse-sync-tag 1.6s infinite ease-in-out;
+}
+
+@keyframes pulse-sync-tag {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; box-shadow: 0 0 8px rgba(34, 211, 238, 0.6); }
+  100% { opacity: 0.5; }
+}
+
+.pane-fit-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-main);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.15s ease;
+}
+
+.pane-fit-btn:hover {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+#view-btn-split.active {
+  background: linear-gradient(135deg, #0284c7, #8b5cf6);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
 }
 
 .pane-toggle-btn {

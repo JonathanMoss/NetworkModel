@@ -38,12 +38,15 @@
       </div>
 
       <!-- Primary View Switcher -->
-      <div class="view-switcher">
+      <div class="view-switcher" id="view-switcher">
         <button id="view-btn-tps" class="view-btn active" title="TPS Signalling &amp; Timetable Schematic (XML_p.xml)">
           TPS Schematic View
         </button>
         <button id="view-btn-nwr" class="view-btn" title="Network Rail Geospatial Track Model (OSGB36 Shapefiles)">
           NWR Track Model View
+        </button>
+        <button id="view-btn-split" class="view-btn" title="Synchronized Dual-View: TPS Schematic &amp; NWR Geospatial Corridor Side-by-Side">
+          <span class="view-split-icon">⧉</span> Dual View (Sync)
         </button>
       </div>
 
@@ -514,8 +517,37 @@
     </aside>
 
     <!-- Main Interactive Schematic / Geospatial Canvas -->
-    <main class="canvas-wrap" id="canvas-container">
-      <canvas id="schematic-canvas"></canvas>
+    <main class="canvas-wrap view-mode-tps" id="canvas-container">
+      <div class="dual-view-container" id="dual-view-container">
+        <!-- Left Pane: TPS Signalling Schematic -->
+        <div class="dual-pane dual-pane-tps" id="pane-tps">
+          <div class="pane-badge tps-badge" id="badge-tps">
+            <span class="badge-icon">🔀</span>
+            <span class="badge-title">TPS Schematic</span>
+            <span class="badge-sync-tag hidden" id="tps-sync-tag">⚡ Correlated</span>
+            <button class="pane-fit-btn" id="btn-fit-tps" title="Fit TPS Schematic Network">Fit TPS</button>
+          </div>
+          <canvas id="schematic-canvas"></canvas>
+        </div>
+
+        <!-- Draggable Resizer Split Divider -->
+        <div class="split-divider" id="split-divider">
+          <div class="divider-handle" title="Drag to resize panes">
+            <span class="divider-icon">⋮</span>
+          </div>
+        </div>
+
+        <!-- Right Pane: NWR Geospatial Track Corridor -->
+        <div class="dual-pane dual-pane-nwr" id="pane-nwr">
+          <div class="pane-badge nwr-badge" id="badge-nwr">
+            <span class="badge-icon">🌍</span>
+            <span class="badge-title">NWR Geographic Corridor (OSGB36)</span>
+            <span class="badge-sync-tag hidden" id="nwr-sync-tag">⚡ Correlated</span>
+            <button class="pane-fit-btn" id="btn-fit-nwr" title="Fit NWR Corridor">Fit NWR</button>
+          </div>
+          <canvas id="nwr-canvas"></canvas>
+        </div>
+      </div>
 
       <!-- Floating Pane Fold / Unfold Controls -->
       <button id="btn-toggle-left-pane" class="pane-toggle-btn pane-toggle-left" title="Fold / Unfold Left Layers Pane">

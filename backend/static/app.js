@@ -139,18 +139,57 @@ const STATE = {
 
   leftPaneCollapsed: false,
   rightPaneCollapsed: false,
+
+  splitRatio: 0.5,
+  tpsCam: { camX: 0, camY: 0, zoom: 1.0 },
+  nwrCam: { camX: 400000, camY: 300000, zoom: 0.005 },
+  crossHighlight: {
+    tps: { ways: [], points: [], pulseStart: 0, pulseDuration: 4500, active: false, title: "" },
+    nwr: { ways: [], points: [], pulseStart: 0, pulseDuration: 4500, active: false, title: "" },
+  },
+  dragTargetCanvas: null,
 };
 
 const canvas = document.getElementById("schematic-canvas");
 const ctx = canvas.getContext("2d");
+const nwrCanvas = document.getElementById("nwr-canvas");
+const nwrCtx = nwrCanvas ? nwrCanvas.getContext("2d") : null;
 const hoverTooltip = document.getElementById("hover-tooltip");
 
 function resizeCanvas() {
-  const wrap = document.getElementById("canvas-container");
+  const container = document.getElementById("canvas-container");
+  if (!container) return;
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = wrap.clientWidth * dpr;
-  canvas.height = wrap.clientHeight * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const isSplit = STATE.activeView === "split";
+  const isNwr = STATE.activeView === "nwr";
+
+  container.className = `canvas-wrap view-mode-${STATE.activeView}`;
+  if (isSplit) {
+    container.style.setProperty("--split-ratio", `${(STATE.splitRatio * 100).toFixed(1)}%`);
+  }
+
+  const paneTps = document.getElementById("pane-tps");
+  if (paneTps && (isSplit || !isNwr)) {
+    const w = paneTps.clientWidth;
+    const h = paneTps.clientHeight;
+    if (w > 0 && h > 0) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  }
+
+  const paneNwr = document.getElementById("pane-nwr");
+  if (paneNwr && nwrCanvas && (isSplit || isNwr)) {
+    const w = paneNwr.clientWidth;
+    const h = paneNwr.clientHeight;
+    if (w > 0 && h > 0) {
+      nwrCanvas.width = w * dpr;
+      nwrCanvas.height = h * dpr;
+      if (nwrCtx) nwrCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  }
+
   renderProfileCanvas();
   requestRender();
 }
@@ -191,41 +230,55 @@ function isPointInOrientedBox(px, py, ox, oy, w, h, angleDeg = 0, alignY = "cent
 }
 
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
-function worldToScreen(wx, wy) {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (STATE.activeView === "nwr") {
+function worldToScreen(wx, wy, targetView = null) {
+  const view = targetView || (STATE.activeView === "split" ? "tps" : STATE.activeView);
+  if (view === "nwr") {
+    const c = nwrCanvas || canvas;
+    const w = c.clientWidth;
+    const h = c.clientHeight;
+    const cam = STATE.nwrCam;
     return [
-      (wx - STATE.camX) * STATE.zoom + w / 2,
-      (STATE.camY - wy) * STATE.zoom + h / 2,
+      (wx - cam.camX) * cam.zoom + w / 2,
+      (cam.camY - wy) * cam.zoom + h / 2,
     ];
   }
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const cam = STATE.tpsCam;
   return [
-    (wx - STATE.camX) * STATE.zoom + w / 2,
-    (wy - STATE.camY) * STATE.zoom + h / 2,
+    (wx - cam.camX) * cam.zoom + w / 2,
+    (wy - cam.camY) * cam.zoom + h / 2,
   ];
 }
 
-function screenToWorld(sx, sy) {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (STATE.activeView === "nwr") {
+function screenToWorld(sx, sy, targetView = null) {
+  const view = targetView || (STATE.activeView === "split" ? "tps" : STATE.activeView);
+  if (view === "nwr") {
+    const c = nwrCanvas || canvas;
+    const w = c.clientWidth;
+    const h = c.clientHeight;
+    const cam = STATE.nwrCam;
     return [
-      (sx - w / 2) / STATE.zoom + STATE.camX,
-      STATE.camY - (sy - h / 2) / STATE.zoom,
+      (sx - w / 2) / cam.zoom + cam.camX,
+      cam.camY - (sy - h / 2) / cam.zoom,
     ];
   }
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const cam = STATE.tpsCam;
   return [
-    (sx - w / 2) / STATE.zoom + STATE.camX,
-    (sy - h / 2) / STATE.zoom + STATE.camY,
+    (sx - w / 2) / cam.zoom + cam.camX,
+    (sy - h / 2) / cam.zoom + cam.camY,
   ];
 }
 
-function getViewportBBox(padFactor = 0.25) {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  const [x0, y0] = screenToWorld(0, 0);
-  const [x1, y1] = screenToWorld(w, h);
+function getViewportBBox(padFactor = 0.25, forView = null) {
+  const view = forView || (STATE.activeView === "nwr" ? "nwr" : "tps");
+  const c = (view === "nwr" && nwrCanvas) ? nwrCanvas : canvas;
+  const w = c.clientWidth;
+  const h = c.clientHeight;
+  const [x0, y0] = screenToWorld(0, 0, view);
+  const [x1, y1] = screenToWorld(w, h, view);
   const minX = Math.min(x0, x1);
   const maxX = Math.max(x0, x1);
   const minY = Math.min(y0, y1);
@@ -246,13 +299,144 @@ function requestRender() {
     renderPending = true;
     requestAnimationFrame(() => {
       renderPending = false;
-      if (STATE.activeView === "nwr") {
+      if (STATE.activeView === "split") {
+        renderSchematic();
+        renderNwrModel();
+      } else if (STATE.activeView === "nwr") {
         renderNwrModel();
       } else {
         renderSchematic();
       }
     });
   }
+}
+
+let pulseLoopRunning = false;
+function triggerPulseLoop() {
+  if (pulseLoopRunning) return;
+  pulseLoopRunning = true;
+  function step(now) {
+    let continueAnimation = false;
+    if (STATE.crossHighlight.tps && STATE.crossHighlight.tps.active) {
+      const elapsed = now - STATE.crossHighlight.tps.pulseStart;
+      if (elapsed < STATE.crossHighlight.tps.pulseDuration) {
+        continueAnimation = true;
+      }
+    }
+    if (STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
+      const elapsed = now - STATE.crossHighlight.nwr.pulseStart;
+      if (elapsed < STATE.crossHighlight.nwr.pulseDuration) {
+        continueAnimation = true;
+      }
+    }
+    requestRender();
+    if (continueAnimation) {
+      requestAnimationFrame(step);
+    } else {
+      pulseLoopRunning = false;
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
+  if (!highlight || !highlight.active) return;
+  const now = performance.now();
+  const elapsed = now - (highlight.pulseStart || now);
+  const isPulsing = elapsed < (highlight.pulseDuration || 4500);
+
+  const pulsePhase = (elapsed % 1200) / 1200;
+  const glowAlpha = isPulsing ? 0.35 + 0.35 * Math.sin(pulsePhase * Math.PI * 2) : 0.35;
+  const glowCol = mode === "nwr" ? "rgba(6, 182, 212, " : "rgba(244, 63, 94, ";
+
+  targetCtx.save();
+
+  // 1. Draw glowing corridors / ways
+  for (const way of highlight.ways || []) {
+    if (!way.coords || way.coords.length < 2) continue;
+    const pts = way.coords.map((pt) => toScreen(pt[0], pt[1]));
+
+    targetCtx.beginPath();
+    targetCtx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) {
+      targetCtx.lineTo(pts[i][0], pts[i][1]);
+    }
+    targetCtx.strokeStyle = `${glowCol}${glowAlpha})`;
+    targetCtx.lineWidth = mode === "nwr" ? 14 : 12;
+    targetCtx.lineCap = "round";
+    targetCtx.lineJoin = "round";
+    targetCtx.stroke();
+
+    targetCtx.strokeStyle = `${glowCol}${Math.min(1, glowAlpha + 0.3)})`;
+    targetCtx.lineWidth = mode === "nwr" ? 7 : 6;
+    targetCtx.stroke();
+
+    targetCtx.strokeStyle = mode === "nwr" ? "#22d3ee" : "#fda4af";
+    targetCtx.lineWidth = 3;
+    if (isPulsing) {
+      targetCtx.setLineDash([8, 6]);
+      targetCtx.lineDashOffset = -(elapsed * 0.04) % 14;
+    }
+    targetCtx.stroke();
+    targetCtx.setLineDash([]);
+
+    const midIdx = Math.floor(pts.length / 2);
+    const midPt = pts[midIdx];
+    if (isPulsing && midPt) {
+      const rippleR = 6 + pulsePhase * 28;
+      const rippleAlpha = Math.max(0, 1 - pulsePhase);
+      targetCtx.beginPath();
+      targetCtx.arc(midPt[0], midPt[1], rippleR, 0, Math.PI * 2);
+      targetCtx.strokeStyle = `${glowCol}${rippleAlpha})`;
+      targetCtx.lineWidth = 2.5;
+      targetCtx.stroke();
+
+      const phase2 = (pulsePhase + 0.5) % 1.0;
+      const rippleR2 = 6 + phase2 * 28;
+      const rippleAlpha2 = Math.max(0, 1 - phase2);
+      targetCtx.beginPath();
+      targetCtx.arc(midPt[0], midPt[1], rippleR2, 0, Math.PI * 2);
+      targetCtx.strokeStyle = `${glowCol}${rippleAlpha2})`;
+      targetCtx.lineWidth = 1.8;
+      targetCtx.stroke();
+    }
+  }
+
+  // 2. Draw points (signals, nodes, stations)
+  for (const pt of highlight.points || []) {
+    const [sx, sy] = toScreen(pt.x, pt.y);
+    if (isPulsing) {
+      const rippleR = 8 + pulsePhase * 32;
+      const rippleAlpha = Math.max(0, 1 - pulsePhase);
+      targetCtx.beginPath();
+      targetCtx.arc(sx, sy, rippleR, 0, Math.PI * 2);
+      targetCtx.strokeStyle = `rgba(245, 158, 11, ${rippleAlpha})`;
+      targetCtx.lineWidth = 2.5;
+      targetCtx.stroke();
+    }
+
+    targetCtx.beginPath();
+    targetCtx.arc(sx, sy, 7, 0, Math.PI * 2);
+    targetCtx.fillStyle = pt.color || "#f59e0b";
+    targetCtx.shadowColor = pt.color || "#f59e0b";
+    targetCtx.shadowBlur = 12;
+    targetCtx.fill();
+    targetCtx.shadowBlur = 0;
+    targetCtx.strokeStyle = "#ffffff";
+    targetCtx.lineWidth = 2;
+    targetCtx.stroke();
+
+    if (pt.label) {
+      targetCtx.font = "bold 12px Inter, sans-serif";
+      targetCtx.fillStyle = "#ffffff";
+      targetCtx.shadowColor = "rgba(0, 0, 0, 0.85)";
+      targetCtx.shadowBlur = 4;
+      targetCtx.fillText(pt.label, sx + 12, sy + 4);
+      targetCtx.shadowBlur = 0;
+    }
+  }
+
+  targetCtx.restore();
 }
 
 /* Colour & Signalling Interlocking helpers for TPS & NWR */
@@ -1024,7 +1208,10 @@ function renderSchematic() {
   }
 
   // 10. Highlight & Hover Preview Overlays (drawn on top of all layers and labels)
-  drawHighlightAndPreviewOverlays();
+  drawHighlightAndPreviewOverlays(ctx, "tps");
+  if (STATE.crossHighlight.tps && STATE.crossHighlight.tps.active) {
+    drawCrossHighlightPulse(ctx, STATE.crossHighlight.tps, (wx, wy) => worldToScreen(wx, wy, "tps"), "tps");
+  }
 
   document.getElementById("hud-zoom").textContent = `${zoom.toFixed(3)}x (${
     useMicro ? "TPS Microscopic" : "TPS Macro"
@@ -1100,8 +1287,10 @@ function getHighlightedTrackFusionData() {
 }
 
 function renderNwrModel() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  const targetCanvas = (STATE.activeView === "split" || STATE.activeView === "nwr") ? (nwrCanvas || canvas) : canvas;
+  const ctx = targetCanvas.getContext("2d");
+  const w = targetCanvas.clientWidth;
+  const h = targetCanvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
 
   STATE.drawnNwrElrLabels = [];
@@ -1112,8 +1301,12 @@ function renderNwrModel() {
 
   if (!STATE.nwrOverview) return;
 
-  const bbox = getViewportBBox(0.05);
-  const zoom = STATE.zoom;
+  const worldToScreen = (wx, wy) => [
+    (wx - STATE.nwrCam.camX) * STATE.nwrCam.zoom + w / 2,
+    (STATE.nwrCam.camY - wy) * STATE.nwrCam.zoom + h / 2,
+  ];
+  const zoom = STATE.nwrCam.zoom;
+  const bbox = getViewportBBox(0.05, "nwr");
   const useDetailedCentrelines = zoom >= 0.008 && STATE.nwrViewportData.centrelines && STATE.nwrViewportData.centrelines.length > 0;
 
   // 1. NWR_ELRs Reference Lines
@@ -1520,7 +1713,10 @@ function renderNwrModel() {
   }
 
   // 6. Highlight & Hover Preview Overlays (drawn on top of all layers and labels)
-  drawHighlightAndPreviewOverlays();
+  drawHighlightAndPreviewOverlays(ctx, "nwr");
+  if (STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
+    drawCrossHighlightPulse(ctx, STATE.crossHighlight.nwr, worldToScreen, "nwr");
+  }
 
   document.getElementById("hud-zoom").textContent = `${(zoom * 1000).toFixed(2)} px/km (${
     useDetailedCentrelines ? "NWR Detailed" : "NWR Macro"
@@ -1550,7 +1746,25 @@ function getHoverHighlightColor(type) {
   }
 }
 
-function drawHighlightAndPreviewOverlays() {
+function drawHighlightAndPreviewOverlays(targetCtx = ctx, targetView = null) {
+  const ctx = targetCtx;
+  const c = targetCtx.canvas || canvas;
+  const w = c.clientWidth;
+  const h = c.clientHeight;
+  const isNwrTarget = targetView === "nwr" || (targetView === null && STATE.activeView === "nwr");
+  const worldToScreen = (wx, wy) => {
+    if (isNwrTarget) {
+      return [
+        (wx - STATE.nwrCam.camX) * STATE.nwrCam.zoom + w / 2,
+        (STATE.nwrCam.camY - wy) * STATE.nwrCam.zoom + h / 2,
+      ];
+    }
+    return [
+      (wx - STATE.tpsCam.camX) * STATE.tpsCam.zoom + w / 2,
+      (wy - STATE.tpsCam.camY) * STATE.tpsCam.zoom + h / 2,
+    ];
+  };
+
   if (
     STATE.highlight.ways.length ||
     STATE.highlight.points.length ||
@@ -2495,8 +2709,15 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
 /* Viewport Data Fetching */
 function scheduleViewportFetch() {
   if (STATE.viewportTimer) clearTimeout(STATE.viewportTimer);
+  if (STATE.activeView === "split") {
+    STATE.viewportTimer = setTimeout(() => {
+      fetchViewportData();
+      fetchNwrViewportData();
+    }, 90);
+    return;
+  }
   if (STATE.activeView === "nwr") {
-    if (STATE.zoom < 0.005) {
+    if (STATE.nwrCam.zoom < 0.005) {
       document.getElementById("hud-loaded").textContent = `${
         STATE.nwrOverview ? STATE.nwrOverview.macro_links.length.toLocaleString() : 0
       } NWR links`;
@@ -2507,7 +2728,7 @@ function scheduleViewportFetch() {
     return;
   }
 
-  if (STATE.zoom < 0.16) {
+  if (STATE.tpsCam.zoom < 0.16) {
     document.getElementById("hud-loaded").textContent = `${
       STATE.overview ? STATE.overview.macro_edges.length.toLocaleString() : 0
     } macro segs`;
@@ -2518,27 +2739,27 @@ function scheduleViewportFetch() {
 }
 
 async function fetchViewportData() {
-  if (!STATE.ready || STATE.activeView !== "tps" || STATE.zoom < 0.16) return;
+  if (!STATE.ready || (STATE.activeView !== "tps" && STATE.activeView !== "split") || STATE.tpsCam.zoom < 0.16) return;
   if (STATE.viewportAbort) STATE.viewportAbort.abort();
   STATE.viewportAbort = new AbortController();
 
-  const bbox = getViewportBBox(0.3);
+  const bbox = getViewportBBox(0.3, "tps");
   const params = new URLSearchParams({
     min_x: bbox.min_x.toFixed(1),
     max_x: bbox.max_x.toFixed(1),
     min_y: bbox.min_y.toFixed(1),
     max_y: bbox.max_y.toFixed(1),
-    zoom: STATE.zoom.toFixed(4),
+    zoom: STATE.tpsCam.zoom.toFixed(4),
     include_vectors: STATE.layers.vectors,
-    include_texts: STATE.layers.texts && STATE.zoom >= 0.4,
-    include_signals: STATE.layers.signals && STATE.zoom >= 0.3,
-    include_nodes: STATE.layers.nodes || STATE.zoom >= 2.0,
+    include_texts: STATE.layers.texts && STATE.tpsCam.zoom >= 0.4,
+    include_signals: STATE.layers.signals && STATE.tpsCam.zoom >= 0.3,
+    include_nodes: STATE.layers.nodes || STATE.tpsCam.zoom >= 2.0,
     include_tracks: STATE.layers.tracks,
     include_blocks:
       STATE.layers.blocks ||
-      (STATE.colorMode === "signalling" && STATE.zoom >= 0.55),
+      (STATE.colorMode === "signalling" && STATE.tpsCam.zoom >= 0.55),
     include_vp: STATE.colorMode === "timing",
-    include_overlaps: STATE.colorMode === "signalling" || STATE.zoom >= 1.1,
+    include_overlaps: STATE.colorMode === "signalling" || STATE.tpsCam.zoom >= 1.1,
   });
 
   try {
@@ -2548,7 +2769,9 @@ async function fetchViewportData() {
     if (!res.ok) return;
     const data = await res.json();
     STATE.viewportData = { ...data, bbox };
-    document.getElementById("hud-loaded").textContent = `${data.edges.length.toLocaleString()} edges, ${data.signals.length.toLocaleString()} sigs`;
+    if (STATE.activeView !== "nwr") {
+      document.getElementById("hud-loaded").textContent = `${data.edges.length.toLocaleString()} edges, ${data.signals.length.toLocaleString()} sigs`;
+    }
     requestRender();
   } catch (err) {
     if (err.name !== "AbortError") console.error(err);
@@ -2556,27 +2779,27 @@ async function fetchViewportData() {
 }
 
 async function fetchNwrViewportData() {
-  if (STATE.activeView !== "nwr" || STATE.zoom < 0.005) return;
-  if (STATE.viewportAbort) STATE.viewportAbort.abort();
-  STATE.viewportAbort = new AbortController();
+  if ((STATE.activeView !== "nwr" && STATE.activeView !== "split") || STATE.nwrCam.zoom < 0.005) return;
+  if (STATE.nwrViewportAbort) STATE.nwrViewportAbort.abort();
+  STATE.nwrViewportAbort = new AbortController();
 
-  const bbox = getViewportBBox(0.3);
+  const bbox = getViewportBBox(0.3, "nwr");
   const params = new URLSearchParams({
     min_x: bbox.min_x.toFixed(1),
     max_x: bbox.max_x.toFixed(1),
     min_y: bbox.min_y.toFixed(1),
     max_y: bbox.max_y.toFixed(1),
-    zoom: STATE.zoom.toFixed(5),
-    include_centrelines: STATE.nwrLayers.centrelines && STATE.zoom >= 0.008,
-    include_nodes: STATE.nwrLayers.nodes && STATE.zoom >= 0.035,
-    include_waymarks: STATE.nwrLayers.waymarks && STATE.zoom >= 0.02,
+    zoom: STATE.nwrCam.zoom.toFixed(5),
+    include_centrelines: STATE.nwrLayers.centrelines && STATE.nwrCam.zoom >= 0.008,
+    include_nodes: STATE.nwrLayers.nodes && STATE.nwrCam.zoom >= 0.035,
+    include_waymarks: STATE.nwrLayers.waymarks && STATE.nwrCam.zoom >= 0.02,
     include_curvature: false,
     include_nf_points: false,
   });
 
   try {
     const res = await fetch(`/api/nwr/viewport?${params.toString()}`, {
-      signal: STATE.viewportAbort.signal,
+      signal: STATE.nwrViewportAbort.signal,
     });
     if (!res.ok) return;
     const data = await res.json();
@@ -2587,50 +2810,107 @@ async function fetchNwrViewportData() {
     if (data.waymarks && data.waymarks.length) extra.push(`${data.waymarks.length.toLocaleString()} waymarks`);
     if (data.curvature && data.curvature.length) extra.push(`${data.curvature.length.toLocaleString()} curves`);
     if (data.nf_points && data.nf_points.length) extra.push(`${data.nf_points.length.toLocaleString()} pts`);
-    document.getElementById("hud-loaded").textContent = extra.length ? extra.join(", ") : "0 features loaded";
+    if (STATE.activeView === "nwr") {
+      document.getElementById("hud-loaded").textContent = extra.length ? extra.join(", ") : "0 features loaded";
+    }
     requestRender();
   } catch (err) {
     if (err.name !== "AbortError") console.error(err);
   }
 }
 
-/* Fit Whole Network */
-function fitUKNetwork() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (STATE.activeView === "nwr") {
-    if (!STATE.nwrOverview) return;
-    const b = STATE.nwrOverview.bounds;
-    const spanX = b.max_x - b.min_x;
-    const spanY = b.max_y - b.min_y;
-    STATE.camX = (b.min_x + b.max_x) / 2;
-    STATE.camY = (b.min_y + b.max_y) / 2;
-    STATE.zoom = Math.min((w * 0.88) / spanX, (h * 0.88) / spanY);
-  } else {
-    if (!STATE.overview) return;
-    const b = STATE.overview.bounds;
-    const spanX = b.max_x - b.min_x;
-    const spanY = b.max_y - b.min_y;
-    STATE.camX = (b.min_x + b.max_x) / 2;
-    STATE.camY = (b.min_y + b.max_y) / 2;
-    STATE.zoom = Math.min((w * 0.88) / spanX, (h * 0.88) / spanY);
+/* Fit Network Functions */
+function fitTpsNetwork() {
+  if (!STATE.overview) return;
+  const b = STATE.overview.bounds;
+  const spanX = b.max_x - b.min_x;
+  const spanY = b.max_y - b.min_y;
+  const w = canvas.clientWidth || 800;
+  const h = canvas.clientHeight || 600;
+  STATE.tpsCam.camX = (b.min_x + b.max_x) / 2;
+  STATE.tpsCam.camY = (b.min_y + b.max_y) / 2;
+  STATE.tpsCam.zoom = Math.min((w * 0.88) / spanX, (h * 0.88) / spanY);
+  if (STATE.activeView === "tps") {
+    STATE.camX = STATE.tpsCam.camX;
+    STATE.camY = STATE.tpsCam.camY;
+    STATE.zoom = STATE.tpsCam.zoom;
   }
   scheduleViewportFetch();
   requestRender();
 }
 
-function flyTo(x, y, targetZoom = 1.6) {
-  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
-  STATE.camX = x;
-  STATE.camY = y;
-  if (targetZoom) STATE.zoom = targetZoom;
+function fitNwrCorridor() {
+  if (!STATE.nwrOverview) return;
+  const b = STATE.nwrOverview.bounds;
+  const spanX = b.max_x - b.min_x;
+  const spanY = b.max_y - b.min_y;
+  const c = nwrCanvas || canvas;
+  const w = c.clientWidth || 800;
+  const h = c.clientHeight || 600;
+  STATE.nwrCam.camX = (b.min_x + b.max_x) / 2;
+  STATE.nwrCam.camY = (b.min_y + b.max_y) / 2;
+  STATE.nwrCam.zoom = Math.min((w * 0.88) / spanX, (h * 0.88) / spanY);
+  if (STATE.activeView === "nwr") {
+    STATE.camX = STATE.nwrCam.camX;
+    STATE.camY = STATE.nwrCam.camY;
+    STATE.zoom = STATE.nwrCam.zoom;
+  }
   scheduleViewportFetch();
   requestRender();
+}
+
+function fitUKNetwork() {
+  if (STATE.activeView === "nwr") {
+    fitNwrCorridor();
+  } else if (STATE.activeView === "split") {
+    fitTpsNetwork();
+    fitNwrCorridor();
+  } else {
+    fitTpsNetwork();
+  }
+}
+
+function flyToTps(x, y, targetZoom = 1.6) {
+  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
+  STATE.tpsCam.camX = x;
+  STATE.tpsCam.camY = y;
+  if (targetZoom) STATE.tpsCam.zoom = targetZoom;
+  if (STATE.activeView === "tps") {
+    STATE.camX = x;
+    STATE.camY = y;
+    if (targetZoom) STATE.zoom = targetZoom;
+  }
+  scheduleViewportFetch();
+  requestRender();
+}
+
+function flyToNwr(x, y, targetZoom = 0.04) {
+  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
+  STATE.nwrCam.camX = x;
+  STATE.nwrCam.camY = y;
+  if (targetZoom) STATE.nwrCam.zoom = targetZoom;
+  if (STATE.activeView === "nwr") {
+    STATE.camX = x;
+    STATE.camY = y;
+    if (targetZoom) STATE.zoom = targetZoom;
+  }
+  scheduleViewportFetch();
+  requestRender();
+}
+
+function flyTo(x, y, targetZoom = null) {
+  const isNwr = STATE.activeView === "nwr" || (STATE.selectedAsset && (String(STATE.selectedAsset.asset_type).startsWith("nwr_") || String(STATE.selectedAsset.asset_type).startsWith("nf_")));
+  if (isNwr) {
+    flyToNwr(x, y, targetZoom || 0.04);
+  } else {
+    flyToTps(x, y, targetZoom || 1.6);
+  }
 }
 
 /* Pane Folding & View-Dependent Layout */
 function updatePaneLayout() {
   const isNwr = STATE.activeView === "nwr";
+  const isSplit = STATE.activeView === "split";
   const leftPane = document.getElementById("left-panel");
   const rightPane = document.getElementById("inspector-drawer");
   const btnLeft = document.getElementById("btn-toggle-left-pane");
@@ -2644,12 +2924,12 @@ function updatePaneLayout() {
   }
 
   if (rightPane) {
-    // Do not show the right pane in the geographical (NWR) view
-    const hideRight = isNwr || STATE.rightPaneCollapsed;
+    // In single NWR view without split, hide right pane; in split or TPS, show if not collapsed
+    const hideRight = (isNwr && !isSplit) || STATE.rightPaneCollapsed;
     rightPane.classList.toggle("collapsed", hideRight);
   }
   if (btnRight) {
-    btnRight.classList.toggle("hidden", isNwr);
+    btnRight.classList.toggle("hidden", isNwr && !isSplit);
     btnRight.innerHTML = STATE.rightPaneCollapsed ? "&#9664; Show Inspector" : "Hide Inspector &#9654;";
   }
 
@@ -2674,79 +2954,99 @@ if (btnToggleRightPane) {
   });
 }
 
-/* Switch Between TPS Schematic View and NWR Track Model View */
+/* Switch Between TPS Schematic View, NWR Track Model View, and Synchronized Dual View */
 async function switchView(targetView) {
   if (STATE.activeView === targetView) return;
 
   // Save current camera
-  STATE.savedCam[STATE.activeView] = {
-    camX: STATE.camX,
-    camY: STATE.camY,
-    zoom: STATE.zoom,
-  };
+  if (STATE.activeView === "tps") {
+    STATE.savedCam.tps = { ...STATE.tpsCam };
+  } else if (STATE.activeView === "nwr") {
+    STATE.savedCam.nwr = { ...STATE.nwrCam };
+  }
 
   STATE.activeView = targetView;
   hoverTooltip.classList.add("hidden");
   STATE.hoverCandidates = [];
   STATE.hoverPreview = null;
-  STATE.highlight = { ways: [], points: [], segments: [] };
   document.getElementById("btn-clear-highlight").classList.add("hidden");
   document.getElementById("pick-candidates").classList.add("hidden");
   closeProfileDrawer(true);
 
+  const isSplit = targetView === "split";
   const isNwr = targetView === "nwr";
-  document.getElementById("view-btn-tps").classList.toggle("active", !isNwr);
-  document.getElementById("view-btn-nwr").classList.toggle("active", isNwr);
+
+  document.getElementById("view-btn-tps").classList.toggle("active", targetView === "tps");
+  document.getElementById("view-btn-nwr").classList.toggle("active", targetView === "nwr");
+  document.getElementById("view-btn-split").classList.toggle("active", isSplit);
 
   document.getElementById("tps-layers-panel").classList.toggle("hidden", isNwr);
-  document.getElementById("nwr-layers-panel").classList.toggle("hidden", !isNwr);
+  document.getElementById("nwr-layers-panel").classList.toggle("hidden", targetView === "tps");
   document.getElementById("tps-hubs-panel").classList.toggle("hidden", isNwr);
-  document.getElementById("nwr-hubs-panel").classList.toggle("hidden", !isNwr);
+  document.getElementById("nwr-hubs-panel").classList.toggle("hidden", targetView === "tps");
   document.getElementById("tps-color-control").classList.toggle("hidden", isNwr);
-  document.getElementById("nwr-color-control").classList.toggle("hidden", !isNwr);
+  document.getElementById("nwr-color-control").classList.toggle("hidden", targetView === "tps");
   document.getElementById("btn-timing-loads").classList.toggle("hidden", isNwr);
-  document.getElementById("os-copyright").classList.toggle("hidden", !isNwr);
-  document.getElementById("hud-coord-label").textContent = isNwr
+  document.getElementById("os-copyright").classList.toggle("hidden", targetView === "tps");
+  document.getElementById("hud-coord-label").textContent = isSplit
+    ? "Dual Mode Cursor:"
+    : isNwr
     ? "OSGB36 (Easting, Northing):"
     : "Cursor (netx, nety):";
   document.getElementById("global-search").placeholder = isNwr
     ? "Search NWR Track Model by ELR (e.g. ECM1, AAV), ASSET_ID (9001...), or TRACK_ID (1100)..."
+    : isSplit
+    ? "Universal Search across Schematic Interlocking & Geographic Tracks..."
     : "Search Station (Name, CRS, TIPLOC, STANOX), Signal, Timing Load (390, 800, 450, 66, HST), Timetable Corridor (MD710, Marylebone), Node ID, Block, Route, or ELR...";
 
   updatePaneLayout();
 
-  if (isNwr && !STATE.nwrOverview) {
+  if ((isNwr || isSplit) && !STATE.nwrOverview) {
     const res = await fetch("/api/nwr/overview");
     if (res.ok) {
       STATE.nwrOverview = await res.json();
-      fitUKNetwork();
-      updateLegend();
-      return;
+      fitNwrCorridor();
     }
   }
 
-  // Restore saved camera for targetView
-  const saved = STATE.savedCam[targetView];
-  STATE.camX = saved.camX;
-  STATE.camY = saved.camY;
-  STATE.zoom = saved.zoom;
+  if (targetView === "tps") {
+    STATE.camX = STATE.tpsCam.camX;
+    STATE.camY = STATE.tpsCam.camY;
+    STATE.zoom = STATE.tpsCam.zoom;
+  } else if (targetView === "nwr") {
+    STATE.camX = STATE.nwrCam.camX;
+    STATE.camY = STATE.nwrCam.camY;
+    STATE.zoom = STATE.nwrCam.zoom;
+  }
 
   updateLegend();
+  resizeCanvas();
   scheduleViewportFetch();
   requestRender();
 }
 
 document.getElementById("view-btn-tps").addEventListener("click", () => switchView("tps"));
 document.getElementById("view-btn-nwr").addEventListener("click", () => switchView("nwr"));
+document.getElementById("view-btn-split")?.addEventListener("click", () => switchView("split"));
+document.getElementById("btn-fit-tps")?.addEventListener("click", fitTpsNetwork);
+document.getElementById("btn-fit-nwr")?.addEventListener("click", fitNwrCorridor);
 
 /* Cross-Model Jump Helpers (called from Inspector cards) */
 window.jumpToTpsAsset = async function (assetType, assetId) {
-  await switchView("tps");
+  if (STATE.activeView !== "split") {
+    await switchView("tps");
+  }
   await loadAssetDetails(assetType, assetId, true);
 };
 
 window.jumpToNwrElr = async function (elrCode) {
-  await switchView("nwr");
+  if (STATE.activeView !== "split") {
+    await switchView("nwr");
+  }
+  if (!STATE.nwrOverview) {
+    const res = await fetch("/api/nwr/overview");
+    if (res.ok) STATE.nwrOverview = await res.json();
+  }
   if (!STATE.nwrOverview) return;
   const elrObj = STATE.nwrOverview.elrs.find(
     (e) => e.elr.toUpperCase() === String(elrCode).toUpperCase()
@@ -2761,28 +3061,59 @@ if (hoverTooltip) {
   hoverTooltip.style.display = "none";
 }
 
-/* Mouse / Wheel Pan & Zoom */
+/* Draggable Split Divider for Dual View */
+const splitDivider = document.getElementById("split-divider");
+let isDraggingDivider = false;
+if (splitDivider) {
+  splitDivider.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    isDraggingDivider = true;
+    splitDivider.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+}
+
+/* Mouse / Wheel Pan & Zoom for Schematic & Geospatial Canvases */
 canvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
   STATE.isDragging = true;
+  STATE.dragTarget = "tps";
+  STATE.dragTargetCanvas = canvas;
   STATE.pointerMoved = false;
   STATE.dragStartX = e.clientX;
   STATE.dragStartY = e.clientY;
-  STATE.camStartX = STATE.camX;
-  STATE.camStartY = STATE.camY;
+  STATE.camStartX = STATE.tpsCam.camX;
+  STATE.camStartY = STATE.tpsCam.camY;
 });
 
+if (nwrCanvas) {
+  nwrCanvas.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    STATE.isDragging = true;
+    STATE.dragTarget = "nwr";
+    STATE.dragTargetCanvas = nwrCanvas;
+    STATE.pointerMoved = false;
+    STATE.dragStartX = e.clientX;
+    STATE.dragStartY = e.clientY;
+    STATE.camStartX = STATE.nwrCam.camX;
+    STATE.camStartY = STATE.nwrCam.camY;
+  });
+}
+
 window.addEventListener("mousemove", (e) => {
-  if (STATE.isPointerInMenu) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const [wx, wy] = screenToWorld(sx, sy);
-
-  if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
-    document.getElementById("hud-coords").textContent = `(${Math.round(wx)}, ${Math.round(wy)})`;
+  if (isDraggingDivider) {
+    const wrap = document.getElementById("canvas-container");
+    const rect = wrap.getBoundingClientRect();
+    let ratio = (e.clientX - rect.left) / rect.width;
+    ratio = Math.max(0.18, Math.min(0.82, ratio));
+    STATE.splitRatio = ratio;
+    wrap.style.setProperty("--split-ratio", `${(ratio * 100).toFixed(1)}%`);
+    resizeCanvas();
+    return;
   }
+
+  if (STATE.isPointerInMenu) return;
 
   if (STATE.isDragging) {
     const dx = e.clientX - STATE.dragStartX;
@@ -2791,30 +3122,85 @@ window.addEventListener("mousemove", (e) => {
       STATE.pointerMoved = true;
       hoverTooltip.classList.add("hidden");
     }
-    STATE.camX = STATE.camStartX - dx / STATE.zoom;
-    if (STATE.activeView === "nwr") {
-      STATE.camY = STATE.camStartY + dy / STATE.zoom;
+    if (STATE.dragTarget === "nwr") {
+      STATE.nwrCam.camX = STATE.camStartX - dx / STATE.nwrCam.zoom;
+      STATE.nwrCam.camY = STATE.camStartY + dy / STATE.nwrCam.zoom;
+      if (STATE.activeView === "nwr") {
+        STATE.camX = STATE.nwrCam.camX;
+        STATE.camY = STATE.nwrCam.camY;
+      }
     } else {
-      STATE.camY = STATE.camStartY - dy / STATE.zoom;
+      STATE.tpsCam.camX = STATE.camStartX - dx / STATE.tpsCam.zoom;
+      STATE.tpsCam.camY = STATE.camStartY - dy / STATE.tpsCam.zoom;
+      if (STATE.activeView === "tps") {
+        STATE.camX = STATE.tpsCam.camX;
+        STATE.camY = STATE.tpsCam.camY;
+      }
     }
     requestRender();
     return;
   }
 
-  handleHover(sx, sy, wx, wy);
+  // Hover detection based on cursor canvas location
+  const tpsRect = canvas.getBoundingClientRect();
+  const nwrRect = nwrCanvas ? nwrCanvas.getBoundingClientRect() : null;
+
+  if (
+    nwrRect &&
+    e.clientX >= nwrRect.left &&
+    e.clientX <= nwrRect.right &&
+    e.clientY >= nwrRect.top &&
+    e.clientY <= nwrRect.bottom &&
+    (STATE.activeView === "nwr" || STATE.activeView === "split")
+  ) {
+    const sx = e.clientX - nwrRect.left;
+    const sy = e.clientY - nwrRect.top;
+    const [wx, wy] = screenToWorld(sx, sy, "nwr");
+    document.getElementById("hud-coords").textContent = `OSGB36 (${Math.round(wx)}, ${Math.round(wy)})`;
+    handleHover(sx, sy, wx, wy, "nwr");
+  } else if (
+    e.clientX >= tpsRect.left &&
+    e.clientX <= tpsRect.right &&
+    e.clientY >= tpsRect.top &&
+    e.clientY <= tpsRect.bottom &&
+    (STATE.activeView === "tps" || STATE.activeView === "split")
+  ) {
+    const sx = e.clientX - tpsRect.left;
+    const sy = e.clientY - tpsRect.top;
+    const [wx, wy] = screenToWorld(sx, sy, "tps");
+    document.getElementById("hud-coords").textContent = `TPS (${Math.round(wx)}, ${Math.round(wy)})`;
+    handleHover(sx, sy, wx, wy, "tps");
+  }
 });
 
 window.addEventListener("mouseup", (e) => {
+  if (isDraggingDivider) {
+    isDraggingDivider = false;
+    splitDivider?.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    scheduleViewportFetch();
+    return;
+  }
+
   if (!STATE.isDragging) return;
   STATE.isDragging = false;
   if (STATE.pointerMoved) {
     scheduleViewportFetch();
   } else {
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const [wx, wy] = screenToWorld(sx, sy);
-    handleCanvasClick(wx, wy, sx, sy);
+    if (STATE.dragTarget === "nwr" && nwrCanvas) {
+      const rect = nwrCanvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const [wx, wy] = screenToWorld(sx, sy, "nwr");
+      handleCanvasClick(wx, wy, sx, sy, "nwr");
+    } else {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const [wx, wy] = screenToWorld(sx, sy, "tps");
+      handleCanvasClick(wx, wy, sx, sy, "tps");
+    }
   }
 });
 
@@ -2826,16 +3212,19 @@ canvas.addEventListener(
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
-    const [wxBefore, wyBefore] = screenToWorld(sx, sy);
+    const [wxBefore, wyBefore] = screenToWorld(sx, sy, "tps");
 
     const factor = e.deltaY < 0 ? 1.25 : 0.8;
-    const minZ = STATE.activeView === "nwr" ? 0.0004 : 0.008;
-    const maxZ = STATE.activeView === "nwr" ? 5.0 : 25.0;
-    STATE.zoom = Math.max(minZ, Math.min(maxZ, STATE.zoom * factor));
+    STATE.tpsCam.zoom = Math.max(0.008, Math.min(25.0, STATE.tpsCam.zoom * factor));
+    if (STATE.activeView === "tps") STATE.zoom = STATE.tpsCam.zoom;
 
-    const [wxAfter, wyAfter] = screenToWorld(sx, sy);
-    STATE.camX += wxBefore - wxAfter;
-    STATE.camY += wyBefore - wyAfter;
+    const [wxAfter, wyAfter] = screenToWorld(sx, sy, "tps");
+    STATE.tpsCam.camX += wxBefore - wxAfter;
+    STATE.tpsCam.camY += wyBefore - wyAfter;
+    if (STATE.activeView === "tps") {
+      STATE.camX = STATE.tpsCam.camX;
+      STATE.camY = STATE.tpsCam.camY;
+    }
 
     scheduleViewportFetch();
     requestRender();
@@ -2843,24 +3232,56 @@ canvas.addEventListener(
   { passive: false }
 );
 
+if (nwrCanvas) {
+  nwrCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      hoverTooltip.classList.add("hidden");
+      const rect = nwrCanvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const [wxBefore, wyBefore] = screenToWorld(sx, sy, "nwr");
+
+      const factor = e.deltaY < 0 ? 1.25 : 0.8;
+      STATE.nwrCam.zoom = Math.max(0.0004, Math.min(5.0, STATE.nwrCam.zoom * factor));
+      if (STATE.activeView === "nwr") STATE.zoom = STATE.nwrCam.zoom;
+
+      const [wxAfter, wyAfter] = screenToWorld(sx, sy, "nwr");
+      STATE.nwrCam.camX += wxBefore - wxAfter;
+      STATE.nwrCam.camY += wyBefore - wyAfter;
+      if (STATE.activeView === "nwr") {
+        STATE.camX = STATE.nwrCam.camX;
+        STATE.camY = STATE.nwrCam.camY;
+      }
+
+      scheduleViewportFetch();
+      requestRender();
+    },
+    { passive: false }
+  );
+}
+
 /* Hover Detection & Precision Pointer Cursor (No floating tooltip) */
-function handleHover(sx, sy, wx, wy) {
+function handleHover(sx, sy, wx, wy, targetView = null) {
+  const view = targetView || (STATE.activeView === "nwr" ? "nwr" : "tps");
+  const targetCanvas = view === "nwr" && nwrCanvas ? nwrCanvas : canvas;
   if (
     sx < 0 ||
     sy < 0 ||
-    sx > canvas.clientWidth ||
-    sy > canvas.clientHeight
+    sx > targetCanvas.clientWidth ||
+    sy > targetCanvas.clientHeight
   ) {
-    canvas.classList.remove("has-target");
+    targetCanvas.classList.remove("has-target");
     return;
   }
 
-  const hits = findObjectsAtCursor(sx, sy, wx, wy);
+  const hits = findObjectsAtCursor(sx, sy, wx, wy, view);
   if (hits.length > 0) {
-    canvas.classList.add("has-target");
+    targetCanvas.classList.add("has-target");
     STATE.hoverCandidates = hits;
   } else {
-    canvas.classList.remove("has-target");
+    targetCanvas.classList.remove("has-target");
     STATE.hoverCandidates = [];
   }
 }
@@ -3040,19 +3461,21 @@ function renderPickCandidates(cands, activeItem) {
 }
 
 /* Click Picking & Asset Inspection */
-async function handleCanvasClick(wx, wy, sx, sy) {
+async function handleCanvasClick(wx, wy, sx, sy, targetView = null) {
+  const view = targetView || (STATE.activeView === "nwr" ? "nwr" : "tps");
   if (sx === undefined || sy === undefined) {
-    const [scx, scy] = worldToScreen(wx, wy);
+    const [scx, scy] = worldToScreen(wx, wy, view);
     sx = scx;
     sy = scy;
   }
 
   // 1. Client-side hits at click location
-  const clientHits = findObjectsAtCursor(sx, sy, wx, wy);
+  const clientHits = findObjectsAtCursor(sx, sy, wx, wy, view);
 
   // 2. Fetch server database candidates at click coordinates
-  const radius = Math.max(10, 14 / STATE.zoom);
-  const endpoint = STATE.activeView === "nwr" ? "/api/nwr/pick" : "/api/pick";
+  const zoom = view === "nwr" ? STATE.nwrCam.zoom : STATE.tpsCam.zoom;
+  const radius = Math.max(10, 14 / zoom);
+  const endpoint = view === "nwr" ? "/api/nwr/pick" : "/api/pick";
   let serverCandidates = [];
   try {
     const res = await fetch(
@@ -3139,6 +3562,141 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
       clearBtn.classList.remove("hidden");
     } else {
       clearBtn.classList.add("hidden");
+    }
+
+    // Synchronized Dual-View Cross-Model Pulsing
+    if (isNwrAsset) {
+      // Real-world track/ELR clicked -> highlight & pulse TPS schematic edges/signals
+      const tpsCross = data.related && data.related.tps_cross_links;
+      if (tpsCross) {
+        const ways = [];
+        const pts = [];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const e of tpsCross.tps_edges || []) {
+          if (e.x0 !== null && e.y0 !== null && e.x1 !== null && e.y1 !== null) {
+            ways.push({
+              label: `Edge #${e.edge_id} (${e.length}m, ${e.vmax}km/h)`,
+              coords: [[e.x0, e.y0], [e.x1, e.y1]],
+              color: "#f43f5e",
+            });
+            minX = Math.min(minX, e.x0, e.x1);
+            maxX = Math.max(maxX, e.x0, e.x1);
+            minY = Math.min(minY, e.y0, e.y1);
+            maxY = Math.max(maxY, e.y0, e.y1);
+          }
+        }
+        for (const s of tpsCross.tps_signals || []) {
+          if (s.x !== null && s.y !== null) {
+            pts.push({
+              x: s.x,
+              y: s.y,
+              label: `🚦 ${s.name || s.master_name}`,
+              color: "#f59e0b",
+            });
+            minX = Math.min(minX, s.x);
+            maxX = Math.max(maxX, s.x);
+            minY = Math.min(minY, s.y);
+            maxY = Math.max(maxY, s.y);
+          }
+        }
+        for (const st of tpsCross.tps_stations || []) {
+          if (st.x !== null && st.y !== null) {
+            pts.push({
+              x: st.x,
+              y: st.y,
+              label: `🚉 ${st.longname || st.abbrev}`,
+              color: "#38bdf8",
+            });
+            minX = Math.min(minX, st.x);
+            maxX = Math.max(maxX, st.x);
+            minY = Math.min(minY, st.y);
+            maxY = Math.max(maxY, st.y);
+          }
+        }
+        if (ways.length || pts.length) {
+          STATE.crossHighlight.tps = {
+            ways,
+            points: pts,
+            pulseStart: performance.now(),
+            pulseDuration: 4500,
+            active: true,
+            title: data.title,
+          };
+          triggerPulseLoop();
+          document.getElementById("tps-sync-tag")?.classList.remove("hidden");
+          if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const span = Math.max(maxX - minX, maxY - minY, 250);
+            const targetZ = Math.min(1.8, (canvas.clientWidth * 0.7) / span);
+            flyToTps(cx, cy, targetZ);
+          }
+        } else {
+          STATE.crossHighlight.tps.active = false;
+          document.getElementById("tps-sync-tag")?.classList.add("hidden");
+        }
+      }
+    } else {
+      // TPS schematic asset clicked (signal, block, edge, station, track) -> highlight & pulse NWR physical track
+      const nwrCross = data.related && data.related.nwr_cross_links;
+      if (nwrCross) {
+        const ways = [];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const c of nwrCross.centrelines || []) {
+          if (c.coords && c.coords.length >= 2) {
+            ways.push({
+              label: `${c.elr} Track ${c.track_id}`,
+              coords: c.coords,
+              color: "#06b6d4",
+            });
+            for (const pt of c.coords) {
+              minX = Math.min(minX, pt[0]);
+              maxX = Math.max(maxX, pt[0]);
+              minY = Math.min(minY, pt[1]);
+              maxY = Math.max(maxY, pt[1]);
+            }
+          }
+        }
+        if (!ways.length && nwrCross.elr_record && nwrCross.elr_record.parts) {
+          for (const p of nwrCross.elr_record.parts) {
+            if (p.length >= 2) {
+              ways.push({
+                label: `ELR ${nwrCross.elr_record.elr}`,
+                coords: p,
+                color: "#06b6d4",
+              });
+              for (const pt of p) {
+                minX = Math.min(minX, pt[0]);
+                maxX = Math.max(maxX, pt[0]);
+                minY = Math.min(minY, pt[1]);
+                maxY = Math.max(maxY, pt[1]);
+              }
+            }
+          }
+        }
+        if (ways.length) {
+          STATE.crossHighlight.nwr = {
+            ways,
+            points: [],
+            pulseStart: performance.now(),
+            pulseDuration: 4500,
+            active: true,
+            title: data.title,
+          };
+          triggerPulseLoop();
+          document.getElementById("nwr-sync-tag")?.classList.remove("hidden");
+          if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const span = Math.max(maxX - minX, maxY - minY, 500);
+            const targetZ = Math.min(0.2, ((nwrCanvas?.clientWidth || 600) * 0.7) / span);
+            flyToNwr(cx, cy, targetZ);
+          }
+        } else {
+          STATE.crossHighlight.nwr.active = false;
+          document.getElementById("nwr-sync-tag")?.classList.add("hidden");
+        }
+      }
     }
     requestRender();
 
@@ -5425,20 +5983,46 @@ if (btnResetLabels) {
 
 document.getElementById("btn-fit-uk").addEventListener("click", fitUKNetwork);
 document.getElementById("btn-zoom-in").addEventListener("click", () => {
-  const maxZ = STATE.activeView === "nwr" ? 5.0 : 25.0;
-  STATE.zoom = Math.min(maxZ, STATE.zoom * 1.45);
+  if (STATE.activeView === "nwr") {
+    STATE.nwrCam.zoom = Math.min(5.0, STATE.nwrCam.zoom * 1.45);
+    STATE.zoom = STATE.nwrCam.zoom;
+  } else if (STATE.activeView === "split") {
+    if (STATE.dragTarget === "nwr") {
+      STATE.nwrCam.zoom = Math.min(5.0, STATE.nwrCam.zoom * 1.45);
+    } else {
+      STATE.tpsCam.zoom = Math.min(25.0, STATE.tpsCam.zoom * 1.45);
+    }
+  } else {
+    STATE.tpsCam.zoom = Math.min(25.0, STATE.tpsCam.zoom * 1.45);
+    STATE.zoom = STATE.tpsCam.zoom;
+  }
   scheduleViewportFetch();
   requestRender();
 });
 document.getElementById("btn-zoom-out").addEventListener("click", () => {
-  const minZ = STATE.activeView === "nwr" ? 0.0004 : 0.008;
-  STATE.zoom = Math.max(minZ, STATE.zoom / 1.45);
+  if (STATE.activeView === "nwr") {
+    STATE.nwrCam.zoom = Math.max(0.0004, STATE.nwrCam.zoom / 1.45);
+    STATE.zoom = STATE.nwrCam.zoom;
+  } else if (STATE.activeView === "split") {
+    if (STATE.dragTarget === "nwr") {
+      STATE.nwrCam.zoom = Math.max(0.0004, STATE.nwrCam.zoom / 1.45);
+    } else {
+      STATE.tpsCam.zoom = Math.max(0.008, STATE.tpsCam.zoom / 1.45);
+    }
+  } else {
+    STATE.tpsCam.zoom = Math.max(0.008, STATE.tpsCam.zoom / 1.45);
+    STATE.zoom = STATE.tpsCam.zoom;
+  }
   scheduleViewportFetch();
   requestRender();
 });
 document.getElementById("btn-clear-highlight").addEventListener("click", () => {
   STATE.highlight = { ways: [], points: [], segments: [] };
   STATE.selectedAsset = null;
+  STATE.crossHighlight.tps.active = false;
+  STATE.crossHighlight.nwr.active = false;
+  document.getElementById("tps-sync-tag")?.classList.add("hidden");
+  document.getElementById("nwr-sync-tag")?.classList.add("hidden");
   document.getElementById("btn-clear-highlight").classList.add("hidden");
   closeProfileDrawer(true);
   requestRender();
@@ -6071,7 +6655,26 @@ async function initApp() {
   if (ovRes.ok) {
     STATE.overview = await ovRes.json();
     STATE.ready = true;
-    fitUKNetwork();
+    fitTpsNetwork();
+  }
+
+  // Pre-fetch NWR Overview for dual view coordinate camera calibration
+  try {
+    const nwrRes = await fetch("/api/nwr/overview");
+    if (nwrRes.ok) {
+      STATE.nwrOverview = await nwrRes.json();
+      const b = STATE.nwrOverview.bounds;
+      if (b) {
+        STATE.nwrCam.camX = (b.min_x + b.max_x) / 2;
+        STATE.nwrCam.camY = (b.min_y + b.max_y) / 2;
+        const c = nwrCanvas || canvas;
+        const spanX = b.max_x - b.min_x;
+        const spanY = b.max_y - b.min_y;
+        STATE.nwrCam.zoom = Math.min(((c.clientWidth || 800) * 0.88) / spanX, ((c.clientHeight || 600) * 0.88) / spanY);
+      }
+    }
+  } catch (err) {
+    // Ignore transient network errors
   }
 }
 
