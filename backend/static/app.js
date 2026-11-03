@@ -3155,7 +3155,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
       (data.related.network_fusion.points && data.related.network_fusion.points.length > 0) ||
       (data.related.network_fusion.curvature && data.related.network_fusion.curvature.length > 0)
     )) {
-      openProfileDrawer(data, "track");
+      openProfileDrawer(data, data.asset_type === "nwr_elr" ? "corridor" : "track");
     } else if (data.asset_type === "nwr_centreline" || data.asset_type === "nwr_elr" || data.asset_type === "nf_point" || data.asset_type === "nf_curvature") {
       openProfileDrawer(data, data.asset_type === "nwr_elr" ? "corridor" : "track");
     } else {
@@ -3250,21 +3250,70 @@ function mileYardsToTotalYards(val) {
   const v = Math.abs(Number(val));
   const miles = Math.floor(v);
   const yards = Math.round((v - miles) * 10000);
-  return miles * 1760 + yards;
+  const total = miles * 1760 + yards;
+  return Number(val) < 0 ? -total : total;
 }
 
 function totalYardsToMileage(totalYards) {
   if (totalYards === null || totalYards === undefined || isNaN(totalYards)) return "0.0000";
-  const m = Math.floor(totalYards / 1760);
-  const y = Math.round(totalYards % 1760);
-  return `${m}.${String(y).padStart(4, "0")}`;
+  const sign = totalYards < 0 ? "-" : "";
+  const absY = Math.abs(totalYards);
+  const m = Math.floor(absY / 1760);
+  const y = Math.round(absY % 1760);
+  return `${sign}${m}.${String(y).padStart(4, "0")}`;
 }
 
 function formatMileageYards(totalYards) {
   if (totalYards === null || totalYards === undefined || isNaN(totalYards)) return "0 mi 0 yd";
-  const m = Math.floor(totalYards / 1760);
-  const y = Math.round(totalYards % 1760);
-  return `${m} mi ${y} yd`;
+  const sign = totalYards < 0 ? "-" : "";
+  const absY = Math.abs(totalYards);
+  const m = Math.floor(absY / 1760);
+  const y = Math.round(absY % 1760);
+  return `${sign}${m} mi ${y} yd`;
+}
+
+function getAssetElr(assetData) {
+  if (!assetData) return "";
+  return String(
+    assetData.raw_attrs?.ELR ||
+    assetData.raw_attrs?.elr ||
+    assetData.decoded?.["Engineer's Line Reference (ELR)"] ||
+    assetData.decoded?.["ELR"] ||
+    assetData.decoded?.["ELR Code"] ||
+    (assetData.title && assetData.title.match(/ELR\s+(?:Corridor\s+)?([A-Z0-9]+)/i)?.[1]) ||
+    ""
+  ).trim().toUpperCase();
+}
+
+function getAssetTrackId(assetData) {
+  if (!assetData) return "";
+  return String(
+    assetData.raw_attrs?.TRACK_ID ||
+    assetData.raw_attrs?.track_id ||
+    assetData.decoded?.["Track ID"] ||
+    ""
+  ).trim();
+}
+
+function getAssetTrackName(assetData) {
+  if (!assetData) return "";
+  return String(
+    assetData.raw_attrs?.TRACK_NAME ||
+    assetData.raw_attrs?.track_name ||
+    assetData.decoded?.["Track Name"] ||
+    assetData.decoded?.["Track ID & Classification"] ||
+    ""
+  ).trim();
+}
+
+function getAssetStartMileage(assetData) {
+  if (!assetData) return null;
+  return assetData.raw_attrs?.START ?? assetData.raw_attrs?.start_mile_yards ?? assetData.decoded?.["Start Mileage"];
+}
+
+function getAssetEndMileage(assetData) {
+  if (!assetData) return null;
+  return assetData.raw_attrs?.END ?? assetData.raw_attrs?.end_mile_yards ?? assetData.decoded?.["End Mileage"];
 }
 
 function renderProfileCanvas() {
@@ -3295,7 +3344,7 @@ function renderProfileCanvas() {
     pCtx.fillStyle = "#94a3b8";
     pCtx.font = "600 12px Inter, sans-serif";
     pCtx.textAlign = "center";
-    pCtx.fillText("No elevation or curvature survey samples available for this section.", W / 2, H / 2);
+    pCtx.fillText("No elevation or curvature survey samples available for this route.", W / 2, H / 2);
     return;
   }
 
@@ -3316,7 +3365,7 @@ function renderProfileCanvas() {
   const yardSpan = Math.max(1, maxYards - minYards);
 
   // Layout geometry
-  const padL = 52;
+  const padL = 54;
   const padR = 24;
   const padT = 16;
   const padB = 22; // space for mileage X-axis
@@ -3394,7 +3443,6 @@ function renderProfileCanvas() {
 
   // 2. Draw Elevation Profile Area & Curve
   if (points.length >= 2) {
-    // Gradient fill under curve
     const areaGrad = pCtx.createLinearGradient(0, padT, 0, elevB);
     areaGrad.addColorStop(0, "rgba(6, 182, 212, 0.38)");
     areaGrad.addColorStop(1, "rgba(6, 182, 212, 0.03)");
@@ -3424,7 +3472,7 @@ function renderProfileCanvas() {
     pCtx.stroke();
     pCtx.shadowBlur = 0;
 
-    // Survey tenth-mile points
+    // Survey tenth-mile points (drawn only when zoom/sample count is reasonable)
     if (points.length <= 160) {
       pCtx.fillStyle = "#38bdf8";
       for (const pt of points) {
@@ -3434,15 +3482,23 @@ function renderProfileCanvas() {
       }
     }
 
-    // Place labels at locations
+    // Place labels at locations along route
     const namedPts = points.filter((p) => p.place_name);
     if (namedPts.length) {
-      const stepN = Math.max(1, Math.floor(namedPts.length / 4));
+      const distinctPlaces = [];
+      const seen = new Set();
+      for (const np of namedPts) {
+        if (!seen.has(np.place_name)) {
+          seen.add(np.place_name);
+          distinctPlaces.push(np);
+        }
+      }
+      const stepN = Math.max(1, Math.floor(distinctPlaces.length / 5));
       pCtx.fillStyle = "#e2e8f0";
       pCtx.font = "600 9px Inter, sans-serif";
       pCtx.textAlign = "center";
-      for (let i = 0; i < namedPts.length; i += stepN) {
-        const np = namedPts[i];
+      for (let i = 0; i < distinctPlaces.length; i += stepN) {
+        const np = distinctPlaces[i];
         const nx = yardToX(np.total_yards);
         const ny = elevToY(np.elevation_m);
         pCtx.strokeStyle = "rgba(56, 189, 248, 0.3)";
@@ -3452,7 +3508,7 @@ function renderProfileCanvas() {
         pCtx.lineTo(nx, padT + 4);
         pCtx.stroke();
         pCtx.setLineDash([]);
-        pCtx.fillText(np.place_name.slice(0, 16), nx, padT + 2);
+        pCtx.fillText(np.place_name.slice(0, 18), nx, padT + 2);
       }
     }
   }
@@ -3473,13 +3529,17 @@ function renderProfileCanvas() {
     for (const c of curvature) {
       const bx0 = Math.max(padL, yardToX(c.total_yards_from));
       const bx1 = Math.min(padL + plotW, yardToX(c.total_yards_to));
-      const bw = Math.max(1.5, bx1 - bx0);
+      const bw = Math.max(1.0, bx1 - bx0);
       const col = getCurvatureColor(c.radius_avg_m);
 
       pCtx.fillStyle = col;
       pCtx.fillRect(bx0, curvY + 1, bw, curvH - 2);
-      pCtx.strokeStyle = "rgba(15, 23, 42, 0.5)";
-      pCtx.strokeRect(bx0, curvY + 1, bw, curvH - 2);
+
+      // Only stroke border if block is wide enough to avoid black border fill blowout on dense corridors
+      if (bw >= 5) {
+        pCtx.strokeStyle = "rgba(15, 23, 42, 0.4)";
+        pCtx.strokeRect(bx0, curvY + 1, bw, curvH - 2);
+      }
 
       if (bw > 42) {
         pCtx.fillStyle = "#ffffff";
@@ -3504,7 +3564,9 @@ function renderProfileCanvas() {
   else if (miSpan <= 4) tickYards = 880;
   else if (miSpan <= 12) tickYards = 1760;
   else if (miSpan <= 30) tickYards = 1760 * 2;
-  else tickYards = 1760 * 5;
+  else if (miSpan <= 60) tickYards = 1760 * 5;
+  else if (miSpan <= 120) tickYards = 1760 * 10;
+  else tickYards = 1760 * 20;
 
   const startTickYd = Math.ceil(minYards / tickYards) * tickYards;
   pCtx.fillStyle = "#94a3b8";
@@ -3565,52 +3627,54 @@ function renderProfileCanvas() {
 async function openProfileDrawer(assetData, targetScope = "track") {
   if (!assetData) return;
   STATE.profileDrawer.currentAsset = assetData;
+
+  const isElrAsset = assetData.asset_type === "nwr_elr";
+  if (isElrAsset) {
+    targetScope = "corridor";
+  }
   STATE.profileDrawer.scope = targetScope;
 
   const pDrawer = document.getElementById("profile-drawer");
   const dockBtn = document.getElementById("btn-dock-profile");
   const scopeBtn = document.getElementById("btn-profile-scope");
 
-  let elr = "";
-  let trackId = "";
-  let trackName = "";
-  let startYd = null;
-  let endYd = null;
-
-  if (assetData.asset_type === "nwr_centreline") {
-    elr = assetData.decoded?.["ELR"] || assetData.raw_attrs?.elr || "";
-    trackId = assetData.decoded?.["Track ID"] || assetData.raw_attrs?.track_id || "";
-    trackName = assetData.decoded?.["Track Name"] || assetData.raw_attrs?.track_name || "";
-    const sMy = assetData.decoded?.["Start Mileage"] || assetData.raw_attrs?.start_mile_yards;
-    const eMy = assetData.decoded?.["End Mileage"] || assetData.raw_attrs?.end_mile_yards;
-    startYd = sMy !== undefined ? mileYardsToTotalYards(sMy) : null;
-    endYd = eMy !== undefined ? mileYardsToTotalYards(eMy) : null;
-  } else if (assetData.asset_type === "nwr_elr") {
-    elr = assetData.decoded?.["ELR Code"] || assetData.raw_attrs?.elr || "";
-    targetScope = "corridor";
-    STATE.profileDrawer.scope = "corridor";
-  } else if (assetData.asset_type === "nf_point" || assetData.asset_type === "nf_curvature") {
-    elr = assetData.raw_attrs?.elr || "";
-  }
+  const elr = getAssetElr(assetData);
+  const trackId = getAssetTrackId(assetData);
+  const trackName = getAssetTrackName(assetData);
+  const sMy = getAssetStartMileage(assetData);
+  const eMy = getAssetEndMileage(assetData);
+  const startYd = sMy !== null && sMy !== undefined ? mileYardsToTotalYards(sMy) : null;
+  const endYd = eMy !== null && eMy !== undefined ? mileYardsToTotalYards(eMy) : null;
 
   STATE.profileDrawer.currentElr = elr;
 
   // Fetch or retrieve profile data
   let profileData = null;
-  if (targetScope === "track" && assetData.related?.network_fusion?.points?.length) {
-    profileData = assetData.related.network_fusion;
+
+  if (targetScope === "track") {
+    if (assetData.related?.network_fusion?.points?.length) {
+      profileData = assetData.related.network_fusion;
+    } else if (elr && startYd !== null && endYd !== null) {
+      try {
+        const url = `/api/network-fusion/profile?elr=${encodeURIComponent(elr)}&start_yards=${Math.min(startYd, endYd)}&end_yards=${Math.max(startYd, endYd)}`;
+        const res = await fetch(url);
+        if (res.ok) profileData = await res.json();
+      } catch (err) {
+        console.error("Failed to fetch section profile:", err);
+      }
+    }
   } else {
-    try {
-      let url = `/api/network-fusion/profile?elr=${encodeURIComponent(elr)}`;
-      if (targetScope === "track" && startYd !== null && endYd !== null) {
-        url += `&start_yards=${Math.min(startYd, endYd)}&end_yards=${Math.max(startYd, endYd)}`;
+    // Corridor Scope
+    if (isElrAsset && assetData.related?.network_fusion?.points?.length) {
+      profileData = assetData.related.network_fusion;
+    } else if (elr) {
+      try {
+        const url = `/api/network-fusion/profile?elr=${encodeURIComponent(elr)}`;
+        const res = await fetch(url);
+        if (res.ok) profileData = await res.json();
+      } catch (err) {
+        console.error("Failed to fetch corridor profile:", err);
       }
-      const res = await fetch(url);
-      if (res.ok) {
-        profileData = await res.json();
-      }
-    } catch (err) {
-      console.error("Failed to fetch profile:", err);
     }
   }
 
@@ -3629,12 +3693,23 @@ async function openProfileDrawer(assetData, targetScope = "track") {
   const tightEl = document.getElementById("prof-tightest");
 
   if (targetScope === "corridor") {
-    titleEl.textContent = `ELR ${elr} Corridor (Full Route Profile)`;
-    scopeBtn.textContent = "Track Section";
-    scopeBtn.title = "Switch to single track section scope";
+    titleEl.textContent = `ELR ${elr || "Corridor"} Route Profile`;
+    if (isElrAsset) {
+      scopeBtn.textContent = "Corridor";
+      scopeBtn.disabled = true;
+      scopeBtn.style.opacity = "0.6";
+      scopeBtn.title = "Viewing entire ELR corridor route";
+    } else {
+      scopeBtn.textContent = "Track Section";
+      scopeBtn.disabled = false;
+      scopeBtn.style.opacity = "1";
+      scopeBtn.title = "Switch back to single track section scope";
+    }
   } else {
-    titleEl.textContent = `${elr} ${trackId} — ${trackName || "Track Section"}`;
+    titleEl.textContent = `${elr} ${trackId ? `Track ${trackId}` : ""} ${trackName ? `— ${trackName}` : ""}`.trim();
     scopeBtn.textContent = "Full Corridor";
+    scopeBtn.disabled = false;
+    scopeBtn.style.opacity = "1";
     scopeBtn.title = "Switch to full ELR corridor profile";
   }
 
@@ -3656,7 +3731,7 @@ async function openProfileDrawer(assetData, targetScope = "track") {
     subEl.textContent = `Mileage: ${formatMileageYards(minYd)} → ${formatMileageYards(maxYd)}${places ? ` • ${places}` : ""}`;
 
     if (summary && summary.min_elevation_m !== null && summary.max_elevation_m !== null) {
-      const dE = summary.max_elevation_m - summary.min_elevation_m;
+      const dE = (summary.max_elevation_m - summary.min_elevation_m).toFixed(1);
       elevEl.textContent = `${summary.min_elevation_m}m → ${summary.max_elevation_m}m (Δ${dE}m)`;
     } else {
       elevEl.textContent = "--";
@@ -3710,6 +3785,7 @@ function closeProfileDrawer(fullyHide = false) {
 
 async function toggleProfileScope() {
   if (!STATE.profileDrawer.currentAsset) return;
+  if (STATE.profileDrawer.currentAsset.asset_type === "nwr_elr") return;
   const nextScope = STATE.profileDrawer.scope === "track" ? "corridor" : "track";
   await openProfileDrawer(STATE.profileDrawer.currentAsset, nextScope);
 }
@@ -3745,18 +3821,21 @@ function setupProfileDrawerEvents() {
       const pts = (STATE.profileDrawer.data.points || []).filter((p) => p.elevation_m !== null);
       if (!pts.length) return;
 
-      let nearest = pts[0];
-      let minDiff = Math.abs(pts[0].total_yards - targetYd);
-      let nearestIdx = 0;
-      for (let i = 1; i < pts.length; i++) {
-        const diff = Math.abs(pts[i].total_yards - targetYd);
-        if (diff < minDiff) {
-          minDiff = diff;
-          nearest = pts[i];
-          nearestIdx = i;
-        }
+      // Fast binary search for nearest point (O(log N))
+      let low = 0;
+      let high = pts.length - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (pts[mid].total_yards < targetYd) low = mid + 1;
+        else high = mid - 1;
       }
+      let nearestIdx = Math.max(0, Math.min(pts.length - 1, low));
+      if (nearestIdx > 0 && Math.abs(pts[nearestIdx - 1].total_yards - targetYd) < Math.abs(pts[nearestIdx].total_yards - targetYd)) {
+        nearestIdx = nearestIdx - 1;
+      }
+      const nearest = pts[nearestIdx];
 
+      // Slope calculation with adjacent sample
       let slopeStr = "";
       if (nearestIdx > 0 || nearestIdx < pts.length - 1) {
         const prev = pts[Math.max(0, nearestIdx - 1)];
@@ -3771,8 +3850,23 @@ function setupProfileDrawerEvents() {
         }
       }
 
+      // Fast binary search for active curvature segment
       const curvs = STATE.profileDrawer.data.curvature || [];
-      const activeCurve = curvs.find((c) => c.total_yards_from <= nearest.total_yards && c.total_yards_to >= nearest.total_yards);
+      let activeCurve = null;
+      let cLow = 0;
+      let cHigh = curvs.length - 1;
+      while (cLow <= cHigh) {
+        const mid = (cLow + cHigh) >> 1;
+        const c = curvs[mid];
+        if (c.total_yards_to < nearest.total_yards) {
+          cLow = mid + 1;
+        } else if (c.total_yards_from > nearest.total_yards) {
+          cHigh = mid - 1;
+        } else {
+          activeCurve = c;
+          break;
+        }
+      }
 
       STATE.profileDrawer.hoverItem = {
         ...nearest,
