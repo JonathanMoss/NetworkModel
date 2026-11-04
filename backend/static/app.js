@@ -405,6 +405,7 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
   // 2. Draw points (signals, nodes, stations)
   for (const pt of highlight.points || []) {
     const [sx, sy] = toScreen(pt.x, pt.y);
+    const ptCol = pt.color || (mode === "nwr" ? "#22d3ee" : "#f59e0b");
     if (isPulsing) {
       const rippleR = 8 + pulsePhase * 32;
       const rippleAlpha = Math.max(0, 1 - pulsePhase);
@@ -413,12 +414,21 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
       targetCtx.strokeStyle = `rgba(245, 158, 11, ${rippleAlpha})`;
       targetCtx.lineWidth = 2.5;
       targetCtx.stroke();
+
+      const phase2 = (pulsePhase + 0.5) % 1.0;
+      const rippleR2 = 8 + phase2 * 32;
+      const rippleAlpha2 = Math.max(0, 1 - phase2);
+      targetCtx.beginPath();
+      targetCtx.arc(sx, sy, rippleR2, 0, Math.PI * 2);
+      targetCtx.strokeStyle = `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
+      targetCtx.lineWidth = 1.8;
+      targetCtx.stroke();
     }
 
     targetCtx.beginPath();
     targetCtx.arc(sx, sy, 7, 0, Math.PI * 2);
-    targetCtx.fillStyle = pt.color || "#f59e0b";
-    targetCtx.shadowColor = pt.color || "#f59e0b";
+    targetCtx.fillStyle = ptCol;
+    targetCtx.shadowColor = ptCol;
     targetCtx.shadowBlur = 12;
     targetCtx.fill();
     targetCtx.shadowBlur = 0;
@@ -427,12 +437,20 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
     targetCtx.stroke();
 
     if (pt.label) {
-      targetCtx.font = "bold 12px Inter, sans-serif";
+      targetCtx.font = "600 11px Inter, sans-serif";
+      const tm = targetCtx.measureText(pt.label);
+      const tw = tm.width;
+      const th = 18;
+      const bx = sx + 12;
+      const by = sy - th / 2;
+      targetCtx.fillStyle = "rgba(15, 23, 42, 0.88)";
+      targetCtx.fillRect(bx - 4, by, tw + 8, th);
+      targetCtx.strokeStyle = ptCol;
+      targetCtx.lineWidth = 1;
+      targetCtx.strokeRect(bx - 4, by, tw + 8, th);
       targetCtx.fillStyle = "#ffffff";
-      targetCtx.shadowColor = "rgba(0, 0, 0, 0.85)";
-      targetCtx.shadowBlur = 4;
-      targetCtx.fillText(pt.label, sx + 12, sy + 4);
-      targetCtx.shadowBlur = 0;
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillText(pt.label, bx, sy);
     }
   }
 
@@ -3641,11 +3659,13 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
       const nwrCross = data.related && data.related.nwr_cross_links;
       if (nwrCross) {
         const ways = [];
+        const pts = [];
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         for (const c of nwrCross.centrelines || []) {
           if (c.coords && c.coords.length >= 2) {
+            const segSuffix = c.clipped ? ` (${c.clipped_length_meters || ''}m Segment)` : "";
             ways.push({
-              label: `${c.elr} Track ${c.track_id}`,
+              label: `${c.elr} Track ${c.track_id}${segSuffix}`,
               coords: c.coords,
               color: "#06b6d4",
             });
@@ -3674,10 +3694,43 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
             }
           }
         }
-        if (ways.length) {
+
+        // Discrete node & signal beacon points
+        for (const np of nwrCross.node_points || []) {
+          if (np.x !== undefined && np.y !== undefined) {
+            pts.push({
+              x: np.x,
+              y: np.y,
+              label: np.label,
+              color: np.color || "#f59e0b",
+              snapped_node: np.snapped_node,
+            });
+            minX = Math.min(minX, np.x);
+            maxX = Math.max(maxX, np.x);
+            minY = Math.min(minY, np.y);
+            maxY = Math.max(maxY, np.y);
+          }
+        }
+        if (!pts.length && nwrCross.node_point) {
+          const np = nwrCross.node_point;
+          pts.push({
+            x: np.x,
+            y: np.y,
+            label: np.label,
+            color: np.color || "#f59e0b",
+            snapped_node: np.snapped_node,
+          });
+          minX = Math.min(minX, np.x);
+          maxX = Math.max(maxX, np.x);
+          minY = Math.min(minY, np.y);
+          maxY = Math.max(maxY, np.y);
+        }
+
+        if (ways.length || pts.length) {
           STATE.crossHighlight.nwr = {
             ways,
-            points: [],
+            points: pts,
+            snappedNode: nwrCross.snapped_node,
             pulseStart: performance.now(),
             pulseDuration: 4500,
             active: true,
@@ -3688,7 +3741,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
           if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
             const cx = (minX + maxX) / 2;
             const cy = (minY + maxY) / 2;
-            const span = Math.max(maxX - minX, maxY - minY, 500);
+            const span = Math.max(maxX - minX, maxY - minY, 350);
             const targetZ = Math.min(0.2, ((nwrCanvas?.clientWidth || 600) * 0.7) / span);
             flyToNwr(cx, cy, targetZ);
           }
@@ -4603,6 +4656,95 @@ function renderElevationProfileSvg(nfData) {
   `;
 }
 
+function buildNwrCrossLinkWidget(nwrCross) {
+  if (!nwrCross) return "";
+  const best = nwrCross.best_centreline || (nwrCross.centrelines && nwrCross.centrelines[0]);
+  const snapped = nwrCross.snapped_node;
+  const corridor = nwrCross.corridor_centrelines || [];
+
+  if (!best && !snapped && (!nwrCross.elr_record || !nwrCross.elr_record.elr)) {
+    return "";
+  }
+
+  let html = `<div class="rel-section">
+    <h4>Cross-Model Link: NWR Track Model (OSGB36)</h4>`;
+
+  if (best) {
+    const isClipped = best.clipped || nwrCross.clipped;
+    const lenStr = isClipped
+      ? `${best.clipped_length_meters || '?'}m (Exact Sub-segment)`
+      : `${best.length_meters || '?'}m`;
+
+    html += `
+      <div class="rel-card" style="border-left: 3px solid #06b6d4;" onclick="jumpToNwrAsset('nwr_centreline', ${best.fid})">
+        <div class="rel-card-top">
+          <span style="font-weight: 700; color: #22d3ee;">
+            ${escapeHtml(best.elr)} / Track ${escapeHtml(best.track_id)}
+            <span style="font-size: 10px; background: rgba(6, 182, 212, 0.2); color: #38bdf8; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Single Best Match</span>
+          </span>
+          <span style="color:#38bdf8">Open in OSGB36 View &rarr;</span>
+        </div>
+        <div class="rel-card-sub" style="margin-top: 4px;">
+          ${escapeHtml(best.track_id_decoded || '')} • ${lenStr}
+        </div>
+        <div class="rel-card-sub" style="font-size: 11px; opacity: 0.85;">
+          Chainage: ${Number(best.start_mile_yards).toFixed(4)} → ${Number(best.end_mile_yards).toFixed(4)} mi.yd (${Number(best.start_meters).toFixed(0)}m → ${Number(best.end_meters).toFixed(0)}m)
+        </div>
+      </div>
+    `;
+  }
+
+  if (snapped) {
+    const isSw = snapped.is_switch || snapped.valency >= 3;
+    const icon = isSw ? "🔀" : "📍";
+    const badgeCol = isSw ? "#ec4899" : "#f59e0b";
+    const badgeBg = isSw ? "rgba(236, 72, 153, 0.2)" : "rgba(245, 158, 11, 0.2)";
+    html += `
+      <div class="rel-card" style="border-left: 3px solid ${badgeCol}; margin-top: 6px;" onclick="jumpToNwrAsset('nwr_node', ${snapped.fid})">
+        <div class="rel-card-top">
+          <span style="font-weight: 700; color: #f8fafc;">
+            ${icon} Nearest Geographic Node #${escapeHtml(snapped.asset_id)}
+            <span style="font-size: 10px; background: ${badgeBg}; color: ${badgeCol}; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">
+              ${escapeHtml(snapped.valency_desc || 'Valency ' + snapped.valency)}
+            </span>
+          </span>
+          <span style="color:${badgeCol}">Select Node &rarr;</span>
+        </div>
+        <div class="rel-card-sub" style="margin-top: 4px;">
+          OSGB36 (${Number(snapped.x).toFixed(2)} E, ${Number(snapped.y).toFixed(2)} N) • Distance: ${snapped.dist_meters}m from schematic point
+        </div>
+      </div>
+    `;
+  }
+
+  if (corridor.length > 1) {
+    const otherCentrelines = corridor.filter(c => !best || c.fid !== best.fid);
+    if (otherCentrelines.length) {
+      html += `
+        <details style="margin-top: 8px; font-size: 12px; color: #94a3b8;">
+          <summary style="cursor: pointer; padding: 4px 0; color: #38bdf8;">
+            Other Parallel Tracks in Corridor (${otherCentrelines.length})
+          </summary>
+          <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
+            ${otherCentrelines.map(c => `
+              <div class="rel-card" style="padding: 6px 8px;" onclick="jumpToNwrAsset('nwr_centreline', ${c.fid})">
+                <div class="rel-card-top">
+                  <span>Track ${escapeHtml(c.track_id)} (${escapeHtml(c.track_id_decoded || '')})</span>
+                  <span style="color:#38bdf8">View &rarr;</span>
+                </div>
+                <div class="rel-card-sub">${c.length_meters}m • ${Number(c.start_mile_yards).toFixed(4)} → ${Number(c.end_mile_yards).toFixed(4)} mi.yd</div>
+              </div>
+            `).join("")}
+          </div>
+        </details>
+      `;
+    }
+  }
+
+  html += `</div>`;
+  return html;
+}
+
 function renderRelatedTab(data) {
   const rel = data.related || {};
   const sections = [];
@@ -5161,23 +5303,6 @@ function renderRelatedTab(data) {
         </div>
       `);
     }
-
-    if (rel.nwr_cross_links && rel.nwr_cross_links.centrelines && rel.nwr_cross_links.centrelines.length) {
-      sections.push(`
-        <div class="rel-section">
-          <h4>Cross-Model Link: NWR Track Model (OSGB36) (${rel.nwr_cross_links.centrelines.length})</h4>
-          ${rel.nwr_cross_links.centrelines
-            .map(
-              (c) => `
-            <div class="rel-card" onclick="jumpToNwrAsset('nwr_centreline', ${c.fid})">
-              <div class="rel-card-top"><span>${escapeHtml(c.elr)} / ${escapeHtml(c.track_id)} (${escapeHtml(c.asset_id)})</span><span style="color:#38bdf8">Open in OSGB36 View &rarr;</span></div>
-              <div class="rel-card-sub">${escapeHtml(c.track_id_decoded)} • ${Number(c.start_mile_yards).toFixed(4)} → ${Number(c.end_mile_yards).toFixed(4)} mi.yd</div>
-            </div>`
-            )
-            .join("")}
-        </div>
-      `);
-    }
   } else if (data.asset_type === "track") {
     if (rel.blocks && rel.blocks.length) {
       sections.push(`
@@ -5411,6 +5536,13 @@ function renderRelatedTab(data) {
             .join("")}
         </div>
       `);
+    }
+  }
+
+  if (rel.nwr_cross_links && !String(data.asset_type).startsWith("nwr_")) {
+    const cw = buildNwrCrossLinkWidget(rel.nwr_cross_links);
+    if (cw) {
+      sections.push(cw);
     }
   }
 
