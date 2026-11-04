@@ -1,4 +1,5 @@
 import os
+import re
 import math
 import threading
 from contextlib import asynccontextmanager
@@ -47,6 +48,50 @@ def meters_to_miles_chains(meters: Optional[int]) -> Optional[str]:
         miles += 1
         chains -= 80.0
     return f"{miles}m {chains:04.1f}ch ({meters / 1000.0:.3f} km)"
+
+
+def clean_rail_asset_name(
+    raw_name: Optional[str],
+    asset_type: str,
+    is_bumper: bool = False,
+) -> str:
+    """Normalize signal or points names to a clean, canonical rail reference."""
+    if not raw_name:
+        return "Points" if asset_type == "points" else ("Buffer Stop" if is_bumper else "Signal")
+
+    # Strip any DB identifier prefix like '53195-207_' if master_name was used
+    name = re.sub(r"^\d+-\d+_", "", raw_name.strip())
+
+    if asset_type == "points":
+        # Remove POINTS:, POINT:, PTS:, SIG:, etc.
+        cleaned = re.sub(r"^(?:POINTS?|PTS)\s*[:\-]?\s*", "", name, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^(?:SIG(?:NAL)?)\s*[:\-]?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        if not cleaned:
+            cleaned = name
+        if not re.search(r"\bpoints?\b", cleaned, flags=re.IGNORECASE):
+            return f"Points {cleaned}"
+        return cleaned
+
+    if is_bumper or "buffer" in name.lower():
+        cleaned = re.sub(
+            r"^(?:SIG(?:NAL)?|BUFFER\s*STOP?|BUF)\s*[:\-]?\s*",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not cleaned or cleaned.lower() in ("buffer", "buffer stop"):
+            return "Buffer Stop"
+        if not re.search(r"\bbuffer\b", cleaned, flags=re.IGNORECASE):
+            return f"Buffer Stop {cleaned}"
+        return cleaned
+
+    # Standard signal
+    cleaned = re.sub(r"^(?:SIG(?:NAL)?)\s*[:\-]?\s*", "", name, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        cleaned = name
+    if not re.search(r"\bsignal\b", cleaned, flags=re.IGNORECASE):
+        return f"Signal {cleaned}"
+    return cleaned
 
 
 def load_lookup_cache():
@@ -1239,6 +1284,7 @@ def find_nwr_cross_links_for_tps(
     tps_valency: Optional[int] = None,
     item_label: Optional[str] = None,
     is_extrapolated: bool = False,
+    asset_type: Optional[str] = None,
 ):
     """Find matching NWR Track Model (OSGB36) ELR, single best-match track, and discrete node/signal points."""
     if not elr:
@@ -1453,6 +1499,7 @@ def find_nwr_cross_links_for_tps(
                         "y": pt_main[1],
                         "label": start_lbl,
                         "color": "#38bdf8",
+                        "shape": "circle",
                         "snapped_node": snapped_nwr_node,
                     })
                     if pt_end:
@@ -1461,29 +1508,61 @@ def find_nwr_cross_links_for_tps(
                             "y": pt_end[1],
                             "label": end_lbl,
                             "color": "#10b981",
+                            "shape": "circle",
                         })
                 else:
-                    if snapped_nwr_node and snapped_nwr_node["is_switch"]:
-                        pt_label = f"🔀 Points #{snapped_nwr_node['asset_id']} (Valency {snapped_nwr_node['valency']})"
-                        pt_col = "#ec4899"
-                        use_x = snapped_nwr_node["x"]
-                        use_y = snapped_nwr_node["y"]
-                    elif snapped_nwr_node:
-                        pt_label = f"📍 Physical Node #{snapped_nwr_node['asset_id']} ({meters_to_miles_chains(int(km_meters))})"
-                        pt_col = "#f59e0b"
-                        use_x = snapped_nwr_node["x"]
-                        use_y = snapped_nwr_node["y"]
-                    else:
-                        pt_label = f"{item_label or 'Point'} ({meters_to_miles_chains(int(km_meters))})"
-                        pt_col = "#f59e0b"
+                    m_suffix = f" ({meters_to_miles_chains(int(km_meters))})" if km_meters is not None else ""
+                    if asset_type == "signal":
+                        is_buf = bool(item_label and "buffer" in item_label.lower())
+                        pt_icon = "🛑" if is_buf else "🚦"
+                        pt_label = f"{pt_icon} {item_label or 'Signal'}{m_suffix}"
+                        pt_col = "#ef4444" if is_buf else "#f59e0b"
+                        pt_shape = "signal"
                         use_x = pt_main[0]
                         use_y = pt_main[1]
+                    elif asset_type == "points":
+                        use_x = snapped_nwr_node["x"] if snapped_nwr_node else pt_main[0]
+                        use_y = snapped_nwr_node["y"] if snapped_nwr_node else pt_main[1]
+                        pt_label = f"🔀 {item_label or 'Points'}{m_suffix}"
+                        pt_col = "#a855f7"
+                        pt_shape = "diamond"
+                    elif asset_type == "node":
+                        use_x = snapped_nwr_node["x"] if snapped_nwr_node else pt_main[0]
+                        use_y = snapped_nwr_node["y"] if snapped_nwr_node else pt_main[1]
+                        if tps_valency and tps_valency >= 3:
+                            pt_label = f"🔀 {item_label or 'Points Node'}{m_suffix}"
+                            pt_col = "#a855f7"
+                            pt_shape = "diamond"
+                        else:
+                            pt_label = f"📍 {item_label or 'Track Node'}{m_suffix}"
+                            pt_col = "#10b981"
+                            pt_shape = "circle"
+                    else:
+                        if snapped_nwr_node and snapped_nwr_node["is_switch"]:
+                            pt_label = f"🔀 Points #{snapped_nwr_node['asset_id']}{m_suffix}"
+                            pt_col = "#a855f7"
+                            pt_shape = "diamond"
+                            use_x = snapped_nwr_node["x"]
+                            use_y = snapped_nwr_node["y"]
+                        elif snapped_nwr_node:
+                            pt_label = f"📍 Physical Node #{snapped_nwr_node['asset_id']}{m_suffix}"
+                            pt_col = "#38bdf8"
+                            pt_shape = "circle"
+                            use_x = snapped_nwr_node["x"]
+                            use_y = snapped_nwr_node["y"]
+                        else:
+                            pt_label = f"{item_label or 'Point'}{m_suffix}"
+                            pt_col = "#38bdf8"
+                            pt_shape = "circle"
+                            use_x = pt_main[0]
+                            use_y = pt_main[1]
 
                     node_points.append({
                         "x": use_x,
                         "y": use_y,
                         "label": pt_label,
                         "color": pt_col,
+                        "shape": pt_shape,
                         "snapped_node": snapped_nwr_node,
                     })
 
@@ -1733,6 +1812,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                             st_km,
                             item_label=f"Station {st['longname'] or st['abbrev']}",
                             is_extrapolated=is_st_extrapolated,
+                            asset_type="station",
                         ),
                     },
                     "highlight": {
@@ -1890,6 +1970,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     track_name_hint=track_hint,
                     item_label=f"Edge #{ed['edge_id']}",
                     is_extrapolated=is_ed_extrapolated,
+                    asset_type="edge",
                 )
 
                 return {
@@ -2028,8 +2109,9 @@ def api_get_asset(asset_type: str, asset_id: int):
                     elr1,
                     nd_km,
                     tps_valency=len(conn_edges),
-                    item_label=f"Points #{nd['node_id']}" if is_points_node else f"Node #{nd['node_id']}",
+                    item_label=f"Points #{nd['node_id']}" if is_points_node else f"Track Node #{nd['node_id']}",
                     is_extrapolated=is_nd_extrapolated,
+                    asset_type="points" if is_points_node else "node",
                 )
 
                 return {
@@ -2060,8 +2142,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                             {
                                 "x": nd["netx"],
                                 "y": nd["nety"],
-                                "label": f"Points #{nd['node_id']}" if is_points_node else f"Node #{nd['node_id']}",
-                                "color": "#a855f7" if is_points_node else "#f43f5e",
+                                "label": f"Points #{nd['node_id']}" if is_points_node else f"Track Node #{nd['node_id']}",
+                                "color": "#a855f7" if is_points_node else "#10b981",
                                 "shape": "diamond" if is_points_node else "circle",
                             }
                         ],
@@ -2084,6 +2166,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                     asset_type == "points"
                     or sig["interlocking_sys_id"] in (15, 16)
                     or sig_name_raw.upper().startswith("POINT")
+                )
+                clean_item_name = clean_rail_asset_name(
+                    sig_name_raw,
+                    "points" if is_points_asset else "signal",
+                    is_bumper=bool(sig["bumper"]),
                 )
 
                 # Interlocking system details
@@ -2129,7 +2216,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     highlight_points.append({
                         "x": sig["x"],
                         "y": sig["y"],
-                        "label": f"🔀 {sig_name_raw}" if is_points_asset else f"🚦 {sig['name'] or sig['master_name']}",
+                        "label": f"🔀 {clean_item_name}" if is_points_asset else f"🚦 {clean_item_name}",
                         "color": "#a855f7" if is_points_asset else "#f59e0b",
                         "group": "points" if is_points_asset else "signal",
                         "shape": "diamond" if is_points_asset else "signal",
@@ -2460,6 +2547,44 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 is_sig_extrapolated = True
                                 break
 
+                # Fallback to connected track edges if node mileage is missing
+                if not sig_elr or sig_km_val is None or sig_km_val <= 0:
+                    cand_nids = [
+                        nid
+                        for nid in (
+                            sig.get("start_node_id"),
+                            sig.get("end_node_id"),
+                            sig.get("point_node_id"),
+                        )
+                        if nid
+                    ]
+                    if cand_nids:
+                        cur.execute(
+                            """
+                            SELECT e.edge_id, e.length, e.start_node_id, e.end_node_id,
+                                   ns.km_region_id AS s_reg, ns.km_value AS s_km,
+                                   ne.km_region_id AS e_reg, ne.km_value AS e_km
+                            FROM edges e
+                            JOIN nodes ns ON ns.node_id = e.start_node_id
+                            JOIN nodes ne ON ne.node_id = e.end_node_id
+                            WHERE (e.start_node_id = ANY(%s) OR e.end_node_id = ANY(%s))
+                              AND (ns.km_value > 0 OR ne.km_value > 0)
+                            LIMIT 1
+                            """,
+                            (cand_nids, cand_nids),
+                        )
+                        adj_e = cur.fetchone()
+                        if adj_e:
+                            if not sig_elr:
+                                reg_id = adj_e["s_reg"] or adj_e["e_reg"]
+                                if reg_id:
+                                    sig_elr = decode_code("kmregionmasterdesc", reg_id)
+                            if adj_e["s_km"] and adj_e["s_km"] > 0:
+                                sig_km_val = adj_e["s_km"]
+                            elif adj_e["e_km"] and adj_e["e_km"] > 0:
+                                sig_km_val = adj_e["e_km"]
+                            is_sig_extrapolated = True
+
                 sig_dir = None
                 sig_name_str = (sig["name"] or sig["master_name"] or "").strip().upper()
                 if sig_name_str.startswith("DN") or " DOWN " in f" {sig_name_str} " or sig_name_str.startswith("D"):
@@ -2474,15 +2599,6 @@ def api_get_asset(asset_type: str, asset_id: int):
                     if n_a and n_b and n_a.get("km_value") and n_b.get("km_value"):
                         sig_dir = "down" if n_a["km_value"] < n_b["km_value"] else "up"
 
-                if is_points_asset:
-                    clean_item_name = (
-                        sig_name_raw if sig_name_raw.upper().startswith("POINT")
-                        else f"Points {sig_name_raw}"
-                    )
-                else:
-                    buf_or_sig = "Buffer Stop " if sig["bumper"] else "Signal "
-                    clean_item_name = f"{buf_or_sig}{sig['name'] or sig['master_name']}"
-
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     sig_elr,
@@ -2490,6 +2606,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     direction_hint=sig_dir,
                     item_label=clean_item_name,
                     is_extrapolated=is_sig_extrapolated,
+                    asset_type="points" if is_points_asset else "signal",
                 )
 
                 ov_summary = (
@@ -2681,6 +2798,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     end_km_meters=trk_end_km,
                     track_name_hint=trk.get("name"),
                     item_label=f"Track {trk['name']}",
+                    asset_type="track",
                 )
 
                 return {
@@ -2927,6 +3045,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     direction_hint=blk_dir,
                     item_label=f"Block #{blk['block_id']}",
                     is_extrapolated=is_blk_extrapolated,
+                    asset_type="block",
                 )
 
                 return {
@@ -3024,6 +3143,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     end_km_meters=rt_end_km,
                     item_label=f"Route #{rt['route_id']}",
                     is_extrapolated=is_rt_extrapolated,
+                    asset_type="route",
                 )
 
                 return {
@@ -3124,6 +3244,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     end_km_meters=as_end_km,
                     item_label=f"Attribute Section {asec['short_description']}",
                     is_extrapolated=is_as_extrapolated,
+                    asset_type="attributesection",
                 )
 
                 return {

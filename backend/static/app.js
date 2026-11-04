@@ -830,12 +830,15 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
   for (const pt of highlight.points || []) {
     const [sx, sy] = toScreen(pt.x, pt.y);
     const ptCol = pt.color || (mode === "nwr" ? "#22d3ee" : "#f59e0b");
+    const isDiamond = pt.shape === "diamond";
+    const isSignal = pt.shape === "signal";
+
     if (isPulsing) {
       const rippleR = 8 + pulsePhase * 32;
       const rippleAlpha = Math.max(0, 1 - pulsePhase);
       targetCtx.beginPath();
       targetCtx.arc(sx, sy, rippleR, 0, Math.PI * 2);
-      targetCtx.strokeStyle = `rgba(245, 158, 11, ${rippleAlpha})`;
+      targetCtx.strokeStyle = isDiamond ? `rgba(168, 85, 247, ${rippleAlpha})` : `rgba(245, 158, 11, ${rippleAlpha})`;
       targetCtx.lineWidth = 2.5;
       targetCtx.stroke();
 
@@ -844,34 +847,53 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
       const rippleAlpha2 = Math.max(0, 1 - phase2);
       targetCtx.beginPath();
       targetCtx.arc(sx, sy, rippleR2, 0, Math.PI * 2);
-      targetCtx.strokeStyle = `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
+      targetCtx.strokeStyle = isDiamond ? `rgba(217, 70, 239, ${rippleAlpha2 * 0.8})` : `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
       targetCtx.lineWidth = 1.8;
       targetCtx.stroke();
     }
 
-    targetCtx.beginPath();
-    targetCtx.arc(sx, sy, 7, 0, Math.PI * 2);
-    targetCtx.fillStyle = ptCol;
-    targetCtx.shadowColor = ptCol;
-    targetCtx.shadowBlur = 12;
-    targetCtx.fill();
-    targetCtx.shadowBlur = 0;
-    targetCtx.strokeStyle = "#ffffff";
-    targetCtx.lineWidth = 2;
-    targetCtx.stroke();
+    if (isDiamond) {
+      const dSize = 8;
+      targetCtx.beginPath();
+      targetCtx.moveTo(sx, sy - dSize);
+      targetCtx.lineTo(sx + dSize, sy);
+      targetCtx.lineTo(sx, sy + dSize);
+      targetCtx.lineTo(sx - dSize, sy);
+      targetCtx.closePath();
+      targetCtx.fillStyle = ptCol;
+      targetCtx.shadowColor = ptCol;
+      targetCtx.shadowBlur = 14;
+      targetCtx.fill();
+      targetCtx.shadowBlur = 0;
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 2;
+      targetCtx.stroke();
+    } else {
+      const radius = isSignal ? 7.5 : 7;
+      targetCtx.beginPath();
+      targetCtx.arc(sx, sy, radius, 0, Math.PI * 2);
+      targetCtx.fillStyle = ptCol;
+      targetCtx.shadowColor = ptCol;
+      targetCtx.shadowBlur = isSignal ? 14 : 10;
+      targetCtx.fill();
+      targetCtx.shadowBlur = 0;
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 2;
+      targetCtx.stroke();
+    }
 
     if (pt.label) {
       targetCtx.font = "600 11px Inter, sans-serif";
       const tm = targetCtx.measureText(pt.label);
       const tw = tm.width;
-      const th = 18;
-      const bx = sx + 12;
+      const th = 20;
+      const bx = sx + 13;
       const by = sy - th / 2;
-      targetCtx.fillStyle = "rgba(15, 23, 42, 0.88)";
-      targetCtx.fillRect(bx - 4, by, tw + 8, th);
+      targetCtx.fillStyle = "rgba(15, 23, 42, 0.92)";
+      targetCtx.fillRect(bx - 5, by, tw + 10, th);
       targetCtx.strokeStyle = ptCol;
-      targetCtx.lineWidth = 1;
-      targetCtx.strokeRect(bx - 4, by, tw + 8, th);
+      targetCtx.lineWidth = 1.2;
+      targetCtx.strokeRect(bx - 5, by, tw + 10, th);
       targetCtx.fillStyle = "#ffffff";
       targetCtx.textBaseline = "middle";
       targetCtx.fillText(pt.label, bx, sy);
@@ -4276,6 +4298,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
               y: np.y,
               label: np.label,
               color: np.color || "#f59e0b",
+              shape: np.shape,
               snapped_node: np.snapped_node,
             });
             minX = Math.min(minX, np.x);
@@ -4291,6 +4314,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
             y: np.y,
             label: np.label,
             color: np.color || "#f59e0b",
+            shape: np.shape,
             snapped_node: np.snapped_node,
           });
           minX = Math.min(minX, np.x);
