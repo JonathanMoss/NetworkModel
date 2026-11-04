@@ -1205,6 +1205,7 @@ def find_nwr_cross_links_for_tps(
     track_name_hint: Optional[str] = None,
     tps_valency: Optional[int] = None,
     item_label: Optional[str] = None,
+    is_extrapolated: bool = False,
 ):
     """Find matching NWR Track Model (OSGB36) ELR, single best-match track, and discrete node/signal points."""
     if not elr:
@@ -1216,6 +1217,7 @@ def find_nwr_cross_links_for_tps(
             "node_point": None,
             "node_points": [],
             "snapped_node": None,
+            "geo_snap": None,
             "single_match": False,
         }
     try:
@@ -1268,6 +1270,38 @@ def find_nwr_cross_links_for_tps(
 
         raw_candidates = cur.fetchall()
         if not raw_candidates:
+            # Fallback: find nearest centreline on this ELR even if outside the search margin
+            cur.execute(
+                """
+                SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                       start_meters, end_meters, length_meters, owner, coords,
+                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                FROM nwr_track_centrelines
+                WHERE elr = %s
+                ORDER BY LEAST(ABS(start_meters - %s), ABS(end_meters - %s)) ASC
+                LIMIT 1
+                """,
+                (elr, target_m if target_m is not None else 0),
+            )
+            raw_candidates = cur.fetchall()
+            if raw_candidates:
+                is_extrapolated = True
+
+        if not raw_candidates:
+            geo_snap = None
+            if elr_rec and elr_rec.get("parts"):
+                p0 = elr_rec["parts"][0]
+                mid_pt = p0[len(p0) // 2] if p0 else None
+                if mid_pt:
+                    geo_snap = {
+                        "x": mid_pt[0],
+                        "y": mid_pt[1],
+                        "elr": elr,
+                        "mileage_meters": target_m,
+                        "mileage_str": meters_to_miles_chains(int(target_m)) if target_m else None,
+                        "target_zoom": 0.08,
+                        "is_extrapolated": True,
+                    }
             return {
                 "elr_record": elr_rec,
                 "centrelines": [],
@@ -1276,6 +1310,7 @@ def find_nwr_cross_links_for_tps(
                 "node_point": None,
                 "node_points": [],
                 "snapped_node": None,
+                "geo_snap": geo_snap,
                 "single_match": False,
             }
 
@@ -1419,6 +1454,48 @@ def find_nwr_cross_links_for_tps(
                         "snapped_node": snapped_nwr_node,
                     })
 
+        # Geographic snap camera target
+        geo_snap = None
+        if node_points:
+            if len(node_points) == 1:
+                geo_snap = {
+                    "x": node_points[0]["x"],
+                    "y": node_points[0]["y"],
+                    "elr": elr,
+                    "mileage_meters": km_meters,
+                    "mileage_str": meters_to_miles_chains(int(km_meters)) if km_meters else None,
+                    "target_zoom": 0.28,
+                    "is_extrapolated": is_extrapolated,
+                }
+            elif len(node_points) >= 2:
+                p1 = node_points[0]
+                p2 = node_points[1]
+                mid_x = round((p1["x"] + p2["x"]) / 2.0, 3)
+                mid_y = round((p1["y"] + p2["y"]) / 2.0, 3)
+                span = math.hypot(p2["x"] - p1["x"], p2["y"] - p1["y"])
+                calc_zoom = round(min(0.28, max(0.04, 450.0 / max(span, 250.0))), 3)
+                mid_m = ((km_meters or 0) + (end_km_meters or 0)) / 2.0
+                geo_snap = {
+                    "x": mid_x,
+                    "y": mid_y,
+                    "elr": elr,
+                    "mileage_meters": mid_m,
+                    "mileage_str": meters_to_miles_chains(int(mid_m)),
+                    "target_zoom": calc_zoom,
+                    "is_extrapolated": is_extrapolated,
+                }
+        elif best_candidate and best_candidate.get("coords"):
+            mid_c = best_candidate["coords"][len(best_candidate["coords"]) // 2]
+            geo_snap = {
+                "x": mid_c[0],
+                "y": mid_c[1],
+                "elr": elr,
+                "mileage_meters": km_meters,
+                "mileage_str": meters_to_miles_chains(int(km_meters)) if km_meters else None,
+                "target_zoom": 0.15,
+                "is_extrapolated": is_extrapolated,
+            }
+
         return {
             "elr_record": elr_rec,
             "centrelines": [best_candidate],
@@ -1427,6 +1504,7 @@ def find_nwr_cross_links_for_tps(
             "node_point": node_points[0] if node_points else None,
             "node_points": node_points,
             "snapped_node": snapped_nwr_node,
+            "geo_snap": geo_snap,
             "clipped": is_clipped,
             "clipped_length_meters": clipped_len if is_clipped else None,
             "single_match": True,
@@ -1440,6 +1518,7 @@ def find_nwr_cross_links_for_tps(
             "node_point": None,
             "node_points": [],
             "snapped_node": None,
+            "geo_snap": None,
             "single_match": False,
         }
 
@@ -1558,7 +1637,28 @@ def api_get_asset(asset_type: str, asset_id: int):
                 # Station Bank Corridors (<stationbank> / <stationbanksection>) containing this Timing Point — O(1) in-memory lookup
                 station_banks = get_timing_catalog().get("station_to_banks", {}).get(str(asset_id), [])
 
-                elr = decode_code("kmregionmasterdesc", st["km_region_id"])
+                elr = decode_code("kmregionmasterdesc", st["km_region_id"]) if st.get("km_region_id") else None
+                st_km = st.get("km_value")
+                is_st_extrapolated = False
+                if not elr or st_km is None or st_km <= 0:
+                    cur.execute(
+                        """
+                        SELECT n.km_region_id, n.km_value
+                        FROM station_tracks s_trk
+                        JOIN nodes n ON n.node_id = ANY(s_trk.node_ids)
+                        WHERE s_trk.station_id = %s AND n.km_value > 0
+                        ORDER BY n.km_value ASC
+                        LIMIT 1
+                        """,
+                        (asset_id,),
+                    )
+                    found_st = cur.fetchone()
+                    if found_st:
+                        if not elr and found_st.get("km_region_id"):
+                            elr = decode_code("kmregionmasterdesc", found_st["km_region_id"])
+                        st_km = found_st.get("km_value")
+                        is_st_extrapolated = True
+
                 decoded = {
                     "Station ID": st["station_id"],
                     "Abbreviation (TIPLOC)": st["abbrev"],
@@ -1569,8 +1669,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "UIC Station Code": f"{st['uiccode']}-{st['uicstationcode']}" if st["uicstationcode"] else "—",
                     "Timing Point Role (Station Type)": f"{decode_code('stationtypedesc', st['station_type'])} (ID {st['station_type']})",
                     "Planning Location Category": f"{decode_code('stationcategorydesc', st['station_category'])} (ID {st['station_category']})",
-                    "Engineer's Line Ref (ELR)": f"{elr} (Region {st['km_region_id']})" if elr else str(st["km_region_id"] or "—"),
-                    "Mileage / Kilometrage": meters_to_miles_chains(st["km_value"]) or "—",
+                    "Engineer's Line Ref (ELR)": f"{elr}{' (Extrapolated)' if is_st_extrapolated else ''}" if elr else str(st["km_region_id"] or "—"),
+                    "Mileage / Kilometrage": f"{meters_to_miles_chains(st_km)}{' (Extrapolated)' if is_st_extrapolated else ''}" if st_km else "—",
                     "Standard Stopping Time": f"{st['std_stopping_time']} s",
                     "Standard Connection Time": f"{st['std_connection_time']} s",
                     "Compulsory Stop": st["compulsory_stop"],
@@ -1597,8 +1697,9 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "nwr_cross_links": find_nwr_cross_links_for_tps(
                             cur,
                             elr,
-                            st["km_value"],
+                            st_km,
                             item_label=f"Station {st['longname'] or st['abbrev']}",
+                            is_extrapolated=is_st_extrapolated,
                         ),
                     },
                     "highlight": {
@@ -1731,6 +1832,14 @@ def api_get_asset(asset_type: str, asset_id: int):
 
                 start_km = n_start["km_value"] if (n_start and n_start.get("km_value")) else None
                 end_km = n_end["km_value"] if (n_end and n_end.get("km_value")) else None
+                is_ed_extrapolated = False
+                if start_km is not None and end_km is None and ed.get("length"):
+                    end_km = start_km + ed["length"]
+                    is_ed_extrapolated = True
+                elif end_km is not None and start_km is None and ed.get("length"):
+                    start_km = max(0, end_km - ed["length"])
+                    is_ed_extrapolated = True
+
                 edge_dir = None
                 if start_km is not None and end_km is not None:
                     if start_km < end_km:
@@ -1741,12 +1850,13 @@ def api_get_asset(asset_type: str, asset_id: int):
 
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
-                    elr_start,
+                    elr_start or (decode_code("kmregionmasterdesc", n_end["km_region_id"]) if n_end else None),
                     start_km,
                     end_km_meters=end_km,
                     direction_hint=edge_dir,
                     track_name_hint=track_hint,
                     item_label=f"Edge #{ed['edge_id']}",
+                    is_extrapolated=is_ed_extrapolated,
                 )
 
                 return {
@@ -1849,12 +1959,37 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "Last Modified": nd["last_modified"],
                 }
 
+                nd_km = nd.get("km_value")
+                is_nd_extrapolated = False
+                if not elr1 or nd_km is None or nd_km <= 0:
+                    cur.execute(
+                        """
+                        SELECT e.length, e.start_node_id, n.km_region_id, n.km_value
+                        FROM edges e
+                        JOIN nodes n ON (n.node_id = CASE WHEN e.start_node_id = %s THEN e.end_node_id ELSE e.start_node_id END)
+                        WHERE (e.start_node_id = %s OR e.end_node_id = %s)
+                          AND n.km_value > 0
+                        LIMIT 1
+                        """,
+                        (nd["node_id"], nd["node_id"], nd["node_id"]),
+                    )
+                    adj_nd = cur.fetchone()
+                    if adj_nd:
+                        if not elr1 and adj_nd.get("km_region_id"):
+                            elr1 = decode_code("kmregionmasterdesc", adj_nd["km_region_id"])
+                        if adj_nd["start_node_id"] == nd["node_id"]:
+                            nd_km = max(0, adj_nd["km_value"] - (adj_nd["length"] or 0))
+                        else:
+                            nd_km = adj_nd["km_value"] + (adj_nd["length"] or 0)
+                        is_nd_extrapolated = True
+
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     elr1,
-                    nd["km_value"],
+                    nd_km,
                     tps_valency=len(conn_edges),
                     item_label=f"Node #{nd['node_id']}",
+                    is_extrapolated=is_nd_extrapolated,
                 )
 
                 return {
@@ -2245,6 +2380,22 @@ def api_get_asset(asset_type: str, asset_id: int):
                     })
 
                 # 4. NWR Track Model Cross-Links (OSGB36)
+                is_sig_extrapolated = False
+                if not sig_elr or sig_km_val is None or sig_km_val <= 0:
+                    for alt_nid in (sig.get("start_node_id"), sig.get("end_node_id"), sig.get("point_node_id")):
+                        if alt_nid:
+                            cur.execute(
+                                "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s AND km_value > 0",
+                                (alt_nid,),
+                            )
+                            alt_nd = cur.fetchone()
+                            if alt_nd:
+                                if not sig_elr and alt_nd.get("km_region_id"):
+                                    sig_elr = decode_code("kmregionmasterdesc", alt_nd["km_region_id"])
+                                sig_km_val = alt_nd["km_value"]
+                                is_sig_extrapolated = True
+                                break
+
                 sig_dir = None
                 sig_name_str = (sig["name"] or sig["master_name"] or "").strip().upper()
                 if sig_name_str.startswith("DN") or " DOWN " in f" {sig_name_str} " or sig_name_str.startswith("D"):
@@ -2265,6 +2416,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     sig_km_val,
                     direction_hint=sig_dir,
                     item_label=f"Signal {sig['name'] or sig['master_name']}",
+                    is_extrapolated=is_sig_extrapolated,
                 )
 
                 ov_summary = (
@@ -2607,6 +2759,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                 blk_km = None
                 blk_end_km = None
                 blk_dir = None
+                is_blk_extrapolated = False
                 if nids:
                     cur.execute(
                         "SELECT node_id, km_region_id, km_value FROM nodes WHERE node_id = %s",
@@ -2626,6 +2779,18 @@ def api_get_asset(asset_type: str, asset_id: int):
                         if not blk_elr and bn_end.get("km_region_id"):
                             blk_elr = decode_code("kmregionmasterdesc", bn_end["km_region_id"])
                         blk_end_km = bn_end.get("km_value")
+                    if (not blk_elr or blk_km is None) and len(nids) > 2:
+                        cur.execute(
+                            "SELECT km_region_id, km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                            (nids,),
+                        )
+                        mid_bn = cur.fetchone()
+                        if mid_bn:
+                            if not blk_elr and mid_bn.get("km_region_id"):
+                                blk_elr = decode_code("kmregionmasterdesc", mid_bn["km_region_id"])
+                            if blk_km is None:
+                                blk_km = mid_bn.get("km_value")
+                            is_blk_extrapolated = True
                     if blk_km is not None and blk_end_km is not None:
                         blk_dir = "down" if blk_km < blk_end_km else "up"
 
@@ -2636,6 +2801,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     end_km_meters=blk_end_km,
                     direction_hint=blk_dir,
                     item_label=f"Block #{blk['block_id']}",
+                    is_extrapolated=is_blk_extrapolated,
                 )
 
                 return {
@@ -2694,6 +2860,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                 rt_elr = None
                 rt_km = None
                 rt_end_km = None
+                is_rt_extrapolated = False
                 if rt.get("node_ids"):
                     cur.execute(
                         "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s",
@@ -2712,6 +2879,18 @@ def api_get_asset(asset_type: str, asset_id: int):
                         rn_end = cur.fetchone()
                         if rn_end and rn_end.get("km_value"):
                             rt_end_km = rn_end["km_value"]
+                    if (not rt_elr or rt_km is None) and len(rt["node_ids"]) > 2:
+                        cur.execute(
+                            "SELECT km_region_id, km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                            (rt["node_ids"],),
+                        )
+                        mid_rn = cur.fetchone()
+                        if mid_rn:
+                            if not rt_elr and mid_rn.get("km_region_id"):
+                                rt_elr = decode_code("kmregionmasterdesc", mid_rn["km_region_id"])
+                            if rt_km is None:
+                                rt_km = mid_rn.get("km_value")
+                            is_rt_extrapolated = True
 
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
@@ -2719,6 +2898,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     rt_km,
                     end_km_meters=rt_end_km,
                     item_label=f"Route #{rt['route_id']}",
+                    is_extrapolated=is_rt_extrapolated,
                 )
 
                 return {
@@ -2791,6 +2971,36 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (asec["min_x"] + asec["max_x"]) / 2.0 if asec["min_x"] is not None else None
                 cy = (asec["min_y"] + asec["max_y"]) / 2.0 if asec["min_y"] is not None else None
 
+                as_km = None
+                as_end_km = None
+                is_as_extrapolated = False
+                if asec.get("section_attrs"):
+                    for sa in asec["section_attrs"]:
+                        if sa.get("kmvaluebegin"):
+                            as_km = float(sa["kmvaluebegin"])
+                        if sa.get("kmvalueend"):
+                            as_end_km = float(sa["kmvalueend"])
+                        if as_km is not None:
+                            break
+                if as_km is None and asec.get("node_ids"):
+                    cur.execute(
+                        "SELECT km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                        (asec["node_ids"],),
+                    )
+                    as_nd = cur.fetchone()
+                    if as_nd:
+                        as_km = as_nd["km_value"]
+                        is_as_extrapolated = True
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    elr or asec.get("description"),
+                    as_km,
+                    end_km_meters=as_end_km,
+                    item_label=f"Attribute Section {asec['short_description']}",
+                    is_extrapolated=is_as_extrapolated,
+                )
+
                 return {
                     "asset_type": "attributesection",
                     "id": asec["pk"],
@@ -2803,6 +3013,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "related": {
                         "section_attributes": decoded_sattrs,
                         "node_ids": asec["node_ids"],
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "segments": asec["coords"],

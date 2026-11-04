@@ -2888,32 +2888,107 @@ function fitUKNetwork() {
   }
 }
 
-function flyToTps(x, y, targetZoom = 1.6) {
-  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
-  STATE.tpsCam.camX = x;
-  STATE.tpsCam.camY = y;
-  if (targetZoom) STATE.tpsCam.zoom = targetZoom;
-  if (STATE.activeView === "tps") {
-    STATE.camX = x;
-    STATE.camY = y;
-    if (targetZoom) STATE.zoom = targetZoom;
-  }
-  scheduleViewportFetch();
-  requestRender();
+let tpsFlyAnim = null;
+let nwrFlyAnim = null;
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
 }
 
-function flyToNwr(x, y, targetZoom = 0.04) {
+function flyToTps(x, y, targetZoom = 1.6, animate = true) {
   if (x === null || y === null || isNaN(x) || isNaN(y)) return;
-  STATE.nwrCam.camX = x;
-  STATE.nwrCam.camY = y;
-  if (targetZoom) STATE.nwrCam.zoom = targetZoom;
-  if (STATE.activeView === "nwr") {
-    STATE.camX = x;
-    STATE.camY = y;
-    if (targetZoom) STATE.zoom = targetZoom;
+  if (!animate) {
+    STATE.tpsCam.camX = x;
+    STATE.tpsCam.camY = y;
+    if (targetZoom) STATE.tpsCam.zoom = targetZoom;
+    if (STATE.activeView === "tps") {
+      STATE.camX = x;
+      STATE.camY = y;
+      if (targetZoom) STATE.zoom = targetZoom;
+    }
+    scheduleViewportFetch();
+    requestRender();
+    return;
   }
-  scheduleViewportFetch();
-  requestRender();
+
+  if (tpsFlyAnim) cancelAnimationFrame(tpsFlyAnim);
+  const startX = STATE.tpsCam.camX;
+  const startY = STATE.tpsCam.camY;
+  const startZ = STATE.tpsCam.zoom;
+  const destZ = targetZoom || startZ;
+  const startTime = performance.now();
+  const duration = 380;
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1.0, elapsed / duration);
+    const ease = easeOutCubic(progress);
+
+    STATE.tpsCam.camX = startX + (x - startX) * ease;
+    STATE.tpsCam.camY = startY + (y - startY) * ease;
+    STATE.tpsCam.zoom = startZ + (destZ - startZ) * ease;
+    if (STATE.activeView === "tps") {
+      STATE.camX = STATE.tpsCam.camX;
+      STATE.camY = STATE.tpsCam.camY;
+      STATE.zoom = STATE.tpsCam.zoom;
+    }
+    requestRender();
+    if (progress < 1.0) {
+      tpsFlyAnim = requestAnimationFrame(step);
+    } else {
+      tpsFlyAnim = null;
+      scheduleViewportFetch();
+    }
+  }
+  tpsFlyAnim = requestAnimationFrame(step);
+}
+
+function flyToNwr(x, y, targetZoom = 0.04, animate = true) {
+  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
+  if (!animate) {
+    STATE.nwrCam.camX = x;
+    STATE.nwrCam.camY = y;
+    if (targetZoom) STATE.nwrCam.zoom = targetZoom;
+    if (STATE.activeView === "nwr") {
+      STATE.camX = x;
+      STATE.camY = y;
+      if (targetZoom) STATE.zoom = targetZoom;
+    }
+    scheduleViewportFetch();
+    requestRender();
+    return;
+  }
+
+  if (nwrFlyAnim) cancelAnimationFrame(nwrFlyAnim);
+  const startX = STATE.nwrCam.camX;
+  const startY = STATE.nwrCam.camY;
+  const startZ = STATE.nwrCam.zoom;
+  const destZ = targetZoom || startZ;
+  const startTime = performance.now();
+  const duration = 380;
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1.0, elapsed / duration);
+    const ease = easeOutCubic(progress);
+
+    STATE.nwrCam.camX = startX + (x - startX) * ease;
+    STATE.nwrCam.camY = startY + (y - startY) * ease;
+    STATE.nwrCam.zoom = startZ + (destZ - startZ) * ease;
+    if (STATE.activeView === "nwr") {
+      STATE.camX = STATE.nwrCam.camX;
+      STATE.camY = STATE.nwrCam.camY;
+      STATE.zoom = STATE.nwrCam.zoom;
+    }
+    requestRender();
+    if (progress < 1.0) {
+      nwrFlyAnim = requestAnimationFrame(step);
+    } else {
+      nwrFlyAnim = null;
+      scheduleViewportFetch();
+    }
+  }
+  nwrFlyAnim = requestAnimationFrame(step);
 }
 
 function flyTo(x, y, targetZoom = null) {
@@ -3738,12 +3813,27 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
           };
           triggerPulseLoop();
           document.getElementById("nwr-sync-tag")?.classList.remove("hidden");
-          if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
-            const cx = (minX + maxX) / 2;
-            const cy = (minY + maxY) / 2;
-            const span = Math.max(maxX - minX, maxY - minY, 350);
-            const targetZ = Math.min(0.2, ((nwrCanvas?.clientWidth || 600) * 0.7) / span);
-            flyToNwr(cx, cy, targetZ);
+          if (STATE.activeView === "split") {
+            const snap = nwrCross.geo_snap;
+            if (snap && isFinite(snap.x) && isFinite(snap.y)) {
+              flyToNwr(snap.x, snap.y, snap.target_zoom || 0.28, true);
+              const tagEl = document.getElementById("nwr-sync-tag");
+              if (tagEl) {
+                tagEl.textContent = `⚡ Snapped: ${snap.elr || ''} @ ${snap.mileage_str || ''}${snap.is_extrapolated ? ' (Extrapolated)' : ''}`;
+              }
+            } else if (pts.length) {
+              const cx = pts.length === 1 ? pts[0].x : (pts[0].x + pts[1].x) / 2;
+              const cy = pts.length === 1 ? pts[0].y : (pts[0].y + pts[1].y) / 2;
+              const span = pts.length > 1 ? Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) : 250;
+              const targetZ = Math.min(0.28, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.75) / Math.max(span, 250)));
+              flyToNwr(cx, cy, targetZ, true);
+            } else if (isFinite(minX) && isFinite(maxX)) {
+              const cx = (minX + maxX) / 2;
+              const cy = (minY + maxY) / 2;
+              const span = Math.max(maxX - minX, maxY - minY, 350);
+              const targetZ = Math.min(0.25, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.7) / span));
+              flyToNwr(cx, cy, targetZ, true);
+            }
           }
         } else {
           STATE.crossHighlight.nwr.active = false;
