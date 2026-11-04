@@ -688,7 +688,7 @@ body {
   background: rgba(245, 158, 11, 0.14);
 }
 
-/* OSM Slider & Select */
+/* OSM Opacity Slider */
 .osm-opacity-slider {
   -webkit-appearance: none;
   appearance: none;
@@ -697,7 +697,7 @@ body {
   border-radius: 2px;
   outline: none;
   flex: 1;
-  max-width: 60px;
+  max-width: 100px;
   cursor: pointer;
 }
 
@@ -723,24 +723,6 @@ body {
   min-width: 28px;
   text-align: right;
   user-select: none;
-}
-
-.osm-style-select {
-  background: var(--bg-dark);
-  color: var(--text-main);
-  border: 1px solid var(--border-light);
-  border-radius: 4px;
-  padding: 2px 4px;
-  font-size: 0.68rem;
-  cursor: pointer;
-  outline: none;
-  max-width: 95px;
-  flex: 1;
-}
-
-.osm-style-select:focus,
-.osm-style-select:hover {
-  border-color: var(--accent);
 }
 
 .layer-toggle {

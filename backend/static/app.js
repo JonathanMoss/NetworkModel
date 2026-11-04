@@ -43,8 +43,7 @@ const STATE = {
     curvature: true,
     nf_points: false,
   },
-  osmOpacity: 65,
-  osmStyle: "carto_dark",
+  osmOpacity: 30,
 
   layerStyles: {
     edges: { color: "#38bdf8", width: 1.5 },
@@ -331,8 +330,12 @@ function loadPersistedOsmSettings() {
   const saved = getCookie("nr_osm_settings");
   if (saved && typeof saved === "object") {
     if (typeof saved.enabled === "boolean") STATE.nwrLayers.osm = saved.enabled;
-    if (typeof saved.opacity === "number") STATE.osmOpacity = saved.opacity;
-    if (typeof saved.style === "string") STATE.osmStyle = saved.style;
+    // Default to 30%; migrate old 65% default to new 30% default
+    if (typeof saved.opacity === "number" && saved.opacity !== 65) {
+      STATE.osmOpacity = Math.max(0, Math.min(100, saved.opacity));
+    } else {
+      STATE.osmOpacity = 30;
+    }
   }
 }
 
@@ -342,7 +345,6 @@ function savePersistedOsmSettings() {
     {
       enabled: STATE.nwrLayers.osm,
       opacity: STATE.osmOpacity,
-      style: STATE.osmStyle,
     },
     365
   );
@@ -380,13 +382,10 @@ function updateLayerStyleUi() {
   if (osmCheck) osmCheck.checked = STATE.nwrLayers.osm;
 
   const osmSlider = document.getElementById("osm-opacity-slider");
-  if (osmSlider) osmSlider.value = STATE.osmOpacity ?? 65;
+  if (osmSlider) osmSlider.value = STATE.osmOpacity ?? 30;
 
   const osmReadout = document.getElementById("osm-opacity-readout");
-  if (osmReadout) osmReadout.textContent = `${STATE.osmOpacity ?? 65}%`;
-
-  const osmStyleSel = document.getElementById("osm-style-select");
-  if (osmStyleSel) osmStyleSel.value = STATE.osmStyle || "carto_dark";
+  if (osmReadout) osmReadout.textContent = `${STATE.osmOpacity ?? 30}%`;
 }
 
 /* ============================================================================
@@ -530,25 +529,35 @@ function tileYToLat(y, z) {
   return (180.0 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
 }
 
-function getOsmTileUrl(style, z, x, y) {
-  if (style === "carto_dark") {
-    const sub = ["a", "b", "c", "d"][(x + y) % 4];
-    return `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
-  }
-  if (style === "osm_standard") {
-    const sub = ["a", "b", "c"][(x + y) % 3];
-    return `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
-  }
-  // Default: carto_light (Voyager)
-  const sub = ["a", "b", "c", "d"][(x + y) % 4];
-  return `https://${sub}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
+function getOsmTileUrl(z, x, y) {
+  const sub = ["a", "b", "c"][(x + y) % 3];
+  return `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
 }
 
 const osmTileCache = new Map();
+let osmOffscreenCanvas = null;
+let osmOffscreenCtx = null;
+
+function getOsmOffscreen(w, h) {
+  if (!osmOffscreenCanvas) {
+    osmOffscreenCanvas = document.createElement("canvas");
+    osmOffscreenCtx = osmOffscreenCanvas.getContext("2d");
+  }
+  if (osmOffscreenCanvas.width !== w || osmOffscreenCanvas.height !== h) {
+    osmOffscreenCanvas.width = w;
+    osmOffscreenCanvas.height = h;
+  } else {
+    osmOffscreenCtx.clearRect(0, 0, w, h);
+  }
+  return { canvas: osmOffscreenCanvas, ctx: osmOffscreenCtx };
+}
 
 function renderOsmTiles(ctx, w, h) {
   if (!STATE.nwrLayers.osm) return;
   if (!STATE.nwrCam) return;
+
+  const opacity = Math.max(0, Math.min(1, (STATE.osmOpacity !== undefined ? STATE.osmOpacity : 30) / 100));
+  if (opacity <= 0) return;
 
   const zoom = STATE.nwrCam.zoom;
   const worldToScreen = (wx, wy) => [
@@ -560,16 +569,18 @@ function renderOsmTiles(ctx, w, h) {
     STATE.nwrCam.camY - (sy - h / 2) / zoom,
   ];
 
-  const [minE, maxN] = screenToWorld(0, 0);
-  const [maxE, minN] = screenToWorld(w, h);
+  const [minE, maxN] = screenToWorld(-64, -64);
+  const [maxE, minN] = screenToWorld(w + 64, h + 64);
 
   const [latTL, lonTL] = osgb36_to_wgs84(minE, maxN);
   const [latBR, lonBR] = osgb36_to_wgs84(maxE, minN);
+  const [latTR, lonTR] = osgb36_to_wgs84(maxE, maxN);
+  const [latBL, lonBL] = osgb36_to_wgs84(minE, minN);
 
-  const minLat = Math.min(latTL, latBR);
-  const maxLat = Math.max(latTL, latBR);
-  const minLon = Math.min(lonTL, lonBR);
-  const maxLon = Math.max(lonTL, lonBR);
+  const minLat = Math.min(latTL, latBR, latTR, latBL);
+  const maxLat = Math.max(latTL, latBR, latTR, latBL);
+  const minLon = Math.min(lonTL, lonBR, lonTR, lonBL);
+  const maxLon = Math.max(lonTL, lonBR, lonTR, lonBL);
 
   if (maxLat < 48 || minLat > 62 || maxLon < -13 || minLon > 4) return;
 
@@ -586,7 +597,7 @@ function renderOsmTiles(ctx, w, h) {
   let startY = Math.max(0, Math.min(y0, y1));
   let endY = Math.min((1 << z) - 1, Math.max(y0, y1));
 
-  if ((endX - startX + 1) * (endY - startY + 1) > 50 && z > 5) {
+  if ((endX - startX + 1) * (endY - startY + 1) > 64 && z > 5) {
     z -= 1;
     x0 = lonToTileX(minLon, z);
     x1 = lonToTileX(maxLon, z);
@@ -598,31 +609,34 @@ function renderOsmTiles(ctx, w, h) {
     endY = Math.min((1 << z) - 1, Math.max(y0, y1));
   }
 
-  const opacity = Math.max(0, Math.min(1, (STATE.osmOpacity !== undefined ? STATE.osmOpacity : 65) / 100));
-  if (opacity <= 0) return;
+  // Pre-calculate shared grid vertex screen coordinates to prevent any seams/gaps between tiles
+  const gridXCount = endX - startX + 2;
+  const gridYCount = endY - startY + 2;
+  const gridVertices = new Array(gridXCount);
+  for (let i = 0; i < gridXCount; i++) {
+    gridVertices[i] = new Array(gridYCount);
+    const tx = startX + i;
+    const lon = tileXToLon(tx, z);
+    for (let j = 0; j < gridYCount; j++) {
+      const ty = startY + j;
+      const lat = tileYToLat(ty, z);
+      const [e, n] = wgs84_to_osgb36(lat, lon);
+      gridVertices[i][j] = worldToScreen(e, n);
+    }
+  }
 
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  const style = STATE.osmStyle || "carto_dark";
+  const { canvas: offCanvas, ctx: offCtx } = getOsmOffscreen(w, h);
+  let anyDrawn = false;
 
   for (let ty = startY; ty <= endY; ty++) {
+    const j = ty - startY;
     for (let tx = startX; tx <= endX; tx++) {
-      const lonNW = tileXToLon(tx, z);
-      const latNW = tileYToLat(ty, z);
-      const lonSE = tileXToLon(tx + 1, z);
-      const latSE = tileYToLat(ty + 1, z);
+      const i = tx - startX;
+      const pNW = gridVertices[i][j];
+      const pNE = gridVertices[i + 1][j];
+      const pSW = gridVertices[i][j + 1];
 
-      const [eNW, nNW] = wgs84_to_osgb36(latNW, lonNW);
-      const [eSE, nSE] = wgs84_to_osgb36(latSE, lonSE);
-
-      const [sx0, sy0] = worldToScreen(eNW, nNW);
-      const [sx1, sy1] = worldToScreen(eSE, nSE);
-
-      const sw = sx1 - sx0;
-      const sh = sy1 - sy0;
-
-      const tileKey = `${style}_${z}_${tx}_${ty}`;
+      const tileKey = `${z}_${tx}_${ty}`;
       let entry = osmTileCache.get(tileKey);
       if (!entry) {
         const img = new Image();
@@ -631,26 +645,44 @@ function renderOsmTiles(ctx, w, h) {
         osmTileCache.set(tileKey, entry);
         img.onload = () => {
           entry.loaded = true;
-          requestNwrRender();
+          requestRender();
         };
         img.onerror = () => {
           entry.error = true;
         };
-        img.src = getOsmTileUrl(style, z, tx, ty);
+        img.src = getOsmTileUrl(z, tx, ty);
       }
 
       if (entry.loaded && !entry.error) {
-        ctx.drawImage(entry.img, Math.floor(sx0), Math.floor(sy0), Math.ceil(sw) + 1, Math.ceil(sh) + 1);
+        anyDrawn = true;
+        // Affine transform matrix mapping [0, 256]x[0, 256] to OSGB36 projected quadrilateral
+        const m00 = (pNE[0] - pNW[0]) / 256.0;
+        const m01 = (pNE[1] - pNW[1]) / 256.0;
+        const m10 = (pSW[0] - pNW[0]) / 256.0;
+        const m11 = (pSW[1] - pNW[1]) / 256.0;
+        const tx0 = pNW[0];
+        const ty0 = pNW[1];
+
+        offCtx.save();
+        offCtx.setTransform(m00, m01, m10, m11, tx0, ty0);
+        // Draw with 0.75px bleed to eliminate subpixel raster seams at 100% opacity
+        offCtx.drawImage(entry.img, -0.75, -0.75, 257.5, 257.5);
+        offCtx.restore();
       }
     }
+  }
+
+  if (anyDrawn) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.drawImage(offCanvas, 0, 0);
+    ctx.restore();
   }
 
   if (osmTileCache.size > 400) {
     const keysToDelete = Array.from(osmTileCache.keys()).slice(0, 150);
     for (const k of keysToDelete) osmTileCache.delete(k);
   }
-
-  ctx.restore();
 }
 
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
@@ -6616,7 +6648,7 @@ for (const [key, id] of [
       STATE.nwrLayers[key] = el.checked;
       if (key === "osm") {
         savePersistedOsmSettings();
-        requestNwrRender();
+        requestRender();
       } else {
         scheduleViewportFetch();
         requestRender();
@@ -6625,7 +6657,7 @@ for (const [key, id] of [
   }
 }
 
-/* OpenStreetMap Opacity Slider & Style Selection Wiring */
+/* OpenStreetMap Opacity Slider Wiring */
 const osmOpacitySlider = document.getElementById("osm-opacity-slider");
 if (osmOpacitySlider) {
   osmOpacitySlider.addEventListener("input", (e) => {
@@ -6633,16 +6665,7 @@ if (osmOpacitySlider) {
     const readout = document.getElementById("osm-opacity-readout");
     if (readout) readout.textContent = `${STATE.osmOpacity}%`;
     savePersistedOsmSettings();
-    requestNwrRender();
-  });
-}
-
-const osmStyleSelect = document.getElementById("osm-style-select");
-if (osmStyleSelect) {
-  osmStyleSelect.addEventListener("change", (e) => {
-    STATE.osmStyle = e.target.value;
-    savePersistedOsmSettings();
-    requestNwrRender();
+    requestRender();
   });
 }
 
