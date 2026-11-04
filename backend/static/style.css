@@ -1149,6 +1149,12 @@ body {
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
+.candidate-type-points {
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
 .candidate-type-track,
 .candidate-type-nwr_track {
   background: rgba(16, 185, 129, 0.2);

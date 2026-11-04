@@ -473,8 +473,8 @@ const INTERLOCKING_STYLES = {
   12: { color: "#f97316", label: "Home/Starter Semaphore", short: "SEM", aspects: 0 },
   13: { color: "#ec4899", label: "Phone for Authorisation", short: "PHONE", aspects: 0 },
   14: { color: "#a855f7", label: "Limit of Shunt", short: "LOS", aspects: 0 },
-  15: { color: "#64748b", label: "Switch Diamond", short: "SW-D", aspects: 0 },
-  16: { color: "#64748b", label: "Switch / Points", short: "SW", aspects: 0 },
+  15: { color: "#a855f7", label: "Switch Diamond", short: "SW-D", aspects: 0 },
+  16: { color: "#a855f7", label: "Points", short: "PTS", aspects: 0 },
 };
 
 function getSignalInterlockingInfo(ilockId, bumper) {
@@ -2156,11 +2156,17 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [s[5], s[6]],
               ]
             : null;
+        const sName = s[3] || "#" + s[2];
+        const isPts = s[4] === 15 || s[4] === 16 || sName.toUpperCase().startsWith("POINT");
+        const itemType = isPts ? "points" : "signal";
+        const title = isPts
+          ? (sName.toUpperCase().startsWith("POINT") ? sName : `Points ${sName}`)
+          : `${s[9] === 1 ? "Buffer Stop" : "Signal"} ${sName}`;
         addHit({
-          type: "signal",
+          type: itemType,
           id: s[0],
-          title: `${s[9] === 1 ? "Buffer Stop" : "Signal"} ${s[3] || "#" + s[2]}`,
-          sub: `${ilock.label}${ovCnt ? " • " + ovCnt + " Overlap(s)" : ""} • #${s[10] || "?"}→#${s[11] || "?"}`,
+          title: title,
+          sub: `${isPts ? "Points" : ilock.label}${ovCnt ? " • " + ovCnt + " Overlap(s)" : ""} • #${s[10] || "?"}→#${s[11] || "?"}`,
           x: s[5],
           y: s[6],
           previewWay: sigWay,
@@ -2179,11 +2185,17 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [s[5], s[6]],
               ]
             : null;
+        const sName = s[3] || "#" + s[2];
+        const isPts = s[4] === 15 || s[4] === 16 || sName.toUpperCase().startsWith("POINT");
+        const itemType = isPts ? "points" : "signal";
+        const title = isPts
+          ? (sName.toUpperCase().startsWith("POINT") ? sName : `Points ${sName}`)
+          : `Signal ${sName}`;
         addHit({
-          type: "signal",
+          type: itemType,
           id: s[0],
-          title: `Signal ${s[3] || "#" + s[2]}`,
-          sub: `${ilock.label} • Master ID #${s[2]}`,
+          title: title,
+          sub: `${isPts ? "Points" : ilock.label} • Master ID #${s[2]}`,
           x: s[5],
           y: s[6],
           previewWay: sigWay,
@@ -2317,11 +2329,14 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [e[6], e[7]],
               ])
           : [];
+        const isPtsNode = connEdges.length >= 3;
         addHit({
           type: "node",
           id: n[0],
-          title: `Track Node #${n[0]}`,
-          sub: `KM: ${n[5] || 0}m • Angle ${n[3]}° • (${n[1]}, ${n[2]})`,
+          title: isPtsNode ? `Points Node #${n[0]} (Valency ${connEdges.length})` : `Track Node #${n[0]}`,
+          sub: isPtsNode
+            ? `Points • KM: ${n[5] || 0}m • Angle ${n[3]}°`
+            : `KM: ${n[5] || 0}m • Angle ${n[3]}° • (${n[1]}, ${n[2]})`,
           x: n[1],
           y: n[2],
           previewParts: connEdges,
@@ -2468,11 +2483,12 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
     for (const lbl of STATE.drawnNwrNodeLabels) {
       if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const n = lbl.node;
+        const isPts = n[2] >= 3;
         addHit({
           type: "nwr_node",
           id: n[0],
-          title: `Track Node ${n[1]}`,
-          sub: `Label hit • Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          title: isPts ? `Points Node ${n[1]}` : `Track Node ${n[1]}`,
+          sub: `Label hit • ${isPts ? "Points • " : ""}Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
           x: n[3],
           y: n[4],
           previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
@@ -2485,11 +2501,12 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
       const [nsx, nsy] = worldToScreen(n[3], n[4]);
       const d = Math.hypot(sx - nsx, sy - nsy);
       if (d <= pxTol) {
+        const isPts = n[2] >= 3;
         addHit({
           type: "nwr_node",
           id: n[0],
-          title: `Track Node ${n[1]}`,
-          sub: `Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          title: isPts ? `Points Node ${n[1]}` : `Track Node ${n[1]}`,
+          sub: `${isPts ? "Points • " : ""}Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
           x: n[3],
           y: n[4],
           score: d,
@@ -3382,6 +3399,7 @@ function handleHover(sx, sy, wx, wy, targetView = null) {
 /* Candidate Display & Interaction Helpers */
 function getAssetIcon(type) {
   switch (type) {
+    case "points": return "🔀";
     case "signal": return "🚦";
     case "station": return "🚉";
     case "platform": return "🚏";
@@ -3398,6 +3416,7 @@ function getAssetIcon(type) {
 
 function formatAssetTypeName(type) {
   switch (type) {
+    case "points": return "Points";
     case "signal": return "Signal";
     case "station": return "Station";
     case "platform": return "Platform";
@@ -3414,6 +3433,7 @@ function formatAssetTypeName(type) {
 
 function formatAssetSubtitle(c) {
   if (c.sub) return c.sub;
+  if (c.type === "points") return `Points ID #${c.id}`;
   if (c.type === "signal") return `Signal ID #${c.id}`;
   if (c.type === "track") return `Track ID #${c.id}`;
   if (c.type === "block") return `Block #${c.id}`;
@@ -3434,8 +3454,22 @@ function mergeCandidates(clientHits, serverCandidates) {
 
   // Augment with server candidates
   for (const s of serverCandidates || []) {
-    const key = `${s.type}:${s.id}`;
-    const existing = byKey.get(key);
+    let key = `${s.type}:${s.id}`;
+    let existing = byKey.get(key);
+    if (!existing && (s.type === "signal" || s.type === "points")) {
+      const altKey = s.type === "signal" ? `points:${s.id}` : `signal:${s.id}`;
+      const altExisting = byKey.get(altKey);
+      if (altExisting) {
+        if (s.type === "points") {
+          byKey.delete(altKey);
+          altExisting.type = "points";
+          byKey.set(key, altExisting);
+          existing = altExisting;
+        } else {
+          existing = altExisting;
+        }
+      }
+    }
     if (!existing) {
       byKey.set(key, {
         type: s.type,
@@ -3459,7 +3493,8 @@ function mergeCandidates(clientHits, serverCandidates) {
   const list = Array.from(byKey.values());
 
   const typeOrder = {
-    signal: 1,
+    points: 1,
+    signal: 1.5,
     station: 2,
     platform: 3,
     block: 4,
@@ -5264,7 +5299,7 @@ function renderRelatedTab(data) {
         </div>
       `);
     }
-  } else if (data.asset_type === "signal") {
+  } else if (data.asset_type === "signal" || data.asset_type === "points") {
     sections.push(buildSignallingEnvelopeWidget(data));
 
     if (rel.outgoing_blocks && rel.outgoing_blocks.length) {
@@ -5280,17 +5315,21 @@ function renderRelatedTab(data) {
                 <span>${b.length_meters} m (${Math.round(b.length_meters / 0.9144)} yd)</span>
               </div>
               <div class="rel-card-sub">
-                Pre-signal: ${b.pre_signal_distance}m • Sighting: ${b.sight_distance}m • ${b.turnout_count || 0} switch(es) • Vmax: ${b.min_vmax || "—"}–${b.max_vmax || "—"} km/h
+                Pre-signal: ${b.pre_signal_distance}m • Sighting: ${b.sight_distance}m • ${b.turnout_count || 0} point(s) • Vmax: ${b.min_vmax || "—"}–${b.max_vmax || "—"} km/h
               </div>
               ${
                 b.exit_signals && b.exit_signals.length
                   ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">
                       ${b.exit_signals
                         .map(
-                          (xs) =>
-                            `<button class="candidate-chip" style="border-color:#10b981;color:#6ee7b7" onclick="event.stopPropagation();loadAssetDetails('signal', ${xs.pk}, true)">Next Signal: ${escapeHtml(
-                              xs.name
-                            )} &rarr;</button>`
+                          (xs) => {
+                            const isPts = xs.is_points || (xs.name && xs.name.toUpperCase().startsWith("POINT"));
+                            const pfx = isPts ? "Next Points: " : "Next Signal: ";
+                            const chipType = isPts ? "points" : "signal";
+                            const borderCol = isPts ? "#a855f7" : "#10b981";
+                            const textCol = isPts ? "#e9d5ff" : "#6ee7b7";
+                            return `<button class="candidate-chip" style="border-color:${borderCol};color:${textCol}" onclick="event.stopPropagation();loadAssetDetails('${chipType}', ${xs.pk}, true)">${pfx}${escapeHtml(xs.name)} &rarr;</button>`;
+                          }
                         )
                         .join("")}
                     </div>`
@@ -5323,10 +5362,14 @@ function renderRelatedTab(data) {
                   ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">
                       ${b.entry_signals
                         .map(
-                          (es) =>
-                            `<button class="candidate-chip" style="border-color:#38bdf8;color:#7dd3fc" onclick="event.stopPropagation();loadAssetDetails('signal', ${es.pk}, true)">&larr; Rear Signal: ${escapeHtml(
-                              es.name
-                            )}</button>`
+                          (es) => {
+                            const isPts = es.is_points || (es.name && es.name.toUpperCase().startsWith("POINT"));
+                            const pfx = isPts ? "Rear Points: " : "Rear Signal: ";
+                            const chipType = isPts ? "points" : "signal";
+                            const borderCol = isPts ? "#a855f7" : "#38bdf8";
+                            const textCol = isPts ? "#e9d5ff" : "#7dd3fc";
+                            return `<button class="candidate-chip" style="border-color:${borderCol};color:${textCol}" onclick="event.stopPropagation();loadAssetDetails('${chipType}', ${es.pk}, true)">&larr; ${pfx}${escapeHtml(es.name)}</button>`;
+                          }
                         )
                         .join("")}
                     </div>`
@@ -5352,7 +5395,7 @@ function renderRelatedTab(data) {
                 <span>Vmax ${ss.vmax} km/h (${ss.vmax_mph || 0} mph)</span>
               </div>
               <div class="rel-card-sub">
-                ${(ss.nodes || []).length} overlap nodes • ${(ss.turnout_nodes || []).length} switch(es) locked • ${(ss.boundary_nodes || []).length} flank boundary node(s)
+                ${(ss.nodes || []).length} overlap nodes • ${(ss.turnout_nodes || []).length} point(s) locked • ${(ss.boundary_nodes || []).length} flank boundary node(s)
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
                 ${(ss.nodes || [])
@@ -5451,11 +5494,16 @@ function renderRelatedTab(data) {
           <h4>Exit Signal(s) at End of Block (${rel.exit_signals.length})</h4>
           ${rel.exit_signals
             .map(
-              (s) => `
-            <div class="rel-card" onclick="loadAssetDetails('signal', ${s.pk}, true)">
-              <div class="rel-card-top"><span style="color:#f59e0b">Exit Signal ${escapeHtml(s.name)} &rarr;</span><span>Master #${s.signal_id}</span></div>
+              (s) => {
+                const isPts = s.is_points || (s.name && s.name.toUpperCase().startsWith("POINT"));
+                const pfx = isPts ? "Exit Points " : "Exit Signal ";
+                const chipType = isPts ? "points" : "signal";
+                return `
+            <div class="rel-card" onclick="loadAssetDetails('${chipType}', ${s.pk}, true)">
+              <div class="rel-card-top"><span style="color:${isPts ? '#a855f7' : '#f59e0b'}">${pfx}${escapeHtml(s.name)} &rarr;</span><span>Master #${s.signal_id}</span></div>
               <div class="rel-card-sub">${escapeHtml(s.interlocking_desc || "")}</div>
-            </div>`
+            </div>`;
+              }
             )
             .join("")}
         </div>
@@ -5482,12 +5530,12 @@ function renderRelatedTab(data) {
     if (rel.turnout_nodes && rel.turnout_nodes.length) {
       sections.push(`
         <div class="rel-section">
-          <h4>Switches / Turnouts Traversed (${rel.turnout_nodes.length})</h4>
+          <h4>Points Traversed (${rel.turnout_nodes.length})</h4>
           <div style="display:flex;flex-wrap:wrap;gap:4px">
             ${rel.turnout_nodes
               .map(
                 (t) =>
-                  `<button class="candidate-chip" style="border-color:#a855f7;color:#e9d5ff" onclick="loadAssetDetails('node', ${t.node_id}, true)">Switch #${t.node_id} (deg ${t.degree})</button>`
+                  `<button class="candidate-chip" style="border-color:#a855f7;color:#e9d5ff" onclick="loadAssetDetails('node', ${t.node_id}, true)">Points #${t.node_id} (deg ${t.degree})</button>`
               )
               .join("")}
           </div>
@@ -5755,12 +5803,13 @@ window.jumpToNwrAsset = async function (assetType, fid) {
 };
 
 function buildSignallingEnvelopeWidget(data) {
-  if (!data || (data.asset_type !== "signal" && data.asset_type !== "block")) {
+  if (!data || (data.asset_type !== "signal" && data.asset_type !== "points" && data.asset_type !== "block")) {
     return "";
   }
   const rel = data.related || {};
 
-  if (data.asset_type === "signal") {
+  if (data.asset_type === "signal" || data.asset_type === "points") {
+    const isPoints = data.asset_type === "points";
     const ilock = rel.interlocking_system || {};
     const appBlocks = rel.approach_blocks || [];
     const outBlocks = rel.outgoing_blocks || [];
@@ -5790,7 +5839,7 @@ function buildSignallingEnvelopeWidget(data) {
     const firstApp = appBlocks[0];
     const firstOut = outBlocks[0];
     const firstOv = overlaps[0];
-    const curSigName = (data.title || "").replace(/^Signal\s+/i, "") || "Signal";
+    const curSigName = (data.title || "").replace(/^(Signal|Points)\s+/i, "") || (isPoints ? "Points" : "Signal");
 
     // 1. Approach Routes Control
     const hasApp = appBlocks.length > 0;
@@ -5857,7 +5906,7 @@ function buildSignallingEnvelopeWidget(data) {
             ${overlaps
               .map((ov) => {
                 const shortLabel = `Overlap #${ov.index}`;
-                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">Overlap #${ov.index} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
+                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(shortLabel)} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
               })
               .join("")}
           </select>
@@ -5869,10 +5918,10 @@ function buildSignallingEnvelopeWidget(data) {
     return `
       <div class="sig-envelope-card">
         <div class="sig-envelope-header">
-          <span class="sig-envelope-title">Signalling &amp; Interlocking Envelope</span>
+          <span class="sig-envelope-title">${isPoints ? "Points Interlocking &amp; Envelope" : "Signalling &amp; Interlocking Envelope"}</span>
           <span class="sig-aspect-pill">
             ${lampsHtml}
-            <span>${escapeHtml(ilock.display_name || "Signal")}</span>
+            <span>${escapeHtml(ilock.display_name || (isPoints ? "Points" : "Signal"))}</span>
           </span>
         </div>
 
@@ -5890,8 +5939,8 @@ function buildSignallingEnvelopeWidget(data) {
           </div>
 
           <div class="sig-strip-box current" onclick="setSignalHighlightFilter('all')" title="Click to view all envelope">
-            <div class="sig-strip-label">Selected Signal</div>
-            <div class="sig-strip-val">${escapeHtml(data.title.replace("Signal ", ""))}</div>
+            <div class="sig-strip-label">${isPoints ? "Selected Points" : "Selected Signal"}</div>
+            <div class="sig-strip-val">${escapeHtml((data.title || "").replace(/^(Signal|Points)\s+/i, ""))}</div>
             <div class="sig-strip-sub">Set ${ilock.settime || 0}s • Free ${ilock.freeingtime || 0}s</div>
           </div>
 
@@ -5948,7 +5997,7 @@ function buildSignallingEnvelopeWidget(data) {
         <div class="sig-strip-box outgoing">
           <div class="sig-strip-label">Block Section</div>
           <div class="sig-strip-val">${escapeHtml(data.title)}</div>
-          <div class="sig-strip-sub">${(rel.turnout_nodes || []).length} switch(es)</div>
+          <div class="sig-strip-sub">${(rel.turnout_nodes || []).length} point(s)</div>
         </div>
         <div class="sig-strip-box current">
           <div class="sig-strip-label">Exit Signal</div>

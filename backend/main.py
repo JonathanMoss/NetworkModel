@@ -542,10 +542,10 @@ def api_search(q: str = Query(..., min_length=1)):
                     "y": r["y"],
                 })
 
-            # 2. Signals
+            # 2. Signals & Points
             cur.execute(
                 """
-                SELECT pk, id, signal_id, name, master_name, x, y
+                SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, x, y
                 FROM signals
                 WHERE UPPER(name) LIKE UPPER(%s)
                    OR UPPER(master_name) LIKE UPPER(%s)
@@ -556,14 +556,27 @@ def api_search(q: str = Query(..., min_length=1)):
                 (q_like, q_like, q_int, q_int, q_int, q_clean),
             )
             for r in cur.fetchall():
-                results.append({
-                    "type": "signal",
-                    "id": r["pk"],
-                    "title": f"Signal {r['name'] or r['master_name']}",
-                    "subtitle": f"Master ID: {r['signal_id']} • Master: {r['master_name']}",
-                    "x": r["x"],
-                    "y": r["y"],
-                })
+                r_name = (r["name"] or r["master_name"] or "").strip()
+                is_pts = (r.get("interlocking_sys_id") in (15, 16)) or r_name.upper().startswith("POINT")
+                if is_pts:
+                    clean_title = r_name if r_name.upper().startswith("POINT") else f"Points {r_name}"
+                    results.append({
+                        "type": "points",
+                        "id": r["pk"],
+                        "title": clean_title,
+                        "subtitle": f"Points • Master ID: {r['signal_id']} • Master: {r['master_name']}",
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
+                else:
+                    results.append({
+                        "type": "signal",
+                        "id": r["pk"],
+                        "title": f"Signal {r_name}",
+                        "subtitle": f"Master ID: {r['signal_id']} • Master: {r['master_name']}",
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
 
             # 3. Attribute sections / ELRs
             cur.execute(
@@ -710,27 +723,40 @@ def api_pick(
 
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            # Signals near point
+            # Signals & Points near point
             cur.execute(
                 """
-                SELECT pk, id, signal_id, name, master_name, x, y,
+                SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, bumper, x, y,
                        SQRT(POWER(x - %s, 2) + POWER(y - %s, 2)) AS dist
                 FROM signals
                 WHERE x BETWEEN %s AND %s AND y BETWEEN %s AND %s
                 ORDER BY dist ASC
-                LIMIT 5
+                LIMIT 6
                 """,
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
-                candidates.append({
-                    "type": "signal",
-                    "id": r["pk"],
-                    "label": f"Signal {r['name'] or r['master_name']}",
-                    "dist": round(r["dist"], 2),
-                    "x": r["x"],
-                    "y": r["y"],
-                })
+                r_name = (r["name"] or r["master_name"] or "").strip()
+                is_pts = (r.get("interlocking_sys_id") in (15, 16)) or r_name.upper().startswith("POINT")
+                if is_pts:
+                    clean_lbl = r_name if r_name.upper().startswith("POINT") else f"Points {r_name}"
+                    candidates.append({
+                        "type": "points",
+                        "id": r["pk"],
+                        "label": clean_lbl,
+                        "dist": round(r["dist"], 2),
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
+                else:
+                    candidates.append({
+                        "type": "signal",
+                        "id": r["pk"],
+                        "label": f"Buffer Stop {r_name}" if r.get("bumper") == 1 else f"Signal {r_name}",
+                        "dist": round(r["dist"], 2),
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
 
             # Nodes near point
             cur.execute(
@@ -745,10 +771,17 @@ def api_pick(
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
+                cur.execute(
+                    "SELECT COUNT(*) AS deg FROM edges WHERE start_node_id = %s OR end_node_id = %s",
+                    (r["node_id"], r["node_id"]),
+                )
+                deg_row = cur.fetchone()
+                deg = deg_row["deg"] if deg_row else 2
+                node_lbl = f"Points Node #{r['node_id']}" if deg >= 3 else f"Node #{r['node_id']}"
                 candidates.append({
                     "type": "node",
                     "id": r["node_id"],
-                    "label": f"Node #{r['node_id']}",
+                    "label": node_lbl,
                     "dist": round(r["dist"], 2),
                     "x": r["netx"],
                     "y": r["nety"],
@@ -1431,7 +1464,7 @@ def find_nwr_cross_links_for_tps(
                         })
                 else:
                     if snapped_nwr_node and snapped_nwr_node["is_switch"]:
-                        pt_label = f"🔀 Switch Node #{snapped_nwr_node['asset_id']} (Valency {snapped_nwr_node['valency']})"
+                        pt_label = f"🔀 Points #{snapped_nwr_node['asset_id']} (Valency {snapped_nwr_node['valency']})"
                         pt_col = "#ec4899"
                         use_x = snapped_nwr_node["x"]
                         use_y = snapped_nwr_node["y"]
@@ -1983,20 +2016,27 @@ def api_get_asset(asset_type: str, asset_id: int):
                             nd_km = adj_nd["km_value"] + (adj_nd["length"] or 0)
                         is_nd_extrapolated = True
 
+                is_points_node = len(conn_edges) >= 3
+                decoded["Node Classification"] = (
+                    f"Points / Turnout (Valency {len(conn_edges)})"
+                    if is_points_node
+                    else ("Continuous Track Joint (Valency 2)" if len(conn_edges) == 2 else "Buffer Stop / Dead End (Valency 1)")
+                )
+
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     elr1,
                     nd_km,
                     tps_valency=len(conn_edges),
-                    item_label=f"Node #{nd['node_id']}",
+                    item_label=f"Points #{nd['node_id']}" if is_points_node else f"Node #{nd['node_id']}",
                     is_extrapolated=is_nd_extrapolated,
                 )
 
                 return {
                     "asset_type": "node",
                     "id": nd["node_id"],
-                    "title": f"Track Node #{nd['node_id']}",
-                    "subtitle": f"ELR {elr1 or 'N/A'} • {meters_to_miles_chains(nd['km_value']) or ''} • ({nd['netx']}, {nd['nety']})",
+                    "title": f"Points Node #{nd['node_id']} (Valency {len(conn_edges)})" if is_points_node else f"Track Node #{nd['node_id']}",
+                    "subtitle": f"{'Points • ' if is_points_node else ''}ELR {elr1 or 'N/A'} • {meters_to_miles_chains(nd['km_value']) or ''} • ({nd['netx']}, {nd['nety']})",
                     "x": nd["netx"],
                     "y": nd["nety"],
                     "decoded": decoded,
@@ -2017,18 +2057,34 @@ def api_get_asset(asset_type: str, asset_id: int):
                             for e in conn_edges if e["x0"] is not None
                         ],
                         "points": [
-                            {"x": nd["netx"], "y": nd["nety"], "label": f"Node #{nd['node_id']}", "color": "#f43f5e"}
+                            {
+                                "x": nd["netx"],
+                                "y": nd["nety"],
+                                "label": f"Points #{nd['node_id']}" if is_points_node else f"Node #{nd['node_id']}",
+                                "color": "#a855f7" if is_points_node else "#f43f5e",
+                                "shape": "diamond" if is_points_node else "circle",
+                            }
                         ],
                     },
                     "raw_attrs": nd["raw_attrs"],
                     "raw_children": nd["raw_children"],
                 }
 
-            elif asset_type == "signal":
+            elif asset_type in ("signal", "points"):
                 cur.execute("SELECT * FROM signals WHERE pk = %s", (asset_id,))
                 sig = cur.fetchone()
                 if not sig:
-                    raise HTTPException(status_code=404, detail="Signal not found")
+                    cur.execute("SELECT * FROM signals WHERE id = %s", (asset_id,))
+                    sig = cur.fetchone()
+                if not sig:
+                    raise HTTPException(status_code=404, detail="Signal or Points not found")
+
+                sig_name_raw = (sig["name"] or sig["master_name"] or "").strip()
+                is_points_asset = (
+                    asset_type == "points"
+                    or sig["interlocking_sys_id"] in (15, 16)
+                    or sig_name_raw.upper().startswith("POINT")
+                )
 
                 # Interlocking system details
                 ilock = lookup.get("interlockingsystem", {}).get(str(sig["interlocking_sys_id"]), {})
@@ -2073,10 +2129,10 @@ def api_get_asset(asset_type: str, asset_id: int):
                     highlight_points.append({
                         "x": sig["x"],
                         "y": sig["y"],
-                        "label": f"🚦 {sig['name'] or sig['master_name']}",
-                        "color": "#f59e0b",
-                        "group": "signal",
-                        "shape": "signal",
+                        "label": f"🔀 {sig_name_raw}" if is_points_asset else f"🚦 {sig['name'] or sig['master_name']}",
+                        "color": "#a855f7" if is_points_asset else "#f59e0b",
+                        "group": "points" if is_points_asset else "signal",
+                        "shape": "diamond" if is_points_asset else "signal",
                     })
 
                 # 1. Resolve Approach Blocks & Protected Outgoing Blocks connected at signal nodes
@@ -2130,10 +2186,13 @@ def api_get_asset(asset_type: str, asset_id: int):
                             for es in cur.fetchall():
                                 if len(nids) >= 2 and es["start_node_id"] == nids[1]:
                                     continue
+                                es_name = es["name"] or es["master_name"]
+                                es_is_pts = (es["interlocking_sys_id"] in (15, 16)) or (es_name and es_name.upper().startswith("POINT"))
                                 entry_sigs.append({
                                     "pk": es["pk"],
                                     "signal_id": es["signal_id"],
-                                    "name": es["name"] or es["master_name"],
+                                    "name": es_name,
+                                    "is_points": es_is_pts,
                                     "interlocking_desc": decode_code("interlockingsystem", es["interlocking_sys_id"]),
                                     "x": es["x"],
                                     "y": es["y"],
@@ -2142,10 +2201,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     highlight_points.append({
                                         "x": es["x"],
                                         "y": es["y"],
-                                        "label": f"Rear: {es['name'] or es['master_name']}",
-                                        "color": "#38bdf8",
+                                        "label": f"Rear {'Points' if es_is_pts else 'Signal'}: {es_name}",
+                                        "color": "#a855f7" if es_is_pts else "#38bdf8",
                                         "group": "approach",
                                         "block_id": b["block_id"],
+                                        "shape": "diamond" if es_is_pts else "circle",
                                     })
 
                             if sight_pt:
@@ -2221,10 +2281,13 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     (nids[-2], nids[-1], nids[-1], nids[-1]),
                                 )
                                 for xs in cur.fetchall():
+                                    xs_name = xs["name"] or xs["master_name"]
+                                    xs_is_pts = (xs["interlocking_sys_id"] in (15, 16)) or (xs_name and xs_name.upper().startswith("POINT"))
                                     exit_sigs.append({
                                         "pk": xs["pk"],
                                         "signal_id": xs["signal_id"],
-                                        "name": xs["name"] or xs["master_name"],
+                                        "name": xs_name,
+                                        "is_points": xs_is_pts,
                                         "interlocking_desc": decode_code("interlockingsystem", xs["interlocking_sys_id"]),
                                         "x": xs["x"],
                                         "y": xs["y"],
@@ -2233,10 +2296,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                                         highlight_points.append({
                                             "x": xs["x"],
                                             "y": xs["y"],
-                                            "label": f"Next: {xs['name'] or xs['master_name']}",
-                                            "color": "#10b981",
+                                            "label": f"Next {'Points' if xs_is_pts else 'Signal'}: {xs_name}",
+                                            "color": "#a855f7" if xs_is_pts else "#10b981",
                                             "group": "outgoing",
                                             "block_id": b["block_id"],
+                                            "shape": "diamond" if xs_is_pts else "circle",
                                         })
 
                             if b_coords:
@@ -2410,51 +2474,105 @@ def api_get_asset(asset_type: str, asset_id: int):
                     if n_a and n_b and n_a.get("km_value") and n_b.get("km_value"):
                         sig_dir = "down" if n_a["km_value"] < n_b["km_value"] else "up"
 
+                if is_points_asset:
+                    clean_item_name = (
+                        sig_name_raw if sig_name_raw.upper().startswith("POINT")
+                        else f"Points {sig_name_raw}"
+                    )
+                else:
+                    buf_or_sig = "Buffer Stop " if sig["bumper"] else "Signal "
+                    clean_item_name = f"{buf_or_sig}{sig['name'] or sig['master_name']}"
+
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     sig_elr,
                     sig_km_val,
                     direction_hint=sig_dir,
-                    item_label=f"Signal {sig['name'] or sig['master_name']}",
+                    item_label=clean_item_name,
                     is_extrapolated=is_sig_extrapolated,
                 )
 
                 ov_summary = (
                     f"{len(enriched_overlaps)} overlap(s): "
-                    + ", ".join(f"#{o['index']} ({o['length_meters']}m / {o['length_yards']}yd @ {o['vmax']} km/h)" for o in enriched_overlaps)
+                    + ", ".join(
+                        f"#{o['index']} ({o['length_meters']}m / {o['length_yards']}yd @ {o['vmax']} km/h)"
+                        for o in enriched_overlaps
+                    )
                     if enriched_overlaps
                     else "None defined"
                 )
 
+                type_label = (
+                    "Points"
+                    if is_points_asset
+                    else ("Buffer Stop" if sig["bumper"] else "Signal")
+                )
                 decoded = {
-                    "Signal PK / XML ID": f"{sig['pk']} / {sig['id']}",
-                    "Master Signal ID & Name": f"#{sig['signal_id']} — {sig['master_name']}",
-                    "Signal Plate Name": sig["name"] or sig["master_name"],
+                    f"{type_label} PK / XML ID": f"{sig['pk']} / {sig['id']}",
+                    f"Master {type_label} ID & Name": f"#{sig['signal_id']} — {sig['master_name']}",
+                    f"{type_label} Plate Name": sig["name"] or sig["master_name"],
                     "Interlocking System Class": f"{ilock_name} (ID {sig['interlocking_sys_id']})",
-                    "Base Signal Type & Aspects": f"{base_sig_type or '—'} ({aspects_cnt} aspects)" if aspects_cnt else (base_sig_type or "—"),
-                    "Interlocking Route Set / Release Time": f"Set: {set_time} s • Release/Freeing: {freeing_time} s (Release Mode: {ilock_attrs.get('releasemode', '—')})",
-                    "Engineer's Line Ref (ELR) & Mileage": f"{sig_elr or '—'} • {meters_to_miles_chains(sig_km_val) or '—'}",
-                    "Directed Signal Edge": (
+                    "Base Operating Type": (
+                        f"{base_sig_type or '—'} ({aspects_cnt} aspects)"
+                        if aspects_cnt
+                        else (base_sig_type or "—")
+                    ),
+                    "Interlocking Route Set / Release Time": (
+                        f"Set: {set_time} s • Release/Freeing: {freeing_time} s "
+                        f"(Release Mode: {ilock_attrs.get('releasemode', '—')})"
+                    ),
+                    "Engineer's Line Ref (ELR) & Mileage": (
+                        f"{sig_elr or '—'} • {meters_to_miles_chains(sig_km_val) or '—'}"
+                    ),
+                    "Directed Track Connection": (
                         f"#{sig['start_node_id']} → #{sig['end_node_id']}"
-                        + (f" (Edge #{approach_edge['edge_id']}, {approach_edge['length']}m, Vmax {approach_edge['vmax']} km/h)" if approach_edge else "")
+                        + (
+                            f" (Edge #{approach_edge['edge_id']}, {approach_edge['length']}m, "
+                            f"Vmax {approach_edge['vmax']} km/h)"
+                            if approach_edge else ""
+                        )
                         if sig["start_node_id"]
                         else f"Point Node #{sig['point_node_id']}"
                     ),
-                    "Approach Blocks (In Rear)": f"{len(approach_blocks)} block(s) terminating at signal",
-                    "Protected Blocks (In Advance)": f"{len(outgoing_blocks)} block(s) governed by signal",
+                    "Approach Blocks (In Rear)": (
+                        f"{len(approach_blocks)} block(s) terminating at {type_label.lower()}"
+                    ),
+                    "Protected Blocks (In Advance)": (
+                        f"{len(outgoing_blocks)} block(s) governed by {type_label.lower()}"
+                    ),
                     "Safety Overlaps (Security Sections)": ov_summary,
-                    "Overlap Release Timer": f"{sig['sec_sect_freeing_time']} s (Timed Release Active: {sig['use_sec_sect_freeing_time']})",
-                    "Buffer Stop / Bumper": "Yes (Bumper / Buffer Stop)" if sig["bumper"] else "No",
+                    "Overlap Release Timer": (
+                        f"{sig['sec_sect_freeing_time']} s "
+                        f"(Timed Release Active: {sig['use_sec_sect_freeing_time']})"
+                    ),
+                    "Buffer Stop / Bumper": (
+                        "Yes (Bumper / Buffer Stop)" if sig["bumper"] else "No"
+                    ),
                     "Temporarily Closed": sig["tmp_closed"],
                     "Schematic Coordinates (x, y)": f"({sig['x']}, {sig['y']})",
                     "Validity Window": f"{sig['valid_from']} → {sig['valid_to']}",
                 }
 
+                if is_points_asset:
+                    asset_title = clean_item_name
+                    asset_sub = (
+                        f"Points • {ilock_name} • {sig_elr or base_sig_type or ''} • "
+                        f"{len(outgoing_blocks)} Protected Block(s) • "
+                        f"{len(enriched_overlaps)} Overlap(s)"
+                    )
+                else:
+                    asset_title = clean_item_name
+                    asset_sub = (
+                        f"{ilock_name} • {sig_elr or base_sig_type or ''} • "
+                        f"{len(outgoing_blocks)} Protected Block(s) • "
+                        f"{len(enriched_overlaps)} Overlap(s)"
+                    )
+
                 return {
-                    "asset_type": "signal",
+                    "asset_type": "points" if is_points_asset else "signal",
                     "id": sig["pk"],
-                    "title": f"Signal {sig['name'] or sig['master_name']}",
-                    "subtitle": f"{ilock_name} • { sig_elr or base_sig_type or '' } • {len(outgoing_blocks)} Protected Block(s) • {len(enriched_overlaps)} Overlap(s)",
+                    "title": asset_title,
+                    "subtitle": asset_sub,
                     "x": sig["x"],
                     "y": sig["y"],
                     "decoded": decoded,
@@ -2685,10 +2803,16 @@ def api_get_asset(asset_type: str, asset_id: int):
                         (nids[-2], nids[-1]),
                     )
                     for xs in cur.fetchall():
+                        xs_name = xs["name"] or xs["master_name"]
+                        xs_is_pts = (
+                            (xs["interlocking_sys_id"] in (15, 16))
+                            or (xs_name and xs_name.upper().startswith("POINT"))
+                        )
                         exit_sigs.append({
                             "pk": xs["pk"],
                             "signal_id": xs["signal_id"],
-                            "name": xs["name"] or xs["master_name"],
+                            "name": xs_name,
+                            "is_points": xs_is_pts,
                             "interlocking_desc": decode_code("interlockingsystem", xs["interlocking_sys_id"]),
                             "x": xs["x"],
                             "y": xs["y"],
@@ -2697,9 +2821,10 @@ def api_get_asset(asset_type: str, asset_id: int):
                             highlight_points.append({
                                 "x": xs["x"],
                                 "y": xs["y"],
-                                "label": f"Exit: {xs['name'] or xs['master_name']}",
-                                "color": "#f59e0b",
-                                "group": "signal",
+                                "label": f"Exit {'Points' if xs_is_pts else 'Signal'}: {xs_name}",
+                                "color": "#a855f7" if xs_is_pts else "#f59e0b",
+                                "group": "points" if xs_is_pts else "signal",
+                                "shape": "diamond" if xs_is_pts else "circle",
                             })
                         for idx, ss in enumerate(xs["security_sections"] or []):
                             ss_nids = [n["nodeid"] for n in ss.get("nodes", []) if n.get("nodeid") is not None]
@@ -2716,7 +2841,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 })
                                 exit_overlaps.append({
                                     "index": idx + 1,
-                                    "signal_name": xs["name"] or xs["master_name"],
+                                    "signal_name": xs_name,
                                     "length_meters": ov_p["length_meters"],
                                     "length_yards": round(ov_p["length_meters"] / 0.9144, 1),
                                     "vmax": ss.get("vmax", 0),
@@ -2727,7 +2852,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     highlight_points.append({
                         "x": tn["x"],
                         "y": tn["y"],
-                        "label": f"Switch Node #{tn['node_id']}",
+                        "label": f"Points #{tn['node_id']}",
                         "color": "#a855f7",
                         "group": "outgoing",
                         "shape": "diamond",
@@ -2744,7 +2869,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "Pre-Signal Distance (AWS/Distant)": f"{blk['pre_signal_distance']} m",
                     "Signal Sighting Distance": f"{blk['sight_distance']} m",
                     "Speed Envelope (Vmax)": f"{p_info['min_vmax']}–{p_info['max_vmax']} km/h" if p_info["min_vmax"] else "—",
-                    "Switches / Turnouts Traversed": f"{len(p_info['turnout_nodes'])} switch node(s)",
+                    "Points Traversed": f"{len(p_info['turnout_nodes'])} points",
                     "Priority": blk["priority"],
                     "ATC Flag / Length": f"{blk['atc_flag']} ({blk['atc_length']} m)",
                     "Moving Block / Shunting Flag": f"Moving: {blk['moving_block']} • Shunting: {blk['shunting_flag']}",
@@ -4515,10 +4640,16 @@ def api_nwr_pick(
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
+                is_pts = r["valency"] >= 3
+                lbl = (
+                    f"Points {r['asset_id']} (Valency {r['valency']})"
+                    if is_pts
+                    else f"Node {r['asset_id']} (Valency {r['valency']})"
+                )
                 candidates.append({
                     "type": "nwr_node",
                     "id": r["fid"],
-                    "label": f"Node {r['asset_id']} (Valency {r['valency']})",
+                    "label": lbl,
                     "dist": round(r["dist"], 2),
                     "x": r["x"],
                     "y": r["y"],
