@@ -60,7 +60,7 @@
             <option value="timing">Timing Points (Mandatory TIPLOC) &amp; Differential Speeds</option>
             <option value="vmax">Line Speed Profile (Vmax km/h)</option>
             <option value="gradient">Gradient Profile (Rising / Level / Falling)</option>
-            <option value="uniform">Classic Signalling Schematic</option>
+            <option value="uniform">Layer Colour / Classic Schematic</option>
           </select>
         </label>
 
@@ -72,6 +72,7 @@
             <option value="ownership">Ownership (Network Rail vs Third Party)</option>
             <option value="curvature">Curvature Radius (Tight ≤400m / Med ≤1200m / Straight)</option>
             <option value="elevation">Elevation Profile (Lowland → High Upland)</option>
+            <option value="uniform">Layer Colour (Uniform)</option>
           </select>
         </label>
 
@@ -138,34 +139,75 @@
       <div class="panel-section" id="tps-layers-panel">
         <div class="layers-section-header">
           <h3>TPS Schematic Layers</h3>
-          <span class="layers-header-hint">Size • Angle</span>
+          <div class="layers-header-actions">
+            <button type="button" class="btn-reset-all-styles" id="btn-reset-tps-styles" title="Reset all TPS line styles to defaults">Reset Styles</button>
+          </div>
         </div>
 
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="layer-edges" checked />
-            <span class="dot" style="background:#38bdf8"></span>
+            <span class="dot" id="swatch-dot-edges" style="background:#38bdf8"></span>
             <span>Track Edges</span>
             <small id="cnt-edges">377.3k</small>
           </label>
+          <div class="layer-style-bar" data-layer="edges">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Line Colour (overridden in dynamic Colour-By modes)">
+              <span class="color-picker-swatch" id="swatch-edges" style="background:#38bdf8"></span>
+              <input type="color" class="layer-color-input" data-layer="edges" value="#38bdf8" />
+            </label>
+            <div class="width-stepper" data-layer="edges" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="edges" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="edges">1.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="edges" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="edges" title="Reset to default style">↺</button>
+          </div>
         </div>
 
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="layer-tracks" checked />
-            <span class="dot" style="background:#818cf8"></span>
+            <span class="dot" id="swatch-dot-tracks" style="background:#818cf8"></span>
             <span>Station Platforms / Ways</span>
             <small id="cnt-tracks">41.4k</small>
           </label>
+          <div class="layer-style-bar" data-layer="tracks">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Platform Colour">
+              <span class="color-picker-swatch" id="swatch-tracks" style="background:#818cf8"></span>
+              <input type="color" class="layer-color-input" data-layer="tracks" value="#818cf8" />
+            </label>
+            <div class="width-stepper" data-layer="tracks" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="tracks" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="tracks">3.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="tracks" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="tracks" title="Reset to default style">↺</button>
+          </div>
         </div>
 
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="layer-vectors" checked />
-            <span class="dot" style="background:#64748b"></span>
+            <span class="dot" id="swatch-dot-vectors" style="background:#64748b"></span>
             <span>CAD Schematic Vectors</span>
             <small id="cnt-vectors">396.5k</small>
           </label>
+          <div class="layer-style-bar" data-layer="vectors">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom CAD Vector Colour">
+              <span class="color-picker-swatch" id="swatch-vectors" style="background:#64748b"></span>
+              <input type="color" class="layer-color-input" data-layer="vectors" value="#64748b" />
+            </label>
+            <div class="width-stepper" data-layer="vectors" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="vectors" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="vectors">1.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="vectors" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="vectors" title="Reset to default style">↺</button>
+          </div>
         </div>
 
         <div class="layer-card">
@@ -244,10 +286,23 @@
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="layer-blocks" />
-            <span class="dot" style="background:#10b981"></span>
+            <span class="dot" id="swatch-dot-blocks" style="background:#10b981"></span>
             <span>Signalling Block Sections</span>
             <small id="cnt-blocks">66.9k</small>
           </label>
+          <div class="layer-style-bar" data-layer="blocks">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Block Section Colour">
+              <span class="color-picker-swatch" id="swatch-blocks" style="background:#10b981"></span>
+              <input type="color" class="layer-color-input" data-layer="blocks" value="#10b981" />
+            </label>
+            <div class="width-stepper" data-layer="blocks" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="blocks" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="blocks">2.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="blocks" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="blocks" title="Reset to default style">↺</button>
+          </div>
           <div class="layer-label-bar">
             <span class="lbl-badge">Abc</span>
             <div class="label-stepper" data-layer="blocks">
@@ -292,10 +347,23 @@
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="layer-polys" checked />
-            <span class="dot" style="background:#a855f7"></span>
+            <span class="dot" id="swatch-dot-polys" style="background:#a855f7"></span>
             <span>Poly Regions &amp; Notes</span>
             <small id="cnt-polys">1.38k</small>
           </label>
+          <div class="layer-style-bar" data-layer="polys">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Region Boundary Colour">
+              <span class="color-picker-swatch" id="swatch-polys" style="background:#a855f7"></span>
+              <input type="color" class="layer-color-input" data-layer="polys" value="#a855f7" />
+            </label>
+            <div class="width-stepper" data-layer="polys" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="polys" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="polys">1.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="polys" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="polys" title="Reset to default style">↺</button>
+          </div>
           <div class="layer-label-bar">
             <span class="lbl-badge">Abc</span>
             <div class="label-stepper" data-layer="polys">
@@ -318,25 +386,73 @@
       <div class="panel-section hidden" id="nwr-layers-panel">
         <div class="layers-section-header">
           <h3>NWR Track Model Layers (OSGB36)</h3>
-          <span class="layers-header-hint">Size • Angle</span>
+          <div class="layers-header-actions">
+            <button type="button" class="btn-reset-all-styles" id="btn-reset-nwr-styles" title="Reset all NWR line styles to defaults">Reset Styles</button>
+          </div>
+        </div>
+
+        <!-- OpenStreetMap Basemap Tile Layer -->
+        <div class="layer-card" id="layer-card-osm">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-osm" checked />
+            <span class="dot" style="background:#22c55e"></span>
+            <span>OpenStreetMap (OSM) Basemap</span>
+            <small>Tiles</small>
+          </label>
+          <div class="layer-osm-bar">
+            <span class="style-badge">Opacity</span>
+            <input type="range" id="osm-opacity-slider" min="0" max="100" value="65" class="osm-opacity-slider" title="OSM Basemap Opacity" />
+            <span class="opacity-readout" id="osm-opacity-readout">65%</span>
+            <select id="osm-style-select" class="osm-style-select" title="OSM Basemap Style">
+              <option value="carto_dark">Carto Dark</option>
+              <option value="carto_light">Carto Voyager</option>
+              <option value="osm_standard">OSM Standard</option>
+            </select>
+          </div>
         </div>
 
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="nwr-layer-centrelines" checked />
-            <span class="dot" style="background:#38bdf8"></span>
+            <span class="dot" id="swatch-dot-nwr-centrelines" style="background:#38bdf8"></span>
             <span>Track Centre Lines</span>
             <small>49.7k</small>
           </label>
+          <div class="layer-style-bar" data-layer="nwr_centrelines">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Centreline Colour (overridden in dynamic Colour-By modes)">
+              <span class="color-picker-swatch" id="swatch-nwr-centrelines" style="background:#38bdf8"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_centrelines" value="#38bdf8" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_centrelines" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_centrelines" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_centrelines">1.8px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_centrelines" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_centrelines" title="Reset to default style">↺</button>
+          </div>
         </div>
 
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="nwr-layer-elrs" checked />
-            <span class="dot" style="background:#a855f7"></span>
+            <span class="dot" id="swatch-dot-nwr-elrs" style="background:#a855f7"></span>
             <span>ELR Reference Lines</span>
             <small>1.60k</small>
           </label>
+          <div class="layer-style-bar" data-layer="nwr_elrs">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom ELR Reference Line Colour">
+              <span class="color-picker-swatch" id="swatch-nwr-elrs" style="background:#a855f7"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_elrs" value="#a855f7" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_elrs" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_elrs" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_elrs">2.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_elrs" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_elrs" title="Reset to default style">↺</button>
+          </div>
           <div class="layer-label-bar">
             <span class="lbl-badge">Abc</span>
             <div class="label-stepper" data-layer="nwr_elrs">
@@ -406,10 +522,23 @@
         <div class="layer-card">
           <label class="layer-toggle">
             <input type="checkbox" id="nwr-layer-curvature" checked />
-            <span class="dot" style="background:#f43f5e"></span>
+            <span class="dot" id="swatch-dot-nwr-curvature" style="background:#f43f5e"></span>
             <span>Track Curvature &amp; Cant</span>
             <small>On Track Click</small>
           </label>
+          <div class="layer-style-bar" data-layer="nwr_curvature">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Curvature Line Colour">
+              <span class="color-picker-swatch" id="swatch-nwr-curvature" style="background:#f43f5e"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_curvature" value="#f43f5e" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_curvature" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_curvature" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_curvature">2.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_curvature" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_curvature" title="Reset to default style">↺</button>
+          </div>
           <div class="layer-label-bar">
             <span class="lbl-badge">Abc</span>
             <div class="label-stepper" data-layer="nf_curvature">

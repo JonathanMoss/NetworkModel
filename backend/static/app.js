@@ -35,12 +35,26 @@ const STATE = {
     polys: true,
   },
   nwrLayers: {
+    osm: true,
     centrelines: true,
     elrs: true,
     nodes: true,
     waymarks: true,
     curvature: true,
     nf_points: false,
+  },
+  osmOpacity: 65,
+  osmStyle: "carto_dark",
+
+  layerStyles: {
+    edges: { color: "#38bdf8", width: 1.5 },
+    tracks: { color: "#818cf8", width: 3.0 },
+    vectors: { color: "#64748b", width: 1.0 },
+    blocks: { color: "#10b981", width: 2.5 },
+    polys: { color: "#a855f7", width: 1.5 },
+    nwr_centrelines: { color: "#38bdf8", width: 1.8 },
+    nwr_elrs: { color: "#a855f7", width: 2.0 },
+    nwr_curvature: { color: "#f43f5e", width: 2.5 },
   },
 
   labelScale: {
@@ -227,6 +241,416 @@ function isPointInOrientedBox(px, py, ox, oy, w, h, angleDeg = 0, alignY = "cent
   const localY = dx * sin + dy * cos;
   const y0 = alignY === "center" ? -h / 2 : 0;
   return localX >= -3 && localX <= w + 3 && localY >= y0 - 3 && localY <= y0 + h + 3;
+}
+
+/* ============================================================================
+   COOKIE & LOCALSTORAGE PERSISTENCE FOR LAYER STYLES AND OSM BASEMAP
+   ============================================================================ */
+function setCookie(name, value, days = 365) {
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  const valStr = encodeURIComponent(typeof value === "string" ? value : JSON.stringify(value));
+  document.cookie = `${name}=${valStr}; expires=${expires}; path=/; SameSite=Lax`;
+  try {
+    localStorage.setItem(name, typeof value === "string" ? value : JSON.stringify(value));
+  } catch (_) {}
+}
+
+function getCookie(name) {
+  const nameEQ = `${name}=`;
+  const ca = document.cookie.split(";");
+  for (let i = 0; i < ca.length; i++) {
+    let c = ca[i].trim();
+    if (c.indexOf(nameEQ) === 0) {
+      const val = decodeURIComponent(c.substring(nameEQ.length));
+      try {
+        return JSON.parse(val);
+      } catch (_) {
+        return val;
+      }
+    }
+  }
+  try {
+    const ls = localStorage.getItem(name);
+    if (ls) {
+      try {
+        return JSON.parse(ls);
+      } catch (_) {
+        return ls;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+const DEFAULT_LAYER_STYLES = {
+  edges: { color: "#38bdf8", width: 1.5 },
+  tracks: { color: "#818cf8", width: 3.0 },
+  vectors: { color: "#64748b", width: 1.0 },
+  blocks: { color: "#10b981", width: 2.5 },
+  polys: { color: "#a855f7", width: 1.5 },
+  nwr_centrelines: { color: "#38bdf8", width: 1.8 },
+  nwr_elrs: { color: "#a855f7", width: 2.0 },
+  nwr_curvature: { color: "#f43f5e", width: 2.5 },
+};
+
+function loadPersistedLayerStyles() {
+  const saved = getCookie("nr_layer_styles");
+  if (saved && typeof saved === "object") {
+    for (const [k, def] of Object.entries(DEFAULT_LAYER_STYLES)) {
+      if (!STATE.layerStyles[k]) STATE.layerStyles[k] = { ...def };
+      if (saved[k]) {
+        if (typeof saved[k].color === "string") STATE.layerStyles[k].color = saved[k].color;
+        if (typeof saved[k].width === "number") STATE.layerStyles[k].width = saved[k].width;
+      }
+    }
+  }
+}
+
+function savePersistedLayerStyles() {
+  setCookie("nr_layer_styles", STATE.layerStyles, 365);
+}
+
+function resetLayerStyles(scope = "all") {
+  if (scope === "tps" || scope === "all") {
+    for (const k of ["edges", "tracks", "vectors", "blocks", "polys"]) {
+      STATE.layerStyles[k] = { ...DEFAULT_LAYER_STYLES[k] };
+    }
+  }
+  if (scope === "nwr" || scope === "all") {
+    for (const k of ["nwr_centrelines", "nwr_elrs", "nwr_curvature"]) {
+      STATE.layerStyles[k] = { ...DEFAULT_LAYER_STYLES[k] };
+    }
+  }
+  savePersistedLayerStyles();
+  updateLayerStyleUi();
+  updateLegend();
+  requestRender();
+}
+
+function loadPersistedOsmSettings() {
+  const saved = getCookie("nr_osm_settings");
+  if (saved && typeof saved === "object") {
+    if (typeof saved.enabled === "boolean") STATE.nwrLayers.osm = saved.enabled;
+    if (typeof saved.opacity === "number") STATE.osmOpacity = saved.opacity;
+    if (typeof saved.style === "string") STATE.osmStyle = saved.style;
+  }
+}
+
+function savePersistedOsmSettings() {
+  setCookie(
+    "nr_osm_settings",
+    {
+      enabled: STATE.nwrLayers.osm,
+      opacity: STATE.osmOpacity,
+      style: STATE.osmStyle,
+    },
+    365
+  );
+}
+
+function hexToRgba(hex, alpha = 1) {
+  if (!hex || typeof hex !== "string") return `rgba(56, 189, 248, ${alpha})`;
+  if (hex.startsWith("rgba")) return hex;
+  let c = hex.replace("#", "");
+  if (c.length === 3) c = c.split("").map((x) => x + x).join("");
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function updateLayerStyleUi() {
+  for (const [key, style] of Object.entries(STATE.layerStyles)) {
+    const colorInput = document.querySelector(`.layer-color-input[data-layer="${key}"]`);
+    if (colorInput) colorInput.value = style.color;
+
+    const swatch = document.getElementById(`swatch-${key.replace(/_/g, "-")}`);
+    if (swatch) swatch.style.backgroundColor = style.color;
+
+    const dot = document.getElementById(`swatch-dot-${key.replace(/_/g, "-")}`);
+    if (dot) dot.style.backgroundColor = style.color;
+
+    const widthReadout = document.querySelector(`.width-readout[data-readout="${key}"]`);
+    if (widthReadout) widthReadout.textContent = `${style.width.toFixed(1)}px`;
+  }
+
+  const osmCheck = document.getElementById("nwr-layer-osm");
+  if (osmCheck) osmCheck.checked = STATE.nwrLayers.osm;
+
+  const osmSlider = document.getElementById("osm-opacity-slider");
+  if (osmSlider) osmSlider.value = STATE.osmOpacity ?? 65;
+
+  const osmReadout = document.getElementById("osm-opacity-readout");
+  if (osmReadout) osmReadout.textContent = `${STATE.osmOpacity ?? 65}%`;
+
+  const osmStyleSel = document.getElementById("osm-style-select");
+  if (osmStyleSel) osmStyleSel.value = STATE.osmStyle || "carto_dark";
+}
+
+/* ============================================================================
+   EPSG:27700 (OSGB36) <-> EPSG:4326 (WGS84) TRANSFORMATION FOR OSM BASEMAP
+   ============================================================================ */
+function osgb36_to_wgs84(E, N) {
+  const a = 6377563.396, b = 6356256.909, F0 = 0.9996012717;
+  const lat0 = (49.0 * Math.PI) / 180.0, lon0 = (-2.0 * Math.PI) / 180.0;
+  const N0 = -100000.0, E0 = 400000.0;
+  const e2 = 1.0 - (b * b) / (a * a);
+  const n = (a - b) / (a + b);
+  const n2 = n * n, n3 = n * n * n;
+  let lat = lat0, M = 0;
+  for (let iter = 0; iter < 100; iter++) {
+    lat = (N - N0 - M) / (a * F0) + lat;
+    const Ma = (1 + n + (5 / 4) * n2 + (5 / 4) * n3) * (lat - lat0);
+    const Mb = (3 * n + 3 * n2 + (21 / 8) * n3) * Math.sin(lat - lat0) * Math.cos(lat + lat0);
+    const Mc = ((15 / 8) * n2 + (15 / 8) * n3) * Math.sin(2 * (lat - lat0)) * Math.cos(2 * (lat + lat0));
+    const Md = (35 / 24) * n3 * Math.sin(3 * (lat - lat0)) * Math.cos(3 * (lat + lat0));
+    M = b * F0 * (Ma - Mb + Mc - Md);
+    if (Math.abs(N - N0 - M) < 0.00001) break;
+  }
+  const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+  const nu = (a * F0) / Math.sqrt(1 - e2 * sinLat * sinLat);
+  const rho = (a * F0 * (1 - e2)) / Math.pow(1 - e2 * sinLat * sinLat, 1.5);
+  const eta2 = nu / rho - 1;
+  const tanLat = Math.tan(lat), tan2 = tanLat * tanLat, tan4 = tan2 * tan2, tan6 = tan4 * tan2;
+  const secLat = 1.0 / cosLat;
+  const nu3 = nu * nu * nu, nu5 = nu3 * nu * nu, nu7 = nu5 * nu * nu;
+  const dE = E - E0, dE2 = dE * dE, dE3 = dE2 * dE, dE4 = dE3 * dE, dE5 = dE4 * dE, dE6 = dE5 * dE, dE7 = dE6 * dE;
+  const VII = tanLat / (2 * rho * nu);
+  const VIII = (tanLat / (24 * rho * nu3)) * (5 + 3 * tan2 + eta2 - 9 * tan2 * eta2);
+  const IX = (tanLat / (720 * rho * nu5)) * (61 + 90 * tan2 + 45 * tan4);
+  const lat_osgb = lat - VII * dE2 + VIII * dE4 - IX * dE6;
+  const X = secLat / nu;
+  const XI = (secLat / (6 * nu3)) * (nu / rho + 2 * tan2);
+  const XII = (secLat / (120 * nu5)) * (5 + 28 * tan2 + 24 * tan4);
+  const XIIA = (secLat / (5040 * nu7)) * (61 + 662 * tan2 + 1320 * tan4 + 720 * tan6);
+  const lon_osgb = lon0 + X * dE - XI * dE3 + XII * dE5 - XIIA * dE7;
+
+  // Helmert OSGB36 -> WGS84
+  const cosPhi = Math.cos(lat_osgb), sinPhi = Math.sin(lat_osgb);
+  const cosLam = Math.cos(lon_osgb), sinLam = Math.sin(lon_osgb);
+  const v = a / Math.sqrt(1 - e2 * sinPhi * sinPhi);
+  const x1 = v * cosPhi * cosLam, y1 = v * cosPhi * sinLam, z1 = (1 - e2) * v * sinPhi;
+  const tx = 446.448, ty = -125.157, tz = 542.060, s = -20.4894e-6;
+  const rx = (0.1502 / 3600.0) * Math.PI / 180.0;
+  const ry = (0.2470 / 3600.0) * Math.PI / 180.0;
+  const rz = (0.8421 / 3600.0) * Math.PI / 180.0;
+  const x2 = tx + (1 + s) * x1 - rz * y1 + ry * z1;
+  const y2 = ty + rz * x1 + (1 + s) * y1 - rx * z1;
+  const z2 = tz - ry * x1 + rx * y1 + (1 + s) * z1;
+
+  const a_w = 6378137.0, b_w = 6356752.314245;
+  const e2_w = 1.0 - (b_w * b_w) / (a_w * a_w);
+  const p = Math.sqrt(x2 * x2 + y2 * y2);
+  let phi = Math.atan2(z2, p * (1 - e2_w));
+  for (let i = 0; i < 5; i++) {
+    const sinP = Math.sin(phi);
+    const v_w = a_w / Math.sqrt(1 - e2_w * sinP * sinP);
+    phi = Math.atan2(z2 + e2_w * v_w * sinP, p);
+  }
+  const lam = Math.atan2(y2, x2);
+  return [(phi * 180.0) / Math.PI, (lam * 180.0) / Math.PI];
+}
+
+function wgs84_to_osgb36(lat_w, lon_w) {
+  const a_w = 6378137.0, b_w = 6356752.314245;
+  const e2_w = 1.0 - (b_w * b_w) / (a_w * a_w);
+  const phi_w = (lat_w * Math.PI) / 180.0, lam_w = (lon_w * Math.PI) / 180.0;
+  const sinP = Math.sin(phi_w), cosP = Math.cos(phi_w);
+  const sinL = Math.sin(lam_w), cosL = Math.cos(lam_w);
+  const v_w = a_w / Math.sqrt(1 - e2_w * sinP * sinP);
+  const x1 = v_w * cosP * cosL, y1 = v_w * cosP * sinL, z1 = (1 - e2_w) * v_w * sinP;
+
+  const tx = -446.448, ty = 125.157, tz = -542.060, s = 20.4894e-6;
+  const rx = (-0.1502 / 3600.0) * Math.PI / 180.0;
+  const ry = (-0.2470 / 3600.0) * Math.PI / 180.0;
+  const rz = (-0.8421 / 3600.0) * Math.PI / 180.0;
+  const x2 = tx + (1 + s) * x1 - rz * y1 + ry * z1;
+  const y2 = ty + rz * x1 + (1 + s) * y1 - rx * z1;
+  const z2 = tz - ry * x1 + rx * y1 + (1 + s) * z1;
+
+  const a = 6377563.396, b = 6356256.909, e2 = 1.0 - (b * b) / (a * a);
+  const p = Math.sqrt(x2 * x2 + y2 * y2);
+  let phi = Math.atan2(z2, p * (1 - e2));
+  for (let i = 0; i < 5; i++) {
+    const sinPhi = Math.sin(phi);
+    const v = a / Math.sqrt(1 - e2 * sinPhi * sinPhi);
+    phi = Math.atan2(z2 + e2 * v * sinPhi, p);
+  }
+  const lam = Math.atan2(y2, x2);
+
+  const F0 = 0.9996012717, lat0 = (49.0 * Math.PI) / 180.0, lon0 = (-2.0 * Math.PI) / 180.0;
+  const N0 = -100000.0, E0 = 400000.0;
+  const n = (a - b) / (a + b), n2 = n * n, n3 = n * n * n;
+  const cosLat = Math.cos(phi), sinLat = Math.sin(phi);
+  const nu = (a * F0) / Math.sqrt(1 - e2 * sinLat * sinLat);
+  const rho = (a * F0 * (1 - e2)) / Math.pow(1 - e2 * sinLat * sinLat, 1.5);
+  const eta2 = nu / rho - 1;
+
+  const Ma = (1 + n + (5 / 4) * n2 + (5 / 4) * n3) * (phi - lat0);
+  const Mb = (3 * n + 3 * n2 + (21 / 8) * n3) * Math.sin(phi - lat0) * Math.cos(phi + lat0);
+  const Mc = ((15 / 8) * n2 + (15 / 8) * n3) * Math.sin(2 * (phi - lat0)) * Math.cos(2 * (phi + lat0));
+  const Md = (35 / 24) * n3 * Math.sin(3 * (phi - lat0)) * Math.cos(3 * (phi + lat0));
+  const M = b * F0 * (Ma - Mb + Mc - Md);
+
+  const dLam = lam - lon0, dLam2 = dLam * dLam, dLam3 = dLam2 * dLam, dLam4 = dLam3 * dLam, dLam5 = dLam4 * dLam, dLam6 = dLam5 * dLam;
+  const tanLat = Math.tan(phi), tan2 = tanLat * tanLat, tan4 = tan2 * tan2;
+  const I = M + N0;
+  const II = (nu / 2) * sinLat * cosLat;
+  const III = (nu / 24) * sinLat * Math.pow(cosLat, 3) * (5 - tan2 + 9 * eta2);
+  const IIIA = (nu / 720) * sinLat * Math.pow(cosLat, 5) * (61 - 58 * tan2 + tan4);
+  const N = I + II * dLam2 + III * dLam4 + IIIA * dLam6;
+
+  const IV = nu * cosLat;
+  const V = (nu / 6) * Math.pow(cosLat, 3) * (nu / rho - tan2);
+  const VI = (nu / 120) * Math.pow(cosLat, 5) * (5 - 18 * tan2 + tan4 + 14 * eta2 - 58 * tan2 * eta2);
+  const E = E0 + IV * dLam + V * dLam3 + VI * dLam5;
+
+  return [E, N];
+}
+
+function lonToTileX(lon, z) {
+  return Math.floor(((lon + 180.0) / 360.0) * (1 << z));
+}
+
+function latToTileY(lat, z) {
+  const latRad = (lat * Math.PI) / 180.0;
+  return Math.floor(
+    ((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0) * (1 << z)
+  );
+}
+
+function tileXToLon(x, z) {
+  return (x / (1 << z)) * 360.0 - 180.0;
+}
+
+function tileYToLat(y, z) {
+  const n = Math.PI - (2.0 * Math.PI * y) / (1 << z);
+  return (180.0 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function getOsmTileUrl(style, z, x, y) {
+  if (style === "carto_dark") {
+    const sub = ["a", "b", "c", "d"][(x + y) % 4];
+    return `https://${sub}.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
+  }
+  if (style === "osm_standard") {
+    const sub = ["a", "b", "c"][(x + y) % 3];
+    return `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  }
+  // Default: carto_light (Voyager)
+  const sub = ["a", "b", "c", "d"][(x + y) % 4];
+  return `https://${sub}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
+}
+
+const osmTileCache = new Map();
+
+function renderOsmTiles(ctx, w, h) {
+  if (!STATE.nwrLayers.osm) return;
+  if (!STATE.nwrCam) return;
+
+  const zoom = STATE.nwrCam.zoom;
+  const worldToScreen = (wx, wy) => [
+    (wx - STATE.nwrCam.camX) * zoom + w / 2,
+    (STATE.nwrCam.camY - wy) * zoom + h / 2,
+  ];
+  const screenToWorld = (sx, sy) => [
+    STATE.nwrCam.camX + (sx - w / 2) / zoom,
+    STATE.nwrCam.camY - (sy - h / 2) / zoom,
+  ];
+
+  const [minE, maxN] = screenToWorld(0, 0);
+  const [maxE, minN] = screenToWorld(w, h);
+
+  const [latTL, lonTL] = osgb36_to_wgs84(minE, maxN);
+  const [latBR, lonBR] = osgb36_to_wgs84(maxE, minN);
+
+  const minLat = Math.min(latTL, latBR);
+  const maxLat = Math.max(latTL, latBR);
+  const minLon = Math.min(lonTL, lonBR);
+  const maxLon = Math.max(lonTL, lonBR);
+
+  if (maxLat < 48 || minLat > 62 || maxLon < -13 || minLon > 4) return;
+
+  let z = Math.round(Math.log2(92015 * zoom));
+  z = Math.max(5, Math.min(18, z));
+
+  let x0 = lonToTileX(minLon, z);
+  let x1 = lonToTileX(maxLon, z);
+  let y0 = latToTileY(maxLat, z);
+  let y1 = latToTileY(minLat, z);
+
+  let startX = Math.max(0, Math.min(x0, x1));
+  let endX = Math.min((1 << z) - 1, Math.max(x0, x1));
+  let startY = Math.max(0, Math.min(y0, y1));
+  let endY = Math.min((1 << z) - 1, Math.max(y0, y1));
+
+  if ((endX - startX + 1) * (endY - startY + 1) > 50 && z > 5) {
+    z -= 1;
+    x0 = lonToTileX(minLon, z);
+    x1 = lonToTileX(maxLon, z);
+    y0 = latToTileY(maxLat, z);
+    y1 = latToTileY(minLat, z);
+    startX = Math.max(0, Math.min(x0, x1));
+    endX = Math.min((1 << z) - 1, Math.max(x0, x1));
+    startY = Math.max(0, Math.min(y0, y1));
+    endY = Math.min((1 << z) - 1, Math.max(y0, y1));
+  }
+
+  const opacity = Math.max(0, Math.min(1, (STATE.osmOpacity !== undefined ? STATE.osmOpacity : 65) / 100));
+  if (opacity <= 0) return;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  const style = STATE.osmStyle || "carto_dark";
+
+  for (let ty = startY; ty <= endY; ty++) {
+    for (let tx = startX; tx <= endX; tx++) {
+      const lonNW = tileXToLon(tx, z);
+      const latNW = tileYToLat(ty, z);
+      const lonSE = tileXToLon(tx + 1, z);
+      const latSE = tileYToLat(ty + 1, z);
+
+      const [eNW, nNW] = wgs84_to_osgb36(latNW, lonNW);
+      const [eSE, nSE] = wgs84_to_osgb36(latSE, lonSE);
+
+      const [sx0, sy0] = worldToScreen(eNW, nNW);
+      const [sx1, sy1] = worldToScreen(eSE, nSE);
+
+      const sw = sx1 - sx0;
+      const sh = sy1 - sy0;
+
+      const tileKey = `${style}_${z}_${tx}_${ty}`;
+      let entry = osmTileCache.get(tileKey);
+      if (!entry) {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        entry = { img, loaded: false, error: false };
+        osmTileCache.set(tileKey, entry);
+        img.onload = () => {
+          entry.loaded = true;
+          requestNwrRender();
+        };
+        img.onerror = () => {
+          entry.error = true;
+        };
+        img.src = getOsmTileUrl(style, z, tx, ty);
+      }
+
+      if (entry.loaded && !entry.error) {
+        ctx.drawImage(entry.img, Math.floor(sx0), Math.floor(sy0), Math.ceil(sw) + 1, Math.ceil(sh) + 1);
+      }
+    }
+  }
+
+  if (osmTileCache.size > 400) {
+    const keysToDelete = Array.from(osmTileCache.keys()).slice(0, 150);
+    for (const k of keysToDelete) osmTileCache.delete(k);
+  }
+
+  ctx.restore();
 }
 
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
@@ -537,6 +961,9 @@ function getElevationColor(elevM) {
 }
 
 function getNwrTrackColor(trackId, ownerCodeOrStr, elr) {
+  if (STATE.nwrColorMode === "uniform") {
+    return (STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.color) || "#38bdf8";
+  }
   const tid = String(trackId || "");
   const elrCode = String(elr || "").toUpperCase();
   const fusionStats = (STATE.nwrOverview && STATE.nwrOverview.elr_fusion_stats) || {};
@@ -590,7 +1017,13 @@ function updateLegend() {
   const box = document.getElementById("legend-box");
   let items = [];
   if (STATE.activeView === "nwr") {
-    if (STATE.nwrColorMode === "track_type") {
+    if (STATE.nwrColorMode === "uniform") {
+      items = [
+        [(STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.color) || "#38bdf8", "Track Centre Lines (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.color) || "#a855f7", "ELR Reference Lines (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.color) || "#f43f5e", "Track Curvature (Custom Layer Colour)"],
+      ];
+    } else if (STATE.nwrColorMode === "track_type") {
       items = [
         ["#38bdf8", "Main Fast (x100)"],
         ["#10b981", "Slow Line (x200)"],
@@ -674,6 +1107,14 @@ function updateLegend() {
         ["#10b981", "Level / Gentle (-2‰ to +2‰)"],
         ["#38bdf8", "Falling Gradient (< -2‰)"],
       ];
+    } else if (mode === "uniform") {
+      items = [
+        [(STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.color) || "#38bdf8", "Track Edges (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.color) || "#818cf8", "Station Platforms / Ways (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.color) || "#64748b", "CAD Schematic Vectors (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.color) || "#10b981", "Signalling Blocks (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.color) || "#a855f7", "Poly Regions (Custom Layer Colour)"],
+      ];
     } else {
       items = [
         ["#94a3b8", "Running Track Edge"],
@@ -716,9 +1157,11 @@ function renderSchematic() {
 
   // 1. Poly Areas
   if (STATE.layers.polys && STATE.overview.poly_areas) {
-    ctx.fillStyle = "rgba(168, 85, 247, 0.06)";
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.25)";
-    ctx.lineWidth = 1;
+    const polyWidthMult = ((STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.width) || 1.5) / 1.5;
+    const polyCol = (STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.color) || "#a855f7";
+    ctx.fillStyle = hexToRgba(polyCol, 0.06);
+    ctx.strokeStyle = hexToRgba(polyCol, 0.35);
+    ctx.lineWidth = Math.max(0.5, 1.0 * polyWidthMult);
     for (const pa of STATE.overview.poly_areas) {
       if (
         pa.max_x < bbox.min_x ||
@@ -744,8 +1187,10 @@ function renderSchematic() {
 
   // 2. CAD Graphic Vectors (when zoomed in)
   if (STATE.layers.vectors && useMicro && STATE.viewportData.vectors.length) {
-    ctx.strokeStyle = "rgba(100, 116, 139, 0.48)";
-    ctx.lineWidth = Math.max(0.8, Math.min(2.0, zoom * 0.45));
+    const vecWidthMult = ((STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.width) || 1.0) / 1.0;
+    const vecCol = (STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.color) || "#64748b";
+    ctx.strokeStyle = hexToRgba(vecCol, 0.55);
+    ctx.lineWidth = Math.max(0.5, Math.max(0.8, Math.min(2.0, zoom * 0.45)) * vecWidthMult);
     ctx.beginPath();
     for (const v of STATE.viewportData.vectors) {
       const [x0, y0] = worldToScreen(v[1], v[2]);
@@ -758,6 +1203,9 @@ function renderSchematic() {
 
   // 3. Track Edges
   if (STATE.layers.edges) {
+    const edgeWidthMult = ((STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.width) || 1.5) / 1.5;
+    const isUniform = STATE.colorMode === "uniform";
+    const uniformEdgeCol = (STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.color) || "#38bdf8";
     if (!useMicro) {
       const batches = new Map();
       for (const e of STATE.overview.macro_edges) {
@@ -769,7 +1217,7 @@ function renderSchematic() {
           Math.min(y0, y1) > bbox.max_y
         )
           continue;
-        const col = getEdgeColor(vmax, elec === 1, grad);
+        const col = isUniform ? uniformEdgeCol : getEdgeColor(vmax, elec === 1, grad);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -777,7 +1225,7 @@ function renderSchematic() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.1, Math.min(2.4, zoom * 18));
+      ctx.lineWidth = Math.max(0.75, Math.max(1.1, Math.min(2.4, zoom * 18)) * edgeWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -797,7 +1245,7 @@ function renderSchematic() {
           x1 = e[6],
           y1 = e[7];
         if (x0 === null || x1 === null) continue;
-        const col = getEdgeColor(e[8], e[9] === 1, e[10], e[12] || 0);
+        const col = isUniform ? uniformEdgeCol : getEdgeColor(e[8], e[9] === 1, e[10], e[12] || 0);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -805,7 +1253,7 @@ function renderSchematic() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.4, Math.min(3.5, zoom * 0.9));
+      ctx.lineWidth = Math.max(0.9, Math.max(1.4, Math.min(3.5, zoom * 0.9)) * edgeWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -822,8 +1270,10 @@ function renderSchematic() {
 
   // 4. Station Platform / Track Ways
   if (STATE.layers.tracks && useMicro && STATE.viewportData.tracks.length) {
-    ctx.strokeStyle = "rgba(129, 140, 248, 0.55)";
-    ctx.lineWidth = Math.max(2.5, Math.min(6.0, zoom * 1.6));
+    const trackWidthMult = ((STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.width) || 3.0) / 3.0;
+    const trackCol = (STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.color) || "#818cf8";
+    ctx.strokeStyle = hexToRgba(trackCol, 0.65);
+    ctx.lineWidth = Math.max(1.0, Math.max(2.5, Math.min(6.0, zoom * 1.6)) * trackWidthMult);
     ctx.beginPath();
     for (const t of STATE.viewportData.tracks) {
       const coords = t[7];
@@ -932,8 +1382,10 @@ function renderSchematic() {
     STATE.viewportData.blocks &&
     STATE.viewportData.blocks.length
   ) {
+    const blockWidthMult = ((STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.width) || 2.5) / 2.5;
+    const blockCol = (STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.color) || "#10b981";
     ctx.save();
-    ctx.lineWidth = Math.max(2.0, Math.min(4.2, zoom * 1.1));
+    ctx.lineWidth = Math.max(1.0, Math.max(2.0, Math.min(4.2, zoom * 1.1)) * blockWidthMult);
     for (const b of STATE.viewportData.blocks) {
       // [pk, block_id, pre_signal_distance, sight_distance, shunting_flag, atc_flag, moving_block, coords]
       const coords = b[7];
@@ -941,7 +1393,7 @@ function renderSchematic() {
       const isShunt = b[4] === 1;
       ctx.strokeStyle = isShunt
         ? "rgba(168, 85, 247, 0.45)"
-        : "rgba(16, 185, 129, 0.42)";
+        : hexToRgba(blockCol, 0.45);
       ctx.setLineDash(isShunt ? [4, 3] : []);
       ctx.beginPath();
       const [sx0, sy0] = worldToScreen(coords[0][0], coords[0][1]);
@@ -1311,6 +1763,11 @@ function renderNwrModel() {
   const h = targetCanvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
 
+  // 0. OpenStreetMap Basemap Layer (rendered underneath all vector layers)
+  if (STATE.nwrLayers.osm) {
+    renderOsmTiles(ctx, w, h);
+  }
+
   STATE.drawnNwrElrLabels = [];
   STATE.drawnNwrWaymarkLabels = [];
   STATE.drawnNwrNodeLabels = [];
@@ -1329,8 +1786,10 @@ function renderNwrModel() {
 
   // 1. NWR_ELRs Reference Lines
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.35)";
-    ctx.lineWidth = useDetailedCentrelines ? 2.5 : 1.2;
+    const elrWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.width) || 2.0) / 2.0;
+    const elrCol = (STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.color) || "#a855f7";
+    ctx.strokeStyle = hexToRgba(elrCol, 0.45);
+    ctx.lineWidth = Math.max(0.8, (useDetailedCentrelines ? 2.5 : 1.2) * elrWidthMult);
     ctx.beginPath();
     for (const elr of STATE.nwrOverview.elrs) {
       if (
@@ -1355,6 +1814,7 @@ function renderNwrModel() {
 
   // 2. NWR_TrackCentreLines (Macro links when zoomed out, full polylines when zoomed in)
   if (STATE.nwrLayers.centrelines) {
+    const clWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.width) || 1.8) / 1.8;
     if (!useDetailedCentrelines) {
       const batches = new Map();
       for (const m of STATE.nwrOverview.macro_links) {
@@ -1378,7 +1838,7 @@ function renderNwrModel() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.1, Math.min(2.2, zoom * 250));
+      ctx.lineWidth = Math.max(0.8, Math.max(1.1, Math.min(2.2, zoom * 250)) * clWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -1404,7 +1864,7 @@ function renderNwrModel() {
         }
         arr.push(coords);
       }
-      ctx.lineWidth = Math.max(1.6, Math.min(3.8, zoom * 12));
+      ctx.lineWidth = Math.max(1.0, Math.max(1.6, Math.min(3.8, zoom * 12)) * clWidthMult);
       for (const [col, polylines] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -1425,6 +1885,9 @@ function renderNwrModel() {
 
   // 3. Network Fusion Track Curvature & Cant Segments (Contextual: shown ONLY when a track is clicked/highlighted AND layer is checked)
   if (STATE.nwrLayers.curvature && highlightedFusion && highlightedFusion.curvature.length > 0) {
+    const curvWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.width) || 2.5) / 2.5;
+    const isCurvUniform = STATE.nwrColorMode === "uniform";
+    const customCurvCol = (STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.color) || "#f43f5e";
     const curvBatches = new Map();
     for (const c of highlightedFusion.curvature) {
       const x0 = c.x0 !== undefined ? c.x0 : c[10];
@@ -1433,7 +1896,7 @@ function renderNwrModel() {
       const y1 = c.y1 !== undefined ? c.y1 : c[13];
       if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) continue;
       const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
-      const col = getCurvatureColor(rAvg);
+      const col = isCurvUniform ? customCurvCol : getCurvatureColor(rAvg);
       let arr = curvBatches.get(col);
       if (!arr) {
         arr = [];
@@ -1443,7 +1906,7 @@ function renderNwrModel() {
     }
 
     ctx.save();
-    ctx.lineWidth = Math.max(3.8, Math.min(8.0, zoom * 24));
+    ctx.lineWidth = Math.max(1.5, Math.max(3.8, Math.min(8.0, zoom * 24)) * curvWidthMult);
     for (const [col, coords] of curvBatches.entries()) {
       ctx.strokeStyle = col;
       ctx.shadowColor = col;
@@ -6115,6 +6578,7 @@ for (const key of ["edges", "tracks", "vectors", "texts", "stations", "signals",
 }
 
 for (const [key, id] of [
+  ["osm", "nwr-layer-osm"],
   ["centrelines", "nwr-layer-centrelines"],
   ["elrs", "nwr-layer-elrs"],
   ["nodes", "nwr-layer-nodes"],
@@ -6126,10 +6590,94 @@ for (const [key, id] of [
   if (el) {
     el.addEventListener("change", () => {
       STATE.nwrLayers[key] = el.checked;
-      scheduleViewportFetch();
-      requestRender();
+      if (key === "osm") {
+        savePersistedOsmSettings();
+        requestNwrRender();
+      } else {
+        scheduleViewportFetch();
+        requestRender();
+      }
     });
   }
+}
+
+/* OpenStreetMap Opacity Slider & Style Selection Wiring */
+const osmOpacitySlider = document.getElementById("osm-opacity-slider");
+if (osmOpacitySlider) {
+  osmOpacitySlider.addEventListener("input", (e) => {
+    STATE.osmOpacity = parseInt(e.target.value, 10) || 0;
+    const readout = document.getElementById("osm-opacity-readout");
+    if (readout) readout.textContent = `${STATE.osmOpacity}%`;
+    savePersistedOsmSettings();
+    requestNwrRender();
+  });
+}
+
+const osmStyleSelect = document.getElementById("osm-style-select");
+if (osmStyleSelect) {
+  osmStyleSelect.addEventListener("change", (e) => {
+    STATE.osmStyle = e.target.value;
+    savePersistedOsmSettings();
+    requestNwrRender();
+  });
+}
+
+/* Layer Line Styling Controls (Colour Picker & Width Stepper) Wiring */
+document.querySelectorAll(".layer-color-input").forEach((inp) => {
+  const onColorChange = (e) => {
+    const layer = inp.dataset.layer;
+    if (!layer || !STATE.layerStyles[layer]) return;
+    STATE.layerStyles[layer].color = e.target.value;
+    const swatch = document.getElementById(`swatch-${layer.replace(/_/g, "-")}`);
+    if (swatch) swatch.style.backgroundColor = e.target.value;
+    const dot = document.getElementById(`swatch-dot-${layer.replace(/_/g, "-")}`);
+    if (dot) dot.style.backgroundColor = e.target.value;
+    savePersistedLayerStyles();
+    updateLegend();
+    requestRender();
+  };
+  inp.addEventListener("input", onColorChange);
+  inp.addEventListener("change", onColorChange);
+});
+
+document.querySelectorAll(".width-stepper .width-step-btn").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const stepper = btn.closest(".width-stepper");
+    const layer = stepper.dataset.layer;
+    if (!layer || !STATE.layerStyles[layer]) return;
+    const dir = parseFloat(btn.dataset.dir) || 0;
+    const cur = STATE.layerStyles[layer].width || 1.5;
+    const next = Math.max(0.5, Math.min(8.0, Math.round((cur + dir) * 10) / 10));
+    STATE.layerStyles[layer].width = next;
+    const readout = stepper.querySelector(".width-readout");
+    if (readout) readout.textContent = `${next.toFixed(1)}px`;
+    savePersistedLayerStyles();
+    requestRender();
+  });
+});
+
+document.querySelectorAll(".btn-reset-layer-style").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const layer = btn.dataset.layer;
+    if (!layer || !DEFAULT_LAYER_STYLES[layer]) return;
+    STATE.layerStyles[layer] = { ...DEFAULT_LAYER_STYLES[layer] };
+    savePersistedLayerStyles();
+    updateLayerStyleUi();
+    updateLegend();
+    requestRender();
+  });
+});
+
+const btnResetTps = document.getElementById("btn-reset-tps-styles");
+if (btnResetTps) {
+  btnResetTps.addEventListener("click", () => resetLayerStyles("tps"));
+}
+
+const btnResetNwr = document.getElementById("btn-reset-nwr-styles");
+if (btnResetNwr) {
+  btnResetNwr.addEventListener("click", () => resetLayerStyles("nwr"));
 }
 
 /* ============================================================================
@@ -6889,9 +7437,12 @@ function escapeHtml(str) {
 
 /* Initialization & Status Polling */
 async function initApp() {
+  loadPersistedLayerStyles();
+  loadPersistedOsmSettings();
   resizeCanvas();
   updateLegend();
   updateLabelUi();
+  updateLayerStyleUi();
   setupProfileDrawerEvents();
 
   const overlay = document.getElementById("ingest-overlay");
