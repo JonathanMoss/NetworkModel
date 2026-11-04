@@ -41,7 +41,7 @@ TRACK_ID_APPENDIX_A = {
 VALENCY_DESC = {
     1: "Tracks start/end (Buffer stop or boundary)",
     2: "Pseudo Node (Attributional change only, no direction change)",
-    3: "Switch / Turnout (Directional change possible)",
+    3: "Points / Turnout (Directional change possible)",
     4: "Centre of Diamond Crossing (No directional change)",
 }
 

@@ -35,12 +35,25 @@ const STATE = {
     polys: true,
   },
   nwrLayers: {
+    osm: true,
     centrelines: true,
     elrs: true,
     nodes: true,
     waymarks: true,
     curvature: true,
     nf_points: false,
+  },
+  osmOpacity: 30,
+
+  layerStyles: {
+    edges: { color: "#38bdf8", width: 1.5 },
+    tracks: { color: "#818cf8", width: 3.0 },
+    vectors: { color: "#64748b", width: 1.0 },
+    blocks: { color: "#10b981", width: 2.5 },
+    polys: { color: "#a855f7", width: 1.5 },
+    nwr_centrelines: { color: "#38bdf8", width: 1.8 },
+    nwr_elrs: { color: "#a855f7", width: 2.0 },
+    nwr_curvature: { color: "#f43f5e", width: 2.5 },
   },
 
   labelScale: {
@@ -229,6 +242,449 @@ function isPointInOrientedBox(px, py, ox, oy, w, h, angleDeg = 0, alignY = "cent
   return localX >= -3 && localX <= w + 3 && localY >= y0 - 3 && localY <= y0 + h + 3;
 }
 
+/* ============================================================================
+   COOKIE & LOCALSTORAGE PERSISTENCE FOR LAYER STYLES AND OSM BASEMAP
+   ============================================================================ */
+function setCookie(name, value, days = 365) {
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  const valStr = encodeURIComponent(typeof value === "string" ? value : JSON.stringify(value));
+  document.cookie = `${name}=${valStr}; expires=${expires}; path=/; SameSite=Lax`;
+  try {
+    localStorage.setItem(name, typeof value === "string" ? value : JSON.stringify(value));
+  } catch (_) {}
+}
+
+function getCookie(name) {
+  const nameEQ = `${name}=`;
+  const ca = document.cookie.split(";");
+  for (let i = 0; i < ca.length; i++) {
+    let c = ca[i].trim();
+    if (c.indexOf(nameEQ) === 0) {
+      const val = decodeURIComponent(c.substring(nameEQ.length));
+      try {
+        return JSON.parse(val);
+      } catch (_) {
+        return val;
+      }
+    }
+  }
+  try {
+    const ls = localStorage.getItem(name);
+    if (ls) {
+      try {
+        return JSON.parse(ls);
+      } catch (_) {
+        return ls;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+const DEFAULT_LAYER_STYLES = {
+  edges: { color: "#38bdf8", width: 1.5 },
+  tracks: { color: "#818cf8", width: 3.0 },
+  vectors: { color: "#64748b", width: 1.0 },
+  blocks: { color: "#10b981", width: 2.5 },
+  polys: { color: "#a855f7", width: 1.5 },
+  nwr_centrelines: { color: "#38bdf8", width: 1.8 },
+  nwr_elrs: { color: "#a855f7", width: 2.0 },
+  nwr_curvature: { color: "#f43f5e", width: 2.5 },
+};
+
+function loadPersistedLayerStyles() {
+  const saved = getCookie("nr_layer_styles");
+  if (saved && typeof saved === "object") {
+    for (const [k, def] of Object.entries(DEFAULT_LAYER_STYLES)) {
+      if (!STATE.layerStyles[k]) STATE.layerStyles[k] = { ...def };
+      if (saved[k]) {
+        if (typeof saved[k].color === "string") STATE.layerStyles[k].color = saved[k].color;
+        if (typeof saved[k].width === "number") STATE.layerStyles[k].width = saved[k].width;
+      }
+    }
+  }
+}
+
+function savePersistedLayerStyles() {
+  setCookie("nr_layer_styles", STATE.layerStyles, 365);
+}
+
+function resetLayerStyles(scope = "all") {
+  if (scope === "tps" || scope === "all") {
+    for (const k of ["edges", "tracks", "vectors", "blocks", "polys"]) {
+      STATE.layerStyles[k] = { ...DEFAULT_LAYER_STYLES[k] };
+    }
+  }
+  if (scope === "nwr" || scope === "all") {
+    for (const k of ["nwr_centrelines", "nwr_elrs", "nwr_curvature"]) {
+      STATE.layerStyles[k] = { ...DEFAULT_LAYER_STYLES[k] };
+    }
+  }
+  savePersistedLayerStyles();
+  updateLayerStyleUi();
+  updateLegend();
+  requestRender();
+}
+
+function loadPersistedOsmSettings() {
+  const saved = getCookie("nr_osm_settings");
+  if (saved && typeof saved === "object") {
+    if (typeof saved.enabled === "boolean") STATE.nwrLayers.osm = saved.enabled;
+    // Default to 30%; migrate old 65% default to new 30% default
+    if (typeof saved.opacity === "number" && saved.opacity !== 65) {
+      STATE.osmOpacity = Math.max(0, Math.min(100, saved.opacity));
+    } else {
+      STATE.osmOpacity = 30;
+    }
+  }
+}
+
+function savePersistedOsmSettings() {
+  setCookie(
+    "nr_osm_settings",
+    {
+      enabled: STATE.nwrLayers.osm,
+      opacity: STATE.osmOpacity,
+    },
+    365
+  );
+}
+
+function hexToRgba(hex, alpha = 1) {
+  if (!hex || typeof hex !== "string") return `rgba(56, 189, 248, ${alpha})`;
+  if (hex.startsWith("rgba")) return hex;
+  let c = hex.replace("#", "");
+  if (c.length === 3) c = c.split("").map((x) => x + x).join("");
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function updateLayerStyleUi() {
+  for (const [key, style] of Object.entries(STATE.layerStyles)) {
+    const colorInput = document.querySelector(`.layer-color-input[data-layer="${key}"]`);
+    if (colorInput) colorInput.value = style.color;
+
+    const swatch = document.getElementById(`swatch-${key.replace(/_/g, "-")}`);
+    if (swatch) swatch.style.backgroundColor = style.color;
+
+    const dot = document.getElementById(`swatch-dot-${key.replace(/_/g, "-")}`);
+    if (dot) dot.style.backgroundColor = style.color;
+
+    const widthReadout = document.querySelector(`.width-readout[data-readout="${key}"]`);
+    if (widthReadout) widthReadout.textContent = `${style.width.toFixed(1)}px`;
+  }
+
+  const osmCheck = document.getElementById("nwr-layer-osm");
+  if (osmCheck) osmCheck.checked = STATE.nwrLayers.osm;
+
+  const osmSlider = document.getElementById("osm-opacity-slider");
+  if (osmSlider) osmSlider.value = STATE.osmOpacity ?? 30;
+
+  const osmReadout = document.getElementById("osm-opacity-readout");
+  if (osmReadout) osmReadout.textContent = `${STATE.osmOpacity ?? 30}%`;
+}
+
+/* ============================================================================
+   EPSG:27700 (OSGB36) <-> EPSG:4326 (WGS84) TRANSFORMATION FOR OSM BASEMAP
+   ============================================================================ */
+function osgb36_to_wgs84(E, N) {
+  const a = 6377563.396, b = 6356256.909, F0 = 0.9996012717;
+  const lat0 = (49.0 * Math.PI) / 180.0, lon0 = (-2.0 * Math.PI) / 180.0;
+  const N0 = -100000.0, E0 = 400000.0;
+  const e2 = 1.0 - (b * b) / (a * a);
+  const n = (a - b) / (a + b);
+  const n2 = n * n, n3 = n * n * n;
+  let lat = lat0, M = 0;
+  for (let iter = 0; iter < 100; iter++) {
+    lat = (N - N0 - M) / (a * F0) + lat;
+    const Ma = (1 + n + (5 / 4) * n2 + (5 / 4) * n3) * (lat - lat0);
+    const Mb = (3 * n + 3 * n2 + (21 / 8) * n3) * Math.sin(lat - lat0) * Math.cos(lat + lat0);
+    const Mc = ((15 / 8) * n2 + (15 / 8) * n3) * Math.sin(2 * (lat - lat0)) * Math.cos(2 * (lat + lat0));
+    const Md = (35 / 24) * n3 * Math.sin(3 * (lat - lat0)) * Math.cos(3 * (lat + lat0));
+    M = b * F0 * (Ma - Mb + Mc - Md);
+    if (Math.abs(N - N0 - M) < 0.00001) break;
+  }
+  const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+  const nu = (a * F0) / Math.sqrt(1 - e2 * sinLat * sinLat);
+  const rho = (a * F0 * (1 - e2)) / Math.pow(1 - e2 * sinLat * sinLat, 1.5);
+  const eta2 = nu / rho - 1;
+  const tanLat = Math.tan(lat), tan2 = tanLat * tanLat, tan4 = tan2 * tan2, tan6 = tan4 * tan2;
+  const secLat = 1.0 / cosLat;
+  const nu3 = nu * nu * nu, nu5 = nu3 * nu * nu, nu7 = nu5 * nu * nu;
+  const dE = E - E0, dE2 = dE * dE, dE3 = dE2 * dE, dE4 = dE3 * dE, dE5 = dE4 * dE, dE6 = dE5 * dE, dE7 = dE6 * dE;
+  const VII = tanLat / (2 * rho * nu);
+  const VIII = (tanLat / (24 * rho * nu3)) * (5 + 3 * tan2 + eta2 - 9 * tan2 * eta2);
+  const IX = (tanLat / (720 * rho * nu5)) * (61 + 90 * tan2 + 45 * tan4);
+  const lat_osgb = lat - VII * dE2 + VIII * dE4 - IX * dE6;
+  const X = secLat / nu;
+  const XI = (secLat / (6 * nu3)) * (nu / rho + 2 * tan2);
+  const XII = (secLat / (120 * nu5)) * (5 + 28 * tan2 + 24 * tan4);
+  const XIIA = (secLat / (5040 * nu7)) * (61 + 662 * tan2 + 1320 * tan4 + 720 * tan6);
+  const lon_osgb = lon0 + X * dE - XI * dE3 + XII * dE5 - XIIA * dE7;
+
+  // Helmert OSGB36 -> WGS84
+  const cosPhi = Math.cos(lat_osgb), sinPhi = Math.sin(lat_osgb);
+  const cosLam = Math.cos(lon_osgb), sinLam = Math.sin(lon_osgb);
+  const v = a / Math.sqrt(1 - e2 * sinPhi * sinPhi);
+  const x1 = v * cosPhi * cosLam, y1 = v * cosPhi * sinLam, z1 = (1 - e2) * v * sinPhi;
+  const tx = 446.448, ty = -125.157, tz = 542.060, s = -20.4894e-6;
+  const rx = (0.1502 / 3600.0) * Math.PI / 180.0;
+  const ry = (0.2470 / 3600.0) * Math.PI / 180.0;
+  const rz = (0.8421 / 3600.0) * Math.PI / 180.0;
+  const x2 = tx + (1 + s) * x1 - rz * y1 + ry * z1;
+  const y2 = ty + rz * x1 + (1 + s) * y1 - rx * z1;
+  const z2 = tz - ry * x1 + rx * y1 + (1 + s) * z1;
+
+  const a_w = 6378137.0, b_w = 6356752.314245;
+  const e2_w = 1.0 - (b_w * b_w) / (a_w * a_w);
+  const p = Math.sqrt(x2 * x2 + y2 * y2);
+  let phi = Math.atan2(z2, p * (1 - e2_w));
+  for (let i = 0; i < 5; i++) {
+    const sinP = Math.sin(phi);
+    const v_w = a_w / Math.sqrt(1 - e2_w * sinP * sinP);
+    phi = Math.atan2(z2 + e2_w * v_w * sinP, p);
+  }
+  const lam = Math.atan2(y2, x2);
+  return [(phi * 180.0) / Math.PI, (lam * 180.0) / Math.PI];
+}
+
+function wgs84_to_osgb36(lat_w, lon_w) {
+  const a_w = 6378137.0, b_w = 6356752.314245;
+  const e2_w = 1.0 - (b_w * b_w) / (a_w * a_w);
+  const phi_w = (lat_w * Math.PI) / 180.0, lam_w = (lon_w * Math.PI) / 180.0;
+  const sinP = Math.sin(phi_w), cosP = Math.cos(phi_w);
+  const sinL = Math.sin(lam_w), cosL = Math.cos(lam_w);
+  const v_w = a_w / Math.sqrt(1 - e2_w * sinP * sinP);
+  const x1 = v_w * cosP * cosL, y1 = v_w * cosP * sinL, z1 = (1 - e2_w) * v_w * sinP;
+
+  const tx = -446.448, ty = 125.157, tz = -542.060, s = 20.4894e-6;
+  const rx = (-0.1502 / 3600.0) * Math.PI / 180.0;
+  const ry = (-0.2470 / 3600.0) * Math.PI / 180.0;
+  const rz = (-0.8421 / 3600.0) * Math.PI / 180.0;
+  const x2 = tx + (1 + s) * x1 - rz * y1 + ry * z1;
+  const y2 = ty + rz * x1 + (1 + s) * y1 - rx * z1;
+  const z2 = tz - ry * x1 + rx * y1 + (1 + s) * z1;
+
+  const a = 6377563.396, b = 6356256.909, e2 = 1.0 - (b * b) / (a * a);
+  const p = Math.sqrt(x2 * x2 + y2 * y2);
+  let phi = Math.atan2(z2, p * (1 - e2));
+  for (let i = 0; i < 5; i++) {
+    const sinPhi = Math.sin(phi);
+    const v = a / Math.sqrt(1 - e2 * sinPhi * sinPhi);
+    phi = Math.atan2(z2 + e2 * v * sinPhi, p);
+  }
+  const lam = Math.atan2(y2, x2);
+
+  const F0 = 0.9996012717, lat0 = (49.0 * Math.PI) / 180.0, lon0 = (-2.0 * Math.PI) / 180.0;
+  const N0 = -100000.0, E0 = 400000.0;
+  const n = (a - b) / (a + b), n2 = n * n, n3 = n * n * n;
+  const cosLat = Math.cos(phi), sinLat = Math.sin(phi);
+  const nu = (a * F0) / Math.sqrt(1 - e2 * sinLat * sinLat);
+  const rho = (a * F0 * (1 - e2)) / Math.pow(1 - e2 * sinLat * sinLat, 1.5);
+  const eta2 = nu / rho - 1;
+
+  const Ma = (1 + n + (5 / 4) * n2 + (5 / 4) * n3) * (phi - lat0);
+  const Mb = (3 * n + 3 * n2 + (21 / 8) * n3) * Math.sin(phi - lat0) * Math.cos(phi + lat0);
+  const Mc = ((15 / 8) * n2 + (15 / 8) * n3) * Math.sin(2 * (phi - lat0)) * Math.cos(2 * (phi + lat0));
+  const Md = (35 / 24) * n3 * Math.sin(3 * (phi - lat0)) * Math.cos(3 * (phi + lat0));
+  const M = b * F0 * (Ma - Mb + Mc - Md);
+
+  const dLam = lam - lon0, dLam2 = dLam * dLam, dLam3 = dLam2 * dLam, dLam4 = dLam3 * dLam, dLam5 = dLam4 * dLam, dLam6 = dLam5 * dLam;
+  const tanLat = Math.tan(phi), tan2 = tanLat * tanLat, tan4 = tan2 * tan2;
+  const I = M + N0;
+  const II = (nu / 2) * sinLat * cosLat;
+  const III = (nu / 24) * sinLat * Math.pow(cosLat, 3) * (5 - tan2 + 9 * eta2);
+  const IIIA = (nu / 720) * sinLat * Math.pow(cosLat, 5) * (61 - 58 * tan2 + tan4);
+  const N = I + II * dLam2 + III * dLam4 + IIIA * dLam6;
+
+  const IV = nu * cosLat;
+  const V = (nu / 6) * Math.pow(cosLat, 3) * (nu / rho - tan2);
+  const VI = (nu / 120) * Math.pow(cosLat, 5) * (5 - 18 * tan2 + tan4 + 14 * eta2 - 58 * tan2 * eta2);
+  const E = E0 + IV * dLam + V * dLam3 + VI * dLam5;
+
+  return [E, N];
+}
+
+function lonToTileX(lon, z) {
+  return Math.floor(((lon + 180.0) / 360.0) * (1 << z));
+}
+
+function latToTileY(lat, z) {
+  const latRad = (lat * Math.PI) / 180.0;
+  return Math.floor(
+    ((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0) * (1 << z)
+  );
+}
+
+function tileXToLon(x, z) {
+  return (x / (1 << z)) * 360.0 - 180.0;
+}
+
+function tileYToLat(y, z) {
+  const n = Math.PI - (2.0 * Math.PI * y) / (1 << z);
+  return (180.0 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function getOsmTileUrl(z, x, y) {
+  const sub = ["a", "b", "c"][(x + y) % 3];
+  return `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+}
+
+const osmTileCache = new Map();
+let osmOffscreenCanvas = null;
+let osmOffscreenCtx = null;
+
+function getOsmOffscreen(w, h) {
+  if (!osmOffscreenCanvas) {
+    osmOffscreenCanvas = document.createElement("canvas");
+    osmOffscreenCtx = osmOffscreenCanvas.getContext("2d");
+  }
+  if (osmOffscreenCanvas.width !== w || osmOffscreenCanvas.height !== h) {
+    osmOffscreenCanvas.width = w;
+    osmOffscreenCanvas.height = h;
+  } else {
+    osmOffscreenCtx.clearRect(0, 0, w, h);
+  }
+  return { canvas: osmOffscreenCanvas, ctx: osmOffscreenCtx };
+}
+
+function renderOsmTiles(ctx, w, h) {
+  if (!STATE.nwrLayers.osm) return;
+  if (!STATE.nwrCam) return;
+
+  const opacity = Math.max(0, Math.min(1, (STATE.osmOpacity !== undefined ? STATE.osmOpacity : 30) / 100));
+  if (opacity <= 0) return;
+
+  const zoom = STATE.nwrCam.zoom;
+  const worldToScreen = (wx, wy) => [
+    (wx - STATE.nwrCam.camX) * zoom + w / 2,
+    (STATE.nwrCam.camY - wy) * zoom + h / 2,
+  ];
+  const screenToWorld = (sx, sy) => [
+    STATE.nwrCam.camX + (sx - w / 2) / zoom,
+    STATE.nwrCam.camY - (sy - h / 2) / zoom,
+  ];
+
+  const [minE, maxN] = screenToWorld(-64, -64);
+  const [maxE, minN] = screenToWorld(w + 64, h + 64);
+
+  const [latTL, lonTL] = osgb36_to_wgs84(minE, maxN);
+  const [latBR, lonBR] = osgb36_to_wgs84(maxE, minN);
+  const [latTR, lonTR] = osgb36_to_wgs84(maxE, maxN);
+  const [latBL, lonBL] = osgb36_to_wgs84(minE, minN);
+
+  const minLat = Math.min(latTL, latBR, latTR, latBL);
+  const maxLat = Math.max(latTL, latBR, latTR, latBL);
+  const minLon = Math.min(lonTL, lonBR, lonTR, lonBL);
+  const maxLon = Math.max(lonTL, lonBR, lonTR, lonBL);
+
+  if (maxLat < 48 || minLat > 62 || maxLon < -13 || minLon > 4) return;
+
+  let z = Math.round(Math.log2(92015 * zoom));
+  z = Math.max(5, Math.min(18, z));
+
+  let x0 = lonToTileX(minLon, z);
+  let x1 = lonToTileX(maxLon, z);
+  let y0 = latToTileY(maxLat, z);
+  let y1 = latToTileY(minLat, z);
+
+  let startX = Math.max(0, Math.min(x0, x1));
+  let endX = Math.min((1 << z) - 1, Math.max(x0, x1));
+  let startY = Math.max(0, Math.min(y0, y1));
+  let endY = Math.min((1 << z) - 1, Math.max(y0, y1));
+
+  if ((endX - startX + 1) * (endY - startY + 1) > 64 && z > 5) {
+    z -= 1;
+    x0 = lonToTileX(minLon, z);
+    x1 = lonToTileX(maxLon, z);
+    y0 = latToTileY(maxLat, z);
+    y1 = latToTileY(minLat, z);
+    startX = Math.max(0, Math.min(x0, x1));
+    endX = Math.min((1 << z) - 1, Math.max(x0, x1));
+    startY = Math.max(0, Math.min(y0, y1));
+    endY = Math.min((1 << z) - 1, Math.max(y0, y1));
+  }
+
+  // Pre-calculate shared grid vertex screen coordinates to prevent any seams/gaps between tiles
+  const gridXCount = endX - startX + 2;
+  const gridYCount = endY - startY + 2;
+  const gridVertices = new Array(gridXCount);
+  for (let i = 0; i < gridXCount; i++) {
+    gridVertices[i] = new Array(gridYCount);
+    const tx = startX + i;
+    const lon = tileXToLon(tx, z);
+    for (let j = 0; j < gridYCount; j++) {
+      const ty = startY + j;
+      const lat = tileYToLat(ty, z);
+      const [e, n] = wgs84_to_osgb36(lat, lon);
+      gridVertices[i][j] = worldToScreen(e, n);
+    }
+  }
+
+  const { canvas: offCanvas, ctx: offCtx } = getOsmOffscreen(w, h);
+  let anyDrawn = false;
+
+  for (let ty = startY; ty <= endY; ty++) {
+    const j = ty - startY;
+    for (let tx = startX; tx <= endX; tx++) {
+      const i = tx - startX;
+      const pNW = gridVertices[i][j];
+      const pNE = gridVertices[i + 1][j];
+      const pSW = gridVertices[i][j + 1];
+
+      const tileKey = `${z}_${tx}_${ty}`;
+      let entry = osmTileCache.get(tileKey);
+      if (!entry) {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        entry = { img, loaded: false, error: false };
+        osmTileCache.set(tileKey, entry);
+        img.onload = () => {
+          entry.loaded = true;
+          requestRender();
+        };
+        img.onerror = () => {
+          entry.error = true;
+        };
+        img.src = getOsmTileUrl(z, tx, ty);
+      }
+
+      if (entry.loaded && !entry.error) {
+        anyDrawn = true;
+        // Affine transform matrix mapping [0, 256]x[0, 256] to OSGB36 projected quadrilateral
+        const m00 = (pNE[0] - pNW[0]) / 256.0;
+        const m01 = (pNE[1] - pNW[1]) / 256.0;
+        const m10 = (pSW[0] - pNW[0]) / 256.0;
+        const m11 = (pSW[1] - pNW[1]) / 256.0;
+        const tx0 = pNW[0];
+        const ty0 = pNW[1];
+
+        offCtx.save();
+        offCtx.setTransform(m00, m01, m10, m11, tx0, ty0);
+        // Draw with 0.75px bleed to eliminate subpixel raster seams at 100% opacity
+        offCtx.drawImage(entry.img, -0.75, -0.75, 257.5, 257.5);
+        offCtx.restore();
+      }
+    }
+  }
+
+  if (anyDrawn) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.drawImage(offCanvas, 0, 0);
+    ctx.restore();
+  }
+
+  if (osmTileCache.size > 400) {
+    const keysToDelete = Array.from(osmTileCache.keys()).slice(0, 150);
+    for (const k of keysToDelete) osmTileCache.delete(k);
+  }
+}
+
 /* Coordinate Projections (TPS netY is South-positive; NWR OSGB36 Northing Y is North-positive) */
 function worldToScreen(wx, wy, targetView = null) {
   const view = targetView || (STATE.activeView === "split" ? "tps" : STATE.activeView);
@@ -405,34 +861,74 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
   // 2. Draw points (signals, nodes, stations)
   for (const pt of highlight.points || []) {
     const [sx, sy] = toScreen(pt.x, pt.y);
+    const ptCol = pt.color || (mode === "nwr" ? "#22d3ee" : "#f59e0b");
+    const isDiamond = pt.shape === "diamond";
+    const isSignal = pt.shape === "signal";
+
     if (isPulsing) {
       const rippleR = 8 + pulsePhase * 32;
       const rippleAlpha = Math.max(0, 1 - pulsePhase);
       targetCtx.beginPath();
       targetCtx.arc(sx, sy, rippleR, 0, Math.PI * 2);
-      targetCtx.strokeStyle = `rgba(245, 158, 11, ${rippleAlpha})`;
+      targetCtx.strokeStyle = isDiamond ? `rgba(168, 85, 247, ${rippleAlpha})` : `rgba(245, 158, 11, ${rippleAlpha})`;
       targetCtx.lineWidth = 2.5;
+      targetCtx.stroke();
+
+      const phase2 = (pulsePhase + 0.5) % 1.0;
+      const rippleR2 = 8 + phase2 * 32;
+      const rippleAlpha2 = Math.max(0, 1 - phase2);
+      targetCtx.beginPath();
+      targetCtx.arc(sx, sy, rippleR2, 0, Math.PI * 2);
+      targetCtx.strokeStyle = isDiamond ? `rgba(217, 70, 239, ${rippleAlpha2 * 0.8})` : `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
+      targetCtx.lineWidth = 1.8;
       targetCtx.stroke();
     }
 
-    targetCtx.beginPath();
-    targetCtx.arc(sx, sy, 7, 0, Math.PI * 2);
-    targetCtx.fillStyle = pt.color || "#f59e0b";
-    targetCtx.shadowColor = pt.color || "#f59e0b";
-    targetCtx.shadowBlur = 12;
-    targetCtx.fill();
-    targetCtx.shadowBlur = 0;
-    targetCtx.strokeStyle = "#ffffff";
-    targetCtx.lineWidth = 2;
-    targetCtx.stroke();
+    if (isDiamond) {
+      const dSize = 8;
+      targetCtx.beginPath();
+      targetCtx.moveTo(sx, sy - dSize);
+      targetCtx.lineTo(sx + dSize, sy);
+      targetCtx.lineTo(sx, sy + dSize);
+      targetCtx.lineTo(sx - dSize, sy);
+      targetCtx.closePath();
+      targetCtx.fillStyle = ptCol;
+      targetCtx.shadowColor = ptCol;
+      targetCtx.shadowBlur = 14;
+      targetCtx.fill();
+      targetCtx.shadowBlur = 0;
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 2;
+      targetCtx.stroke();
+    } else {
+      const radius = isSignal ? 7.5 : 7;
+      targetCtx.beginPath();
+      targetCtx.arc(sx, sy, radius, 0, Math.PI * 2);
+      targetCtx.fillStyle = ptCol;
+      targetCtx.shadowColor = ptCol;
+      targetCtx.shadowBlur = isSignal ? 14 : 10;
+      targetCtx.fill();
+      targetCtx.shadowBlur = 0;
+      targetCtx.strokeStyle = "#ffffff";
+      targetCtx.lineWidth = 2;
+      targetCtx.stroke();
+    }
 
     if (pt.label) {
-      targetCtx.font = "bold 12px Inter, sans-serif";
+      targetCtx.font = "600 11px Inter, sans-serif";
+      const tm = targetCtx.measureText(pt.label);
+      const tw = tm.width;
+      const th = 20;
+      const bx = sx + 13;
+      const by = sy - th / 2;
+      targetCtx.fillStyle = "rgba(15, 23, 42, 0.92)";
+      targetCtx.fillRect(bx - 5, by, tw + 10, th);
+      targetCtx.strokeStyle = ptCol;
+      targetCtx.lineWidth = 1.2;
+      targetCtx.strokeRect(bx - 5, by, tw + 10, th);
       targetCtx.fillStyle = "#ffffff";
-      targetCtx.shadowColor = "rgba(0, 0, 0, 0.85)";
-      targetCtx.shadowBlur = 4;
-      targetCtx.fillText(pt.label, sx + 12, sy + 4);
-      targetCtx.shadowBlur = 0;
+      targetCtx.textBaseline = "middle";
+      targetCtx.fillText(pt.label, bx, sy);
     }
   }
 
@@ -455,8 +951,8 @@ const INTERLOCKING_STYLES = {
   12: { color: "#f97316", label: "Home/Starter Semaphore", short: "SEM", aspects: 0 },
   13: { color: "#ec4899", label: "Phone for Authorisation", short: "PHONE", aspects: 0 },
   14: { color: "#a855f7", label: "Limit of Shunt", short: "LOS", aspects: 0 },
-  15: { color: "#64748b", label: "Switch Diamond", short: "SW-D", aspects: 0 },
-  16: { color: "#64748b", label: "Switch / Points", short: "SW", aspects: 0 },
+  15: { color: "#a855f7", label: "Switch Diamond", short: "SW-D", aspects: 0 },
+  16: { color: "#a855f7", label: "Points", short: "PTS", aspects: 0 },
 };
 
 function getSignalInterlockingInfo(ilockId, bumper) {
@@ -519,6 +1015,9 @@ function getElevationColor(elevM) {
 }
 
 function getNwrTrackColor(trackId, ownerCodeOrStr, elr) {
+  if (STATE.nwrColorMode === "uniform") {
+    return (STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.color) || "#38bdf8";
+  }
   const tid = String(trackId || "");
   const elrCode = String(elr || "").toUpperCase();
   const fusionStats = (STATE.nwrOverview && STATE.nwrOverview.elr_fusion_stats) || {};
@@ -572,7 +1071,13 @@ function updateLegend() {
   const box = document.getElementById("legend-box");
   let items = [];
   if (STATE.activeView === "nwr") {
-    if (STATE.nwrColorMode === "track_type") {
+    if (STATE.nwrColorMode === "uniform") {
+      items = [
+        [(STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.color) || "#38bdf8", "Track Centre Lines (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.color) || "#a855f7", "ELR Reference Lines (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.color) || "#f43f5e", "Track Curvature (Custom Layer Colour)"],
+      ];
+    } else if (STATE.nwrColorMode === "track_type") {
       items = [
         ["#38bdf8", "Main Fast (x100)"],
         ["#10b981", "Slow Line (x200)"],
@@ -656,6 +1161,14 @@ function updateLegend() {
         ["#10b981", "Level / Gentle (-2‰ to +2‰)"],
         ["#38bdf8", "Falling Gradient (< -2‰)"],
       ];
+    } else if (mode === "uniform") {
+      items = [
+        [(STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.color) || "#38bdf8", "Track Edges (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.color) || "#818cf8", "Station Platforms / Ways (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.color) || "#64748b", "CAD Schematic Vectors (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.color) || "#10b981", "Signalling Blocks (Custom Layer Colour)"],
+        [(STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.color) || "#a855f7", "Poly Regions (Custom Layer Colour)"],
+      ];
     } else {
       items = [
         ["#94a3b8", "Running Track Edge"],
@@ -698,9 +1211,11 @@ function renderSchematic() {
 
   // 1. Poly Areas
   if (STATE.layers.polys && STATE.overview.poly_areas) {
-    ctx.fillStyle = "rgba(168, 85, 247, 0.06)";
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.25)";
-    ctx.lineWidth = 1;
+    const polyWidthMult = ((STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.width) || 1.5) / 1.5;
+    const polyCol = (STATE.layerStyles && STATE.layerStyles.polys && STATE.layerStyles.polys.color) || "#a855f7";
+    ctx.fillStyle = hexToRgba(polyCol, 0.06);
+    ctx.strokeStyle = hexToRgba(polyCol, 0.35);
+    ctx.lineWidth = Math.max(0.5, 1.0 * polyWidthMult);
     for (const pa of STATE.overview.poly_areas) {
       if (
         pa.max_x < bbox.min_x ||
@@ -726,8 +1241,10 @@ function renderSchematic() {
 
   // 2. CAD Graphic Vectors (when zoomed in)
   if (STATE.layers.vectors && useMicro && STATE.viewportData.vectors.length) {
-    ctx.strokeStyle = "rgba(100, 116, 139, 0.48)";
-    ctx.lineWidth = Math.max(0.8, Math.min(2.0, zoom * 0.45));
+    const vecWidthMult = ((STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.width) || 1.0) / 1.0;
+    const vecCol = (STATE.layerStyles && STATE.layerStyles.vectors && STATE.layerStyles.vectors.color) || "#64748b";
+    ctx.strokeStyle = hexToRgba(vecCol, 0.55);
+    ctx.lineWidth = Math.max(0.5, Math.max(0.8, Math.min(2.0, zoom * 0.45)) * vecWidthMult);
     ctx.beginPath();
     for (const v of STATE.viewportData.vectors) {
       const [x0, y0] = worldToScreen(v[1], v[2]);
@@ -740,6 +1257,9 @@ function renderSchematic() {
 
   // 3. Track Edges
   if (STATE.layers.edges) {
+    const edgeWidthMult = ((STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.width) || 1.5) / 1.5;
+    const isUniform = STATE.colorMode === "uniform";
+    const uniformEdgeCol = (STATE.layerStyles && STATE.layerStyles.edges && STATE.layerStyles.edges.color) || "#38bdf8";
     if (!useMicro) {
       const batches = new Map();
       for (const e of STATE.overview.macro_edges) {
@@ -751,7 +1271,7 @@ function renderSchematic() {
           Math.min(y0, y1) > bbox.max_y
         )
           continue;
-        const col = getEdgeColor(vmax, elec === 1, grad);
+        const col = isUniform ? uniformEdgeCol : getEdgeColor(vmax, elec === 1, grad);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -759,7 +1279,7 @@ function renderSchematic() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.1, Math.min(2.4, zoom * 18));
+      ctx.lineWidth = Math.max(0.75, Math.max(1.1, Math.min(2.4, zoom * 18)) * edgeWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -779,7 +1299,7 @@ function renderSchematic() {
           x1 = e[6],
           y1 = e[7];
         if (x0 === null || x1 === null) continue;
-        const col = getEdgeColor(e[8], e[9] === 1, e[10], e[12] || 0);
+        const col = isUniform ? uniformEdgeCol : getEdgeColor(e[8], e[9] === 1, e[10], e[12] || 0);
         let arr = batches.get(col);
         if (!arr) {
           arr = [];
@@ -787,7 +1307,7 @@ function renderSchematic() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.4, Math.min(3.5, zoom * 0.9));
+      ctx.lineWidth = Math.max(0.9, Math.max(1.4, Math.min(3.5, zoom * 0.9)) * edgeWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -804,8 +1324,10 @@ function renderSchematic() {
 
   // 4. Station Platform / Track Ways
   if (STATE.layers.tracks && useMicro && STATE.viewportData.tracks.length) {
-    ctx.strokeStyle = "rgba(129, 140, 248, 0.55)";
-    ctx.lineWidth = Math.max(2.5, Math.min(6.0, zoom * 1.6));
+    const trackWidthMult = ((STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.width) || 3.0) / 3.0;
+    const trackCol = (STATE.layerStyles && STATE.layerStyles.tracks && STATE.layerStyles.tracks.color) || "#818cf8";
+    ctx.strokeStyle = hexToRgba(trackCol, 0.65);
+    ctx.lineWidth = Math.max(1.0, Math.max(2.5, Math.min(6.0, zoom * 1.6)) * trackWidthMult);
     ctx.beginPath();
     for (const t of STATE.viewportData.tracks) {
       const coords = t[7];
@@ -914,8 +1436,10 @@ function renderSchematic() {
     STATE.viewportData.blocks &&
     STATE.viewportData.blocks.length
   ) {
+    const blockWidthMult = ((STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.width) || 2.5) / 2.5;
+    const blockCol = (STATE.layerStyles && STATE.layerStyles.blocks && STATE.layerStyles.blocks.color) || "#10b981";
     ctx.save();
-    ctx.lineWidth = Math.max(2.0, Math.min(4.2, zoom * 1.1));
+    ctx.lineWidth = Math.max(1.0, Math.max(2.0, Math.min(4.2, zoom * 1.1)) * blockWidthMult);
     for (const b of STATE.viewportData.blocks) {
       // [pk, block_id, pre_signal_distance, sight_distance, shunting_flag, atc_flag, moving_block, coords]
       const coords = b[7];
@@ -923,7 +1447,7 @@ function renderSchematic() {
       const isShunt = b[4] === 1;
       ctx.strokeStyle = isShunt
         ? "rgba(168, 85, 247, 0.45)"
-        : "rgba(16, 185, 129, 0.42)";
+        : hexToRgba(blockCol, 0.45);
       ctx.setLineDash(isShunt ? [4, 3] : []);
       ctx.beginPath();
       const [sx0, sy0] = worldToScreen(coords[0][0], coords[0][1]);
@@ -1293,6 +1817,11 @@ function renderNwrModel() {
   const h = targetCanvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
 
+  // 0. OpenStreetMap Basemap Layer (rendered underneath all vector layers)
+  if (STATE.nwrLayers.osm) {
+    renderOsmTiles(ctx, w, h);
+  }
+
   STATE.drawnNwrElrLabels = [];
   STATE.drawnNwrWaymarkLabels = [];
   STATE.drawnNwrNodeLabels = [];
@@ -1311,8 +1840,10 @@ function renderNwrModel() {
 
   // 1. NWR_ELRs Reference Lines
   if (STATE.nwrLayers.elrs && STATE.nwrOverview.elrs) {
-    ctx.strokeStyle = "rgba(168, 85, 247, 0.35)";
-    ctx.lineWidth = useDetailedCentrelines ? 2.5 : 1.2;
+    const elrWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.width) || 2.0) / 2.0;
+    const elrCol = (STATE.layerStyles && STATE.layerStyles.nwr_elrs && STATE.layerStyles.nwr_elrs.color) || "#a855f7";
+    ctx.strokeStyle = hexToRgba(elrCol, 0.45);
+    ctx.lineWidth = Math.max(0.8, (useDetailedCentrelines ? 2.5 : 1.2) * elrWidthMult);
     ctx.beginPath();
     for (const elr of STATE.nwrOverview.elrs) {
       if (
@@ -1337,6 +1868,7 @@ function renderNwrModel() {
 
   // 2. NWR_TrackCentreLines (Macro links when zoomed out, full polylines when zoomed in)
   if (STATE.nwrLayers.centrelines) {
+    const clWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_centrelines && STATE.layerStyles.nwr_centrelines.width) || 1.8) / 1.8;
     if (!useDetailedCentrelines) {
       const batches = new Map();
       for (const m of STATE.nwrOverview.macro_links) {
@@ -1360,7 +1892,7 @@ function renderNwrModel() {
         }
         arr.push(x0, y0, x1, y1);
       }
-      ctx.lineWidth = Math.max(1.1, Math.min(2.2, zoom * 250));
+      ctx.lineWidth = Math.max(0.8, Math.max(1.1, Math.min(2.2, zoom * 250)) * clWidthMult);
       for (const [col, coords] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -1386,7 +1918,7 @@ function renderNwrModel() {
         }
         arr.push(coords);
       }
-      ctx.lineWidth = Math.max(1.6, Math.min(3.8, zoom * 12));
+      ctx.lineWidth = Math.max(1.0, Math.max(1.6, Math.min(3.8, zoom * 12)) * clWidthMult);
       for (const [col, polylines] of batches.entries()) {
         ctx.strokeStyle = col;
         ctx.beginPath();
@@ -1407,6 +1939,9 @@ function renderNwrModel() {
 
   // 3. Network Fusion Track Curvature & Cant Segments (Contextual: shown ONLY when a track is clicked/highlighted AND layer is checked)
   if (STATE.nwrLayers.curvature && highlightedFusion && highlightedFusion.curvature.length > 0) {
+    const curvWidthMult = ((STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.width) || 2.5) / 2.5;
+    const isCurvUniform = STATE.nwrColorMode === "uniform";
+    const customCurvCol = (STATE.layerStyles && STATE.layerStyles.nwr_curvature && STATE.layerStyles.nwr_curvature.color) || "#f43f5e";
     const curvBatches = new Map();
     for (const c of highlightedFusion.curvature) {
       const x0 = c.x0 !== undefined ? c.x0 : c[10];
@@ -1415,7 +1950,7 @@ function renderNwrModel() {
       const y1 = c.y1 !== undefined ? c.y1 : c[13];
       if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) continue;
       const rAvg = c.radius_avg_m !== undefined ? c.radius_avg_m : c[8];
-      const col = getCurvatureColor(rAvg);
+      const col = isCurvUniform ? customCurvCol : getCurvatureColor(rAvg);
       let arr = curvBatches.get(col);
       if (!arr) {
         arr = [];
@@ -1425,7 +1960,7 @@ function renderNwrModel() {
     }
 
     ctx.save();
-    ctx.lineWidth = Math.max(3.8, Math.min(8.0, zoom * 24));
+    ctx.lineWidth = Math.max(1.5, Math.max(3.8, Math.min(8.0, zoom * 24)) * curvWidthMult);
     for (const [col, coords] of curvBatches.entries()) {
       ctx.strokeStyle = col;
       ctx.shadowColor = col;
@@ -2138,11 +2673,17 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [s[5], s[6]],
               ]
             : null;
+        const sName = s[3] || "#" + s[2];
+        const isPts = s[4] === 15 || s[4] === 16 || sName.toUpperCase().startsWith("POINT");
+        const itemType = isPts ? "points" : "signal";
+        const title = isPts
+          ? (sName.toUpperCase().startsWith("POINT") ? sName : `Points ${sName}`)
+          : `${s[9] === 1 ? "Buffer Stop" : "Signal"} ${sName}`;
         addHit({
-          type: "signal",
+          type: itemType,
           id: s[0],
-          title: `${s[9] === 1 ? "Buffer Stop" : "Signal"} ${s[3] || "#" + s[2]}`,
-          sub: `${ilock.label}${ovCnt ? " • " + ovCnt + " Overlap(s)" : ""} • #${s[10] || "?"}→#${s[11] || "?"}`,
+          title: title,
+          sub: `${isPts ? "Points" : ilock.label}${ovCnt ? " • " + ovCnt + " Overlap(s)" : ""} • #${s[10] || "?"}→#${s[11] || "?"}`,
           x: s[5],
           y: s[6],
           previewWay: sigWay,
@@ -2161,11 +2702,17 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [s[5], s[6]],
               ]
             : null;
+        const sName = s[3] || "#" + s[2];
+        const isPts = s[4] === 15 || s[4] === 16 || sName.toUpperCase().startsWith("POINT");
+        const itemType = isPts ? "points" : "signal";
+        const title = isPts
+          ? (sName.toUpperCase().startsWith("POINT") ? sName : `Points ${sName}`)
+          : `Signal ${sName}`;
         addHit({
-          type: "signal",
+          type: itemType,
           id: s[0],
-          title: `Signal ${s[3] || "#" + s[2]}`,
-          sub: `${ilock.label} • Master ID #${s[2]}`,
+          title: title,
+          sub: `${isPts ? "Points" : ilock.label} • Master ID #${s[2]}`,
           x: s[5],
           y: s[6],
           previewWay: sigWay,
@@ -2299,11 +2846,14 @@ function findObjectsAtCursor(sx, sy, wx, wy) {
                 [e[6], e[7]],
               ])
           : [];
+        const isPtsNode = connEdges.length >= 3;
         addHit({
           type: "node",
           id: n[0],
-          title: `Track Node #${n[0]}`,
-          sub: `KM: ${n[5] || 0}m • Angle ${n[3]}° • (${n[1]}, ${n[2]})`,
+          title: isPtsNode ? `Points Node #${n[0]} (Valency ${connEdges.length})` : `Track Node #${n[0]}`,
+          sub: isPtsNode
+            ? `Points • KM: ${n[5] || 0}m • Angle ${n[3]}°`
+            : `KM: ${n[5] || 0}m • Angle ${n[3]}° • (${n[1]}, ${n[2]})`,
           x: n[1],
           y: n[2],
           previewParts: connEdges,
@@ -2450,11 +3000,12 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
     for (const lbl of STATE.drawnNwrNodeLabels) {
       if (isPointInOrientedBox(sx, sy, lbl.x, lbl.y, lbl.w, lbl.h, lbl.angle || 0, lbl.alignY || "center")) {
         const n = lbl.node;
+        const isPts = n[2] >= 3;
         addHit({
           type: "nwr_node",
           id: n[0],
-          title: `Track Node ${n[1]}`,
-          sub: `Label hit • Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          title: isPts ? `Points Node ${n[1]}` : `Track Node ${n[1]}`,
+          sub: `Label hit • ${isPts ? "Points • " : ""}Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
           x: n[3],
           y: n[4],
           previewBox: { x: lbl.x, y: lbl.y, w: lbl.w, h: lbl.h, angle: lbl.angle, alignY: lbl.alignY },
@@ -2467,11 +3018,12 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
       const [nsx, nsy] = worldToScreen(n[3], n[4]);
       const d = Math.hypot(sx - nsx, sy - nsy);
       if (d <= pxTol) {
+        const isPts = n[2] >= 3;
         addHit({
           type: "nwr_node",
           id: n[0],
-          title: `Track Node ${n[1]}`,
-          sub: `Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
+          title: isPts ? `Points Node ${n[1]}` : `Track Node ${n[1]}`,
+          sub: `${isPts ? "Points • " : ""}Valency ${n[2]} • (${n[3]} E, ${n[4]} N)`,
           x: n[3],
           y: n[4],
           score: d,
@@ -2870,32 +3422,107 @@ function fitUKNetwork() {
   }
 }
 
-function flyToTps(x, y, targetZoom = 1.6) {
-  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
-  STATE.tpsCam.camX = x;
-  STATE.tpsCam.camY = y;
-  if (targetZoom) STATE.tpsCam.zoom = targetZoom;
-  if (STATE.activeView === "tps") {
-    STATE.camX = x;
-    STATE.camY = y;
-    if (targetZoom) STATE.zoom = targetZoom;
-  }
-  scheduleViewportFetch();
-  requestRender();
+let tpsFlyAnim = null;
+let nwrFlyAnim = null;
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
 }
 
-function flyToNwr(x, y, targetZoom = 0.04) {
+function flyToTps(x, y, targetZoom = 1.6, animate = true) {
   if (x === null || y === null || isNaN(x) || isNaN(y)) return;
-  STATE.nwrCam.camX = x;
-  STATE.nwrCam.camY = y;
-  if (targetZoom) STATE.nwrCam.zoom = targetZoom;
-  if (STATE.activeView === "nwr") {
-    STATE.camX = x;
-    STATE.camY = y;
-    if (targetZoom) STATE.zoom = targetZoom;
+  if (!animate) {
+    STATE.tpsCam.camX = x;
+    STATE.tpsCam.camY = y;
+    if (targetZoom) STATE.tpsCam.zoom = targetZoom;
+    if (STATE.activeView === "tps") {
+      STATE.camX = x;
+      STATE.camY = y;
+      if (targetZoom) STATE.zoom = targetZoom;
+    }
+    scheduleViewportFetch();
+    requestRender();
+    return;
   }
-  scheduleViewportFetch();
-  requestRender();
+
+  if (tpsFlyAnim) cancelAnimationFrame(tpsFlyAnim);
+  const startX = STATE.tpsCam.camX;
+  const startY = STATE.tpsCam.camY;
+  const startZ = STATE.tpsCam.zoom;
+  const destZ = targetZoom || startZ;
+  const startTime = performance.now();
+  const duration = 380;
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1.0, elapsed / duration);
+    const ease = easeOutCubic(progress);
+
+    STATE.tpsCam.camX = startX + (x - startX) * ease;
+    STATE.tpsCam.camY = startY + (y - startY) * ease;
+    STATE.tpsCam.zoom = startZ + (destZ - startZ) * ease;
+    if (STATE.activeView === "tps") {
+      STATE.camX = STATE.tpsCam.camX;
+      STATE.camY = STATE.tpsCam.camY;
+      STATE.zoom = STATE.tpsCam.zoom;
+    }
+    requestRender();
+    if (progress < 1.0) {
+      tpsFlyAnim = requestAnimationFrame(step);
+    } else {
+      tpsFlyAnim = null;
+      scheduleViewportFetch();
+    }
+  }
+  tpsFlyAnim = requestAnimationFrame(step);
+}
+
+function flyToNwr(x, y, targetZoom = 0.04, animate = true) {
+  if (x === null || y === null || isNaN(x) || isNaN(y)) return;
+  if (!animate) {
+    STATE.nwrCam.camX = x;
+    STATE.nwrCam.camY = y;
+    if (targetZoom) STATE.nwrCam.zoom = targetZoom;
+    if (STATE.activeView === "nwr") {
+      STATE.camX = x;
+      STATE.camY = y;
+      if (targetZoom) STATE.zoom = targetZoom;
+    }
+    scheduleViewportFetch();
+    requestRender();
+    return;
+  }
+
+  if (nwrFlyAnim) cancelAnimationFrame(nwrFlyAnim);
+  const startX = STATE.nwrCam.camX;
+  const startY = STATE.nwrCam.camY;
+  const startZ = STATE.nwrCam.zoom;
+  const destZ = targetZoom || startZ;
+  const startTime = performance.now();
+  const duration = 380;
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1.0, elapsed / duration);
+    const ease = easeOutCubic(progress);
+
+    STATE.nwrCam.camX = startX + (x - startX) * ease;
+    STATE.nwrCam.camY = startY + (y - startY) * ease;
+    STATE.nwrCam.zoom = startZ + (destZ - startZ) * ease;
+    if (STATE.activeView === "nwr") {
+      STATE.camX = STATE.nwrCam.camX;
+      STATE.camY = STATE.nwrCam.camY;
+      STATE.zoom = STATE.nwrCam.zoom;
+    }
+    requestRender();
+    if (progress < 1.0) {
+      nwrFlyAnim = requestAnimationFrame(step);
+    } else {
+      nwrFlyAnim = null;
+      scheduleViewportFetch();
+    }
+  }
+  nwrFlyAnim = requestAnimationFrame(step);
 }
 
 function flyTo(x, y, targetZoom = null) {
@@ -3289,6 +3916,7 @@ function handleHover(sx, sy, wx, wy, targetView = null) {
 /* Candidate Display & Interaction Helpers */
 function getAssetIcon(type) {
   switch (type) {
+    case "points": return "🔀";
     case "signal": return "🚦";
     case "station": return "🚉";
     case "platform": return "🚏";
@@ -3305,6 +3933,7 @@ function getAssetIcon(type) {
 
 function formatAssetTypeName(type) {
   switch (type) {
+    case "points": return "Points";
     case "signal": return "Signal";
     case "station": return "Station";
     case "platform": return "Platform";
@@ -3321,6 +3950,7 @@ function formatAssetTypeName(type) {
 
 function formatAssetSubtitle(c) {
   if (c.sub) return c.sub;
+  if (c.type === "points") return `Points ID #${c.id}`;
   if (c.type === "signal") return `Signal ID #${c.id}`;
   if (c.type === "track") return `Track ID #${c.id}`;
   if (c.type === "block") return `Block #${c.id}`;
@@ -3341,8 +3971,22 @@ function mergeCandidates(clientHits, serverCandidates) {
 
   // Augment with server candidates
   for (const s of serverCandidates || []) {
-    const key = `${s.type}:${s.id}`;
-    const existing = byKey.get(key);
+    let key = `${s.type}:${s.id}`;
+    let existing = byKey.get(key);
+    if (!existing && (s.type === "signal" || s.type === "points")) {
+      const altKey = s.type === "signal" ? `points:${s.id}` : `signal:${s.id}`;
+      const altExisting = byKey.get(altKey);
+      if (altExisting) {
+        if (s.type === "points") {
+          byKey.delete(altKey);
+          altExisting.type = "points";
+          byKey.set(key, altExisting);
+          existing = altExisting;
+        } else {
+          existing = altExisting;
+        }
+      }
+    }
     if (!existing) {
       byKey.set(key, {
         type: s.type,
@@ -3366,7 +4010,8 @@ function mergeCandidates(clientHits, serverCandidates) {
   const list = Array.from(byKey.values());
 
   const typeOrder = {
-    signal: 1,
+    points: 1,
+    signal: 1.5,
     station: 2,
     platform: 3,
     block: 4,
@@ -3641,11 +4286,13 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
       const nwrCross = data.related && data.related.nwr_cross_links;
       if (nwrCross) {
         const ways = [];
+        const pts = [];
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         for (const c of nwrCross.centrelines || []) {
           if (c.coords && c.coords.length >= 2) {
+            const segSuffix = c.clipped ? ` (${c.clipped_length_meters || ''}m Segment)` : "";
             ways.push({
-              label: `${c.elr} Track ${c.track_id}`,
+              label: `${c.elr} Track ${c.track_id}${segSuffix}`,
               coords: c.coords,
               color: "#06b6d4",
             });
@@ -3674,10 +4321,45 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
             }
           }
         }
-        if (ways.length) {
+
+        // Discrete node & signal beacon points
+        for (const np of nwrCross.node_points || []) {
+          if (np.x !== undefined && np.y !== undefined) {
+            pts.push({
+              x: np.x,
+              y: np.y,
+              label: np.label,
+              color: np.color || "#f59e0b",
+              shape: np.shape,
+              snapped_node: np.snapped_node,
+            });
+            minX = Math.min(minX, np.x);
+            maxX = Math.max(maxX, np.x);
+            minY = Math.min(minY, np.y);
+            maxY = Math.max(maxY, np.y);
+          }
+        }
+        if (!pts.length && nwrCross.node_point) {
+          const np = nwrCross.node_point;
+          pts.push({
+            x: np.x,
+            y: np.y,
+            label: np.label,
+            color: np.color || "#f59e0b",
+            shape: np.shape,
+            snapped_node: np.snapped_node,
+          });
+          minX = Math.min(minX, np.x);
+          maxX = Math.max(maxX, np.x);
+          minY = Math.min(minY, np.y);
+          maxY = Math.max(maxY, np.y);
+        }
+
+        if (ways.length || pts.length) {
           STATE.crossHighlight.nwr = {
             ways,
-            points: [],
+            points: pts,
+            snappedNode: nwrCross.snapped_node,
             pulseStart: performance.now(),
             pulseDuration: 4500,
             active: true,
@@ -3685,12 +4367,27 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true) {
           };
           triggerPulseLoop();
           document.getElementById("nwr-sync-tag")?.classList.remove("hidden");
-          if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
-            const cx = (minX + maxX) / 2;
-            const cy = (minY + maxY) / 2;
-            const span = Math.max(maxX - minX, maxY - minY, 500);
-            const targetZ = Math.min(0.2, ((nwrCanvas?.clientWidth || 600) * 0.7) / span);
-            flyToNwr(cx, cy, targetZ);
+          if (STATE.activeView === "split") {
+            const snap = nwrCross.geo_snap;
+            if (snap && isFinite(snap.x) && isFinite(snap.y)) {
+              flyToNwr(snap.x, snap.y, snap.target_zoom || 0.28, true);
+              const tagEl = document.getElementById("nwr-sync-tag");
+              if (tagEl) {
+                tagEl.textContent = `⚡ Snapped: ${snap.elr || ''} @ ${snap.mileage_str || ''}${snap.is_extrapolated ? ' (Extrapolated)' : ''}`;
+              }
+            } else if (pts.length) {
+              const cx = pts.length === 1 ? pts[0].x : (pts[0].x + pts[1].x) / 2;
+              const cy = pts.length === 1 ? pts[0].y : (pts[0].y + pts[1].y) / 2;
+              const span = pts.length > 1 ? Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) : 250;
+              const targetZ = Math.min(0.28, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.75) / Math.max(span, 250)));
+              flyToNwr(cx, cy, targetZ, true);
+            } else if (isFinite(minX) && isFinite(maxX)) {
+              const cx = (minX + maxX) / 2;
+              const cy = (minY + maxY) / 2;
+              const span = Math.max(maxX - minX, maxY - minY, 350);
+              const targetZ = Math.min(0.25, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.7) / span));
+              flyToNwr(cx, cy, targetZ, true);
+            }
           }
         } else {
           STATE.crossHighlight.nwr.active = false;
@@ -4603,6 +5300,95 @@ function renderElevationProfileSvg(nfData) {
   `;
 }
 
+function buildNwrCrossLinkWidget(nwrCross) {
+  if (!nwrCross) return "";
+  const best = nwrCross.best_centreline || (nwrCross.centrelines && nwrCross.centrelines[0]);
+  const snapped = nwrCross.snapped_node;
+  const corridor = nwrCross.corridor_centrelines || [];
+
+  if (!best && !snapped && (!nwrCross.elr_record || !nwrCross.elr_record.elr)) {
+    return "";
+  }
+
+  let html = `<div class="rel-section">
+    <h4>Cross-Model Link: NWR Track Model (OSGB36)</h4>`;
+
+  if (best) {
+    const isClipped = best.clipped || nwrCross.clipped;
+    const lenStr = isClipped
+      ? `${best.clipped_length_meters || '?'}m (Exact Sub-segment)`
+      : `${best.length_meters || '?'}m`;
+
+    html += `
+      <div class="rel-card" style="border-left: 3px solid #06b6d4;" onclick="jumpToNwrAsset('nwr_centreline', ${best.fid})">
+        <div class="rel-card-top">
+          <span style="font-weight: 700; color: #22d3ee;">
+            ${escapeHtml(best.elr)} / Track ${escapeHtml(best.track_id)}
+            <span style="font-size: 10px; background: rgba(6, 182, 212, 0.2); color: #38bdf8; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Single Best Match</span>
+          </span>
+          <span style="color:#38bdf8">Open in OSGB36 View &rarr;</span>
+        </div>
+        <div class="rel-card-sub" style="margin-top: 4px;">
+          ${escapeHtml(best.track_id_decoded || '')} • ${lenStr}
+        </div>
+        <div class="rel-card-sub" style="font-size: 11px; opacity: 0.85;">
+          Chainage: ${Number(best.start_mile_yards).toFixed(4)} → ${Number(best.end_mile_yards).toFixed(4)} mi.yd (${Number(best.start_meters).toFixed(0)}m → ${Number(best.end_meters).toFixed(0)}m)
+        </div>
+      </div>
+    `;
+  }
+
+  if (snapped) {
+    const isSw = snapped.is_switch || snapped.valency >= 3;
+    const icon = isSw ? "🔀" : "📍";
+    const badgeCol = isSw ? "#ec4899" : "#f59e0b";
+    const badgeBg = isSw ? "rgba(236, 72, 153, 0.2)" : "rgba(245, 158, 11, 0.2)";
+    html += `
+      <div class="rel-card" style="border-left: 3px solid ${badgeCol}; margin-top: 6px;" onclick="jumpToNwrAsset('nwr_node', ${snapped.fid})">
+        <div class="rel-card-top">
+          <span style="font-weight: 700; color: #f8fafc;">
+            ${icon} Nearest Geographic Node #${escapeHtml(snapped.asset_id)}
+            <span style="font-size: 10px; background: ${badgeBg}; color: ${badgeCol}; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">
+              ${escapeHtml(snapped.valency_desc || 'Valency ' + snapped.valency)}
+            </span>
+          </span>
+          <span style="color:${badgeCol}">Select Node &rarr;</span>
+        </div>
+        <div class="rel-card-sub" style="margin-top: 4px;">
+          OSGB36 (${Number(snapped.x).toFixed(2)} E, ${Number(snapped.y).toFixed(2)} N) • Distance: ${snapped.dist_meters}m from schematic point
+        </div>
+      </div>
+    `;
+  }
+
+  if (corridor.length > 1) {
+    const otherCentrelines = corridor.filter(c => !best || c.fid !== best.fid);
+    if (otherCentrelines.length) {
+      html += `
+        <details style="margin-top: 8px; font-size: 12px; color: #94a3b8;">
+          <summary style="cursor: pointer; padding: 4px 0; color: #38bdf8;">
+            Other Parallel Tracks in Corridor (${otherCentrelines.length})
+          </summary>
+          <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
+            ${otherCentrelines.map(c => `
+              <div class="rel-card" style="padding: 6px 8px;" onclick="jumpToNwrAsset('nwr_centreline', ${c.fid})">
+                <div class="rel-card-top">
+                  <span>Track ${escapeHtml(c.track_id)} (${escapeHtml(c.track_id_decoded || '')})</span>
+                  <span style="color:#38bdf8">View &rarr;</span>
+                </div>
+                <div class="rel-card-sub">${c.length_meters}m • ${Number(c.start_mile_yards).toFixed(4)} → ${Number(c.end_mile_yards).toFixed(4)} mi.yd</div>
+              </div>
+            `).join("")}
+          </div>
+        </details>
+      `;
+    }
+  }
+
+  html += `</div>`;
+  return html;
+}
+
 function renderRelatedTab(data) {
   const rel = data.related || {};
   const sections = [];
@@ -5032,7 +5818,7 @@ function renderRelatedTab(data) {
         </div>
       `);
     }
-  } else if (data.asset_type === "signal") {
+  } else if (data.asset_type === "signal" || data.asset_type === "points") {
     sections.push(buildSignallingEnvelopeWidget(data));
 
     if (rel.outgoing_blocks && rel.outgoing_blocks.length) {
@@ -5048,17 +5834,21 @@ function renderRelatedTab(data) {
                 <span>${b.length_meters} m (${Math.round(b.length_meters / 0.9144)} yd)</span>
               </div>
               <div class="rel-card-sub">
-                Pre-signal: ${b.pre_signal_distance}m • Sighting: ${b.sight_distance}m • ${b.turnout_count || 0} switch(es) • Vmax: ${b.min_vmax || "—"}–${b.max_vmax || "—"} km/h
+                Pre-signal: ${b.pre_signal_distance}m • Sighting: ${b.sight_distance}m • ${b.turnout_count || 0} point(s) • Vmax: ${b.min_vmax || "—"}–${b.max_vmax || "—"} km/h
               </div>
               ${
                 b.exit_signals && b.exit_signals.length
                   ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">
                       ${b.exit_signals
                         .map(
-                          (xs) =>
-                            `<button class="candidate-chip" style="border-color:#10b981;color:#6ee7b7" onclick="event.stopPropagation();loadAssetDetails('signal', ${xs.pk}, true)">Next Signal: ${escapeHtml(
-                              xs.name
-                            )} &rarr;</button>`
+                          (xs) => {
+                            const isPts = xs.is_points || (xs.name && xs.name.toUpperCase().startsWith("POINT"));
+                            const pfx = isPts ? "Next Points: " : "Next Signal: ";
+                            const chipType = isPts ? "points" : "signal";
+                            const borderCol = isPts ? "#a855f7" : "#10b981";
+                            const textCol = isPts ? "#e9d5ff" : "#6ee7b7";
+                            return `<button class="candidate-chip" style="border-color:${borderCol};color:${textCol}" onclick="event.stopPropagation();loadAssetDetails('${chipType}', ${xs.pk}, true)">${pfx}${escapeHtml(xs.name)} &rarr;</button>`;
+                          }
                         )
                         .join("")}
                     </div>`
@@ -5091,10 +5881,14 @@ function renderRelatedTab(data) {
                   ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">
                       ${b.entry_signals
                         .map(
-                          (es) =>
-                            `<button class="candidate-chip" style="border-color:#38bdf8;color:#7dd3fc" onclick="event.stopPropagation();loadAssetDetails('signal', ${es.pk}, true)">&larr; Rear Signal: ${escapeHtml(
-                              es.name
-                            )}</button>`
+                          (es) => {
+                            const isPts = es.is_points || (es.name && es.name.toUpperCase().startsWith("POINT"));
+                            const pfx = isPts ? "Rear Points: " : "Rear Signal: ";
+                            const chipType = isPts ? "points" : "signal";
+                            const borderCol = isPts ? "#a855f7" : "#38bdf8";
+                            const textCol = isPts ? "#e9d5ff" : "#7dd3fc";
+                            return `<button class="candidate-chip" style="border-color:${borderCol};color:${textCol}" onclick="event.stopPropagation();loadAssetDetails('${chipType}', ${es.pk}, true)">&larr; ${pfx}${escapeHtml(es.name)}</button>`;
+                          }
                         )
                         .join("")}
                     </div>`
@@ -5120,7 +5914,7 @@ function renderRelatedTab(data) {
                 <span>Vmax ${ss.vmax} km/h (${ss.vmax_mph || 0} mph)</span>
               </div>
               <div class="rel-card-sub">
-                ${(ss.nodes || []).length} overlap nodes • ${(ss.turnout_nodes || []).length} switch(es) locked • ${(ss.boundary_nodes || []).length} flank boundary node(s)
+                ${(ss.nodes || []).length} overlap nodes • ${(ss.turnout_nodes || []).length} point(s) locked • ${(ss.boundary_nodes || []).length} flank boundary node(s)
               </div>
               <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">
                 ${(ss.nodes || [])
@@ -5155,23 +5949,6 @@ function renderRelatedTab(data) {
             <div class="rel-card" onclick="loadAssetDetails('station', ${s.station_id}, true)">
               <div class="rel-card-top"><span>${escapeHtml(s.longname)} (${escapeHtml(s.abbrev)})</span><span>${escapeHtml(s.crscode || "")}</span></div>
               <div class="rel-card-sub">Boundary Role: ${escapeHtml(s.boundary_type_desc || "Type " + s.boundary_type_id)}</div>
-            </div>`
-            )
-            .join("")}
-        </div>
-      `);
-    }
-
-    if (rel.nwr_cross_links && rel.nwr_cross_links.centrelines && rel.nwr_cross_links.centrelines.length) {
-      sections.push(`
-        <div class="rel-section">
-          <h4>Cross-Model Link: NWR Track Model (OSGB36) (${rel.nwr_cross_links.centrelines.length})</h4>
-          ${rel.nwr_cross_links.centrelines
-            .map(
-              (c) => `
-            <div class="rel-card" onclick="jumpToNwrAsset('nwr_centreline', ${c.fid})">
-              <div class="rel-card-top"><span>${escapeHtml(c.elr)} / ${escapeHtml(c.track_id)} (${escapeHtml(c.asset_id)})</span><span style="color:#38bdf8">Open in OSGB36 View &rarr;</span></div>
-              <div class="rel-card-sub">${escapeHtml(c.track_id_decoded)} • ${Number(c.start_mile_yards).toFixed(4)} → ${Number(c.end_mile_yards).toFixed(4)} mi.yd</div>
             </div>`
             )
             .join("")}
@@ -5236,11 +6013,16 @@ function renderRelatedTab(data) {
           <h4>Exit Signal(s) at End of Block (${rel.exit_signals.length})</h4>
           ${rel.exit_signals
             .map(
-              (s) => `
-            <div class="rel-card" onclick="loadAssetDetails('signal', ${s.pk}, true)">
-              <div class="rel-card-top"><span style="color:#f59e0b">Exit Signal ${escapeHtml(s.name)} &rarr;</span><span>Master #${s.signal_id}</span></div>
+              (s) => {
+                const isPts = s.is_points || (s.name && s.name.toUpperCase().startsWith("POINT"));
+                const pfx = isPts ? "Exit Points " : "Exit Signal ";
+                const chipType = isPts ? "points" : "signal";
+                return `
+            <div class="rel-card" onclick="loadAssetDetails('${chipType}', ${s.pk}, true)">
+              <div class="rel-card-top"><span style="color:${isPts ? '#a855f7' : '#f59e0b'}">${pfx}${escapeHtml(s.name)} &rarr;</span><span>Master #${s.signal_id}</span></div>
               <div class="rel-card-sub">${escapeHtml(s.interlocking_desc || "")}</div>
-            </div>`
+            </div>`;
+              }
             )
             .join("")}
         </div>
@@ -5267,12 +6049,12 @@ function renderRelatedTab(data) {
     if (rel.turnout_nodes && rel.turnout_nodes.length) {
       sections.push(`
         <div class="rel-section">
-          <h4>Switches / Turnouts Traversed (${rel.turnout_nodes.length})</h4>
+          <h4>Points Traversed (${rel.turnout_nodes.length})</h4>
           <div style="display:flex;flex-wrap:wrap;gap:4px">
             ${rel.turnout_nodes
               .map(
                 (t) =>
-                  `<button class="candidate-chip" style="border-color:#a855f7;color:#e9d5ff" onclick="loadAssetDetails('node', ${t.node_id}, true)">Switch #${t.node_id} (deg ${t.degree})</button>`
+                  `<button class="candidate-chip" style="border-color:#a855f7;color:#e9d5ff" onclick="loadAssetDetails('node', ${t.node_id}, true)">Points #${t.node_id} (deg ${t.degree})</button>`
               )
               .join("")}
           </div>
@@ -5414,6 +6196,13 @@ function renderRelatedTab(data) {
     }
   }
 
+  if (rel.nwr_cross_links && !String(data.asset_type).startsWith("nwr_")) {
+    const cw = buildNwrCrossLinkWidget(rel.nwr_cross_links);
+    if (cw) {
+      sections.push(cw);
+    }
+  }
+
   if (rel.node_ids && rel.node_ids.length) {
     sections.push(`
       <div class="rel-section">
@@ -5533,12 +6322,13 @@ window.jumpToNwrAsset = async function (assetType, fid) {
 };
 
 function buildSignallingEnvelopeWidget(data) {
-  if (!data || (data.asset_type !== "signal" && data.asset_type !== "block")) {
+  if (!data || (data.asset_type !== "signal" && data.asset_type !== "points" && data.asset_type !== "block")) {
     return "";
   }
   const rel = data.related || {};
 
-  if (data.asset_type === "signal") {
+  if (data.asset_type === "signal" || data.asset_type === "points") {
+    const isPoints = data.asset_type === "points";
     const ilock = rel.interlocking_system || {};
     const appBlocks = rel.approach_blocks || [];
     const outBlocks = rel.outgoing_blocks || [];
@@ -5568,7 +6358,7 @@ function buildSignallingEnvelopeWidget(data) {
     const firstApp = appBlocks[0];
     const firstOut = outBlocks[0];
     const firstOv = overlaps[0];
-    const curSigName = (data.title || "").replace(/^Signal\s+/i, "") || "Signal";
+    const curSigName = (data.title || "").replace(/^(Signal|Points)\s+/i, "") || (isPoints ? "Points" : "Signal");
 
     // 1. Approach Routes Control
     const hasApp = appBlocks.length > 0;
@@ -5635,7 +6425,7 @@ function buildSignallingEnvelopeWidget(data) {
             ${overlaps
               .map((ov) => {
                 const shortLabel = `Overlap #${ov.index}`;
-                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">Overlap #${ov.index} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
+                return `<option value="${ov.group}" data-short="${escapeHtml(shortLabel)}">${escapeHtml(shortLabel)} (${ov.length_meters}m • ${ov.vmax} km/h)</option>`;
               })
               .join("")}
           </select>
@@ -5647,10 +6437,10 @@ function buildSignallingEnvelopeWidget(data) {
     return `
       <div class="sig-envelope-card">
         <div class="sig-envelope-header">
-          <span class="sig-envelope-title">Signalling &amp; Interlocking Envelope</span>
+          <span class="sig-envelope-title">${isPoints ? "Points Interlocking &amp; Envelope" : "Signalling &amp; Interlocking Envelope"}</span>
           <span class="sig-aspect-pill">
             ${lampsHtml}
-            <span>${escapeHtml(ilock.display_name || "Signal")}</span>
+            <span>${escapeHtml(ilock.display_name || (isPoints ? "Points" : "Signal"))}</span>
           </span>
         </div>
 
@@ -5668,8 +6458,8 @@ function buildSignallingEnvelopeWidget(data) {
           </div>
 
           <div class="sig-strip-box current" onclick="setSignalHighlightFilter('all')" title="Click to view all envelope">
-            <div class="sig-strip-label">Selected Signal</div>
-            <div class="sig-strip-val">${escapeHtml(data.title.replace("Signal ", ""))}</div>
+            <div class="sig-strip-label">${isPoints ? "Selected Points" : "Selected Signal"}</div>
+            <div class="sig-strip-val">${escapeHtml((data.title || "").replace(/^(Signal|Points)\s+/i, ""))}</div>
             <div class="sig-strip-sub">Set ${ilock.settime || 0}s • Free ${ilock.freeingtime || 0}s</div>
           </div>
 
@@ -5726,7 +6516,7 @@ function buildSignallingEnvelopeWidget(data) {
         <div class="sig-strip-box outgoing">
           <div class="sig-strip-label">Block Section</div>
           <div class="sig-strip-val">${escapeHtml(data.title)}</div>
-          <div class="sig-strip-sub">${(rel.turnout_nodes || []).length} switch(es)</div>
+          <div class="sig-strip-sub">${(rel.turnout_nodes || []).length} point(s)</div>
         </div>
         <div class="sig-strip-box current">
           <div class="sig-strip-label">Exit Signal</div>
@@ -5844,6 +6634,7 @@ for (const key of ["edges", "tracks", "vectors", "texts", "stations", "signals",
 }
 
 for (const [key, id] of [
+  ["osm", "nwr-layer-osm"],
   ["centrelines", "nwr-layer-centrelines"],
   ["elrs", "nwr-layer-elrs"],
   ["nodes", "nwr-layer-nodes"],
@@ -5855,10 +6646,85 @@ for (const [key, id] of [
   if (el) {
     el.addEventListener("change", () => {
       STATE.nwrLayers[key] = el.checked;
-      scheduleViewportFetch();
-      requestRender();
+      if (key === "osm") {
+        savePersistedOsmSettings();
+        requestRender();
+      } else {
+        scheduleViewportFetch();
+        requestRender();
+      }
     });
   }
+}
+
+/* OpenStreetMap Opacity Slider Wiring */
+const osmOpacitySlider = document.getElementById("osm-opacity-slider");
+if (osmOpacitySlider) {
+  osmOpacitySlider.addEventListener("input", (e) => {
+    STATE.osmOpacity = parseInt(e.target.value, 10) || 0;
+    const readout = document.getElementById("osm-opacity-readout");
+    if (readout) readout.textContent = `${STATE.osmOpacity}%`;
+    savePersistedOsmSettings();
+    requestRender();
+  });
+}
+
+/* Layer Line Styling Controls (Colour Picker & Width Stepper) Wiring */
+document.querySelectorAll(".layer-color-input").forEach((inp) => {
+  const onColorChange = (e) => {
+    const layer = inp.dataset.layer;
+    if (!layer || !STATE.layerStyles[layer]) return;
+    STATE.layerStyles[layer].color = e.target.value;
+    const swatch = document.getElementById(`swatch-${layer.replace(/_/g, "-")}`);
+    if (swatch) swatch.style.backgroundColor = e.target.value;
+    const dot = document.getElementById(`swatch-dot-${layer.replace(/_/g, "-")}`);
+    if (dot) dot.style.backgroundColor = e.target.value;
+    savePersistedLayerStyles();
+    updateLegend();
+    requestRender();
+  };
+  inp.addEventListener("input", onColorChange);
+  inp.addEventListener("change", onColorChange);
+});
+
+document.querySelectorAll(".width-stepper .width-step-btn").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const stepper = btn.closest(".width-stepper");
+    const layer = stepper.dataset.layer;
+    if (!layer || !STATE.layerStyles[layer]) return;
+    const dir = parseFloat(btn.dataset.dir) || 0;
+    const cur = STATE.layerStyles[layer].width || 1.5;
+    const next = Math.max(0.5, Math.min(8.0, Math.round((cur + dir) * 10) / 10));
+    STATE.layerStyles[layer].width = next;
+    const readout = stepper.querySelector(".width-readout");
+    if (readout) readout.textContent = `${next.toFixed(1)}px`;
+    savePersistedLayerStyles();
+    requestRender();
+  });
+});
+
+document.querySelectorAll(".btn-reset-layer-style").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const layer = btn.dataset.layer;
+    if (!layer || !DEFAULT_LAYER_STYLES[layer]) return;
+    STATE.layerStyles[layer] = { ...DEFAULT_LAYER_STYLES[layer] };
+    savePersistedLayerStyles();
+    updateLayerStyleUi();
+    updateLegend();
+    requestRender();
+  });
+});
+
+const btnResetTps = document.getElementById("btn-reset-tps-styles");
+if (btnResetTps) {
+  btnResetTps.addEventListener("click", () => resetLayerStyles("tps"));
+}
+
+const btnResetNwr = document.getElementById("btn-reset-nwr-styles");
+if (btnResetNwr) {
+  btnResetNwr.addEventListener("click", () => resetLayerStyles("nwr"));
 }
 
 /* ============================================================================
@@ -6618,9 +7484,12 @@ function escapeHtml(str) {
 
 /* Initialization & Status Polling */
 async function initApp() {
+  loadPersistedLayerStyles();
+  loadPersistedOsmSettings();
   resizeCanvas();
   updateLegend();
   updateLabelUi();
+  updateLayerStyleUi();
   setupProfileDrawerEvents();
 
   const overlay = document.getElementById("ingest-overlay");

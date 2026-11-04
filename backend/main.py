@@ -1,4 +1,5 @@
 import os
+import re
 import math
 import threading
 from contextlib import asynccontextmanager
@@ -47,6 +48,50 @@ def meters_to_miles_chains(meters: Optional[int]) -> Optional[str]:
         miles += 1
         chains -= 80.0
     return f"{miles}m {chains:04.1f}ch ({meters / 1000.0:.3f} km)"
+
+
+def clean_rail_asset_name(
+    raw_name: Optional[str],
+    asset_type: str,
+    is_bumper: bool = False,
+) -> str:
+    """Normalize signal or points names to a clean, canonical rail reference."""
+    if not raw_name:
+        return "Points" if asset_type == "points" else ("Buffer Stop" if is_bumper else "Signal")
+
+    # Strip any DB identifier prefix like '53195-207_' if master_name was used
+    name = re.sub(r"^\d+-\d+_", "", raw_name.strip())
+
+    if asset_type == "points":
+        # Remove POINTS:, POINT:, PTS:, SIG:, etc.
+        cleaned = re.sub(r"^(?:POINTS?|PTS)\s*[:\-]?\s*", "", name, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^(?:SIG(?:NAL)?)\s*[:\-]?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        if not cleaned:
+            cleaned = name
+        if not re.search(r"\bpoints?\b", cleaned, flags=re.IGNORECASE):
+            return f"Points {cleaned}"
+        return cleaned
+
+    if is_bumper or "buffer" in name.lower():
+        cleaned = re.sub(
+            r"^(?:SIG(?:NAL)?|BUFFER\s*STOP?|BUF)\s*[:\-]?\s*",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not cleaned or cleaned.lower() in ("buffer", "buffer stop"):
+            return "Buffer Stop"
+        if not re.search(r"\bbuffer\b", cleaned, flags=re.IGNORECASE):
+            return f"Buffer Stop {cleaned}"
+        return cleaned
+
+    # Standard signal
+    cleaned = re.sub(r"^(?:SIG(?:NAL)?)\s*[:\-]?\s*", "", name, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        cleaned = name
+    if not re.search(r"\bsignal\b", cleaned, flags=re.IGNORECASE):
+        return f"Signal {cleaned}"
+    return cleaned
 
 
 def load_lookup_cache():
@@ -542,10 +587,10 @@ def api_search(q: str = Query(..., min_length=1)):
                     "y": r["y"],
                 })
 
-            # 2. Signals
+            # 2. Signals & Points
             cur.execute(
                 """
-                SELECT pk, id, signal_id, name, master_name, x, y
+                SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, x, y
                 FROM signals
                 WHERE UPPER(name) LIKE UPPER(%s)
                    OR UPPER(master_name) LIKE UPPER(%s)
@@ -556,14 +601,27 @@ def api_search(q: str = Query(..., min_length=1)):
                 (q_like, q_like, q_int, q_int, q_int, q_clean),
             )
             for r in cur.fetchall():
-                results.append({
-                    "type": "signal",
-                    "id": r["pk"],
-                    "title": f"Signal {r['name'] or r['master_name']}",
-                    "subtitle": f"Master ID: {r['signal_id']} • Master: {r['master_name']}",
-                    "x": r["x"],
-                    "y": r["y"],
-                })
+                r_name = (r["name"] or r["master_name"] or "").strip()
+                is_pts = (r.get("interlocking_sys_id") in (15, 16)) or r_name.upper().startswith("POINT")
+                if is_pts:
+                    clean_title = r_name if r_name.upper().startswith("POINT") else f"Points {r_name}"
+                    results.append({
+                        "type": "points",
+                        "id": r["pk"],
+                        "title": clean_title,
+                        "subtitle": f"Points • Master ID: {r['signal_id']} • Master: {r['master_name']}",
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
+                else:
+                    results.append({
+                        "type": "signal",
+                        "id": r["pk"],
+                        "title": f"Signal {r_name}",
+                        "subtitle": f"Master ID: {r['signal_id']} • Master: {r['master_name']}",
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
 
             # 3. Attribute sections / ELRs
             cur.execute(
@@ -710,27 +768,40 @@ def api_pick(
 
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            # Signals near point
+            # Signals & Points near point
             cur.execute(
                 """
-                SELECT pk, id, signal_id, name, master_name, x, y,
+                SELECT pk, id, signal_id, name, master_name, interlocking_sys_id, bumper, x, y,
                        SQRT(POWER(x - %s, 2) + POWER(y - %s, 2)) AS dist
                 FROM signals
                 WHERE x BETWEEN %s AND %s AND y BETWEEN %s AND %s
                 ORDER BY dist ASC
-                LIMIT 5
+                LIMIT 6
                 """,
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
-                candidates.append({
-                    "type": "signal",
-                    "id": r["pk"],
-                    "label": f"Signal {r['name'] or r['master_name']}",
-                    "dist": round(r["dist"], 2),
-                    "x": r["x"],
-                    "y": r["y"],
-                })
+                r_name = (r["name"] or r["master_name"] or "").strip()
+                is_pts = (r.get("interlocking_sys_id") in (15, 16)) or r_name.upper().startswith("POINT")
+                if is_pts:
+                    clean_lbl = r_name if r_name.upper().startswith("POINT") else f"Points {r_name}"
+                    candidates.append({
+                        "type": "points",
+                        "id": r["pk"],
+                        "label": clean_lbl,
+                        "dist": round(r["dist"], 2),
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
+                else:
+                    candidates.append({
+                        "type": "signal",
+                        "id": r["pk"],
+                        "label": f"Buffer Stop {r_name}" if r.get("bumper") == 1 else f"Signal {r_name}",
+                        "dist": round(r["dist"], 2),
+                        "x": r["x"],
+                        "y": r["y"],
+                    })
 
             # Nodes near point
             cur.execute(
@@ -745,10 +816,17 @@ def api_pick(
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
+                cur.execute(
+                    "SELECT COUNT(*) AS deg FROM edges WHERE start_node_id = %s OR end_node_id = %s",
+                    (r["node_id"], r["node_id"]),
+                )
+                deg_row = cur.fetchone()
+                deg = deg_row["deg"] if deg_row else 2
+                node_lbl = f"Points Node #{r['node_id']}" if deg >= 3 else f"Node #{r['node_id']}"
                 candidates.append({
                     "type": "node",
                     "id": r["node_id"],
-                    "label": f"Node #{r['node_id']}",
+                    "label": node_lbl,
                     "dist": round(r["dist"], 2),
                     "x": r["netx"],
                     "y": r["nety"],
@@ -1040,53 +1118,521 @@ def interpolate_from_end(coords: list, edge_lengths: list, dist_from_end_m: floa
     return [round(coords[0][0], 2), round(coords[0][1], 2)]
 
 
-def find_nwr_cross_links_for_tps(cur, elr: Optional[str], km_meters: Optional[float]):
-    """Find matching NWR Track Model (OSGB36) ELR and Track Centre Lines for a TPS ELR + mileage."""
+def interpolate_pt_along_coords(coords: list, c_start_m: float, c_end_m: float, target_m: float):
+    """Interpolate [x, y] coordinates along an OSGB36 polyline for a target mileage."""
+    if not coords:
+        return None
+    if len(coords) == 1 or abs(c_end_m - c_start_m) < 0.001:
+        return [round(coords[0][0], 3), round(coords[0][1], 3)]
+    t = (target_m - c_start_m) / (c_end_m - c_start_m)
+    t = max(0.0, min(1.0, t))
+
+    seg_lens = []
+    total_len = 0.0
+    for i in range(len(coords) - 1):
+        dx = coords[i + 1][0] - coords[i][0]
+        dy = coords[i + 1][1] - coords[i][1]
+        sl = math.hypot(dx, dy)
+        seg_lens.append(sl)
+        total_len += sl
+
+    if total_len <= 0.0001:
+        return [round(coords[0][0], 3), round(coords[0][1], 3)]
+
+    target_dist = t * total_len
+    acc = 0.0
+    for i, sl in enumerate(seg_lens):
+        if acc + sl >= target_dist or i == len(seg_lens) - 1:
+            frac = (target_dist - acc) / sl if sl > 0 else 0.0
+            frac = max(0.0, min(1.0, frac))
+            ix = coords[i][0] + frac * (coords[i + 1][0] - coords[i][0])
+            iy = coords[i][1] + frac * (coords[i + 1][1] - coords[i][1])
+            return [round(ix, 3), round(iy, 3)]
+        acc += sl
+    return [round(coords[-1][0], 3), round(coords[-1][1], 3)]
+
+
+def slice_polyline(coords: list, c_start_m: float, c_end_m: float, from_m: float, to_m: float):
+    """Slice an OSGB36 polyline between from_m and to_m mileages."""
+    if not coords or len(coords) < 2 or abs(c_end_m - c_start_m) < 0.001:
+        return coords
+    t1 = (from_m - c_start_m) / (c_end_m - c_start_m)
+    t2 = (to_m - c_start_m) / (c_end_m - c_start_m)
+    t_start = max(0.0, min(1.0, t1, t2))
+    t_end = min(1.0, max(0.0, t1, t2))
+    if t_end - t_start < 0.0001:
+        pt = interpolate_pt_along_coords(coords, c_start_m, c_end_m, from_m)
+        return [pt, pt] if pt else coords
+
+    seg_lens = []
+    total_len = 0.0
+    for i in range(len(coords) - 1):
+        dx = coords[i + 1][0] - coords[i][0]
+        dy = coords[i + 1][1] - coords[i][1]
+        sl = math.hypot(dx, dy)
+        seg_lens.append(sl)
+        total_len += sl
+
+    if total_len <= 0.0001:
+        return coords
+
+    d_start = t_start * total_len
+    d_end = t_end * total_len
+
+    out = []
+    acc = 0.0
+    start_added = False
+    for i, sl in enumerate(seg_lens):
+        seg_start_dist = acc
+        seg_end_dist = acc + sl
+
+        if not start_added and (d_start <= seg_end_dist or i == len(seg_lens) - 1):
+            frac = (d_start - seg_start_dist) / sl if sl > 0 else 0.0
+            frac = max(0.0, min(1.0, frac))
+            sx = coords[i][0] + frac * (coords[i + 1][0] - coords[i][0])
+            sy = coords[i][1] + frac * (coords[i + 1][1] - coords[i][1])
+            out.append([round(sx, 3), round(sy, 3)])
+            start_added = True
+
+        if start_added:
+            if seg_end_dist < d_end:
+                out.append([round(coords[i + 1][0], 3), round(coords[i + 1][1], 3)])
+            else:
+                frac = (d_end - seg_start_dist) / sl if sl > 0 else 0.0
+                frac = max(0.0, min(1.0, frac))
+                ex = coords[i][0] + frac * (coords[i + 1][0] - coords[i][0])
+                ey = coords[i][1] + frac * (coords[i + 1][1] - coords[i][1])
+                out.append([round(ex, 3), round(ey, 3)])
+                break
+        acc += sl
+
+    return out if len(out) >= 2 else coords
+
+
+def score_track_candidate(
+    track_id: str,
+    dir_hint: Optional[str],
+    name_hint: Optional[str],
+    c_start: float,
+    c_end: float,
+    target_m: Optional[float],
+) -> float:
+    """Score a candidate NWR centreline to pick the single best match."""
+    score = 50.0
+    tid = str(track_id or "")
+
+    # Coverage bonus / penalty
+    if target_m is not None:
+        min_m = min(c_start, c_end)
+        max_m = max(c_start, c_end)
+        if min_m - 50.0 <= target_m <= max_m + 50.0:
+            score += 40.0
+        else:
+            mid = (c_start + c_end) / 2.0
+            score -= min(30.0, abs(mid - target_m) * 0.02)
+
+    # Direction matching (1 = UP, 2 = DOWN, 3 = REVERSIBLE)
+    if dir_hint:
+        dh = dir_hint.lower()
+        if "down" in dh or dh == "dn":
+            if tid.startswith("2"):
+                score += 60.0
+            elif tid.startswith("3"):
+                score += 25.0
+            elif tid.startswith("1"):
+                score -= 50.0
+        elif "up" in dh:
+            if tid.startswith("1"):
+                score += 60.0
+            elif tid.startswith("3"):
+                score += 25.0
+            elif tid.startswith("2"):
+                score -= 50.0
+
+    # Name matching (Fast / Slow / Platform / Loop / Siding)
+    if name_hint:
+        nh = name_hint.lower()
+        if any(w in nh for w in ("fast", "main", "line 1")):
+            if len(tid) >= 2 and tid[1] == "1":
+                score += 45.0
+        elif any(w in nh for w in ("slow", "relief", "line 2")):
+            if len(tid) >= 2 and tid[1] == "2":
+                score += 45.0
+        elif "loop" in nh:
+            if len(tid) >= 2 and tid[1] == "5":
+                score += 45.0
+        elif "siding" in nh or "yard" in nh:
+            if len(tid) >= 2 and tid[1] == "9":
+                score += 45.0
+        elif "crossover" in nh:
+            if len(tid) >= 2 and tid[1] == "7":
+                score += 45.0
+        elif "platform" in nh or "plat" in nh:
+            if len(tid) >= 2 and tid[1] in ("4", "6", "8"):
+                score += 35.0
+
+    return score
+
+
+def find_nwr_cross_links_for_tps(
+    cur,
+    elr: Optional[str],
+    km_meters: Optional[float],
+    end_km_meters: Optional[float] = None,
+    direction_hint: Optional[str] = None,
+    track_name_hint: Optional[str] = None,
+    tps_valency: Optional[int] = None,
+    item_label: Optional[str] = None,
+    is_extrapolated: bool = False,
+    asset_type: Optional[str] = None,
+):
+    """Find matching NWR Track Model (OSGB36) ELR, single best-match track, and discrete node/signal points."""
     if not elr:
-        return {"elr_record": None, "centrelines": []}
+        return {
+            "elr_record": None,
+            "centrelines": [],
+            "corridor_centrelines": [],
+            "best_centreline": None,
+            "node_point": None,
+            "node_points": [],
+            "snapped_node": None,
+            "geo_snap": None,
+            "single_match": False,
+        }
     try:
         cur.execute(
             "SELECT fid, asset_id, elr, start_mile_yards, end_mile_yards, parts, min_x, max_x, min_y, max_y FROM nwr_elrs WHERE elr = %s LIMIT 1",
             (elr,),
         )
         elr_rec = cur.fetchone()
-        if km_meters is not None and km_meters > 0:
+
+        target_m = km_meters
+        if km_meters is not None and end_km_meters is not None:
+            target_m = (km_meters + end_km_meters) / 2.0
+            span_min = min(km_meters, end_km_meters) - 300.0
+            span_max = max(km_meters, end_km_meters) + 300.0
+        elif km_meters is not None:
+            span_min = km_meters - 400.0
+            span_max = km_meters + 400.0
+        else:
+            span_min = None
+            span_max = None
+
+        if span_min is not None:
             cur.execute(
                 """
                 SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
                        start_meters, end_meters, length_meters, owner, coords,
-                       min_x, max_x, min_y, max_y
+                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
                 FROM nwr_track_centrelines
                 WHERE elr = %s
-                  AND LEAST(start_meters, end_meters) - 300 <= %s
-                  AND GREATEST(start_meters, end_meters) + 300 >= %s
+                  AND LEAST(start_meters, end_meters) <= %s
+                  AND GREATEST(start_meters, end_meters) >= %s
                 ORDER BY ABS(((start_meters + end_meters) / 2.0) - %s) ASC
-                LIMIT 8
+                LIMIT 16
                 """,
-                (elr, km_meters, km_meters, km_meters),
+                (elr, span_max, span_min, target_m),
             )
         else:
             cur.execute(
                 """
                 SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
                        start_meters, end_meters, length_meters, owner, coords,
-                       min_x, max_x, min_y, max_y
+                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
                 FROM nwr_track_centrelines
                 WHERE elr = %s
                 ORDER BY start_meters ASC
-                LIMIT 6
+                LIMIT 8
                 """,
                 (elr,),
             )
-        centrelines = []
-        for c in cur.fetchall():
-            centrelines.append({
+
+        raw_candidates = cur.fetchall()
+        if not raw_candidates:
+            # Fallback: find nearest centreline on this ELR even if outside the search margin
+            cur.execute(
+                """
+                SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                       start_meters, end_meters, length_meters, owner, coords,
+                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                FROM nwr_track_centrelines
+                WHERE elr = %s
+                ORDER BY LEAST(ABS(start_meters - %s), ABS(end_meters - %s)) ASC
+                LIMIT 1
+                """,
+                (elr, target_m if target_m is not None else 0),
+            )
+            raw_candidates = cur.fetchall()
+            if raw_candidates:
+                is_extrapolated = True
+
+        if not raw_candidates:
+            geo_snap = None
+            if elr_rec and elr_rec.get("parts"):
+                p0 = elr_rec["parts"][0]
+                mid_pt = p0[len(p0) // 2] if p0 else None
+                if mid_pt:
+                    geo_snap = {
+                        "x": mid_pt[0],
+                        "y": mid_pt[1],
+                        "elr": elr,
+                        "mileage_meters": target_m,
+                        "mileage_str": meters_to_miles_chains(int(target_m)) if target_m else None,
+                        "target_zoom": 0.08,
+                        "is_extrapolated": True,
+                    }
+            return {
+                "elr_record": elr_rec,
+                "centrelines": [],
+                "corridor_centrelines": [],
+                "best_centreline": None,
+                "node_point": None,
+                "node_points": [],
+                "snapped_node": None,
+                "geo_snap": geo_snap,
+                "single_match": False,
+            }
+
+        candidates = []
+        for c in raw_candidates:
+            score = score_track_candidate(
+                c["track_id"],
+                direction_hint,
+                track_name_hint,
+                c["start_meters"],
+                c["end_meters"],
+                target_m,
+            )
+            candidates.append({
                 **c,
                 "track_id_decoded": decode_track_id(c["track_id"]),
+                "_score": score,
             })
-        return {"elr_record": elr_rec, "centrelines": centrelines}
+
+        candidates.sort(key=lambda x: x["_score"], reverse=True)
+        best_candidate = dict(candidates[0])
+        orig_coords = list(best_candidate.get("coords") or [])
+        c_start_m = best_candidate["start_meters"]
+        c_end_m = best_candidate["end_meters"]
+
+        is_clipped = False
+        clipped_len = best_candidate.get("length_meters")
+        if (
+            km_meters is not None
+            and end_km_meters is not None
+            and abs(end_km_meters - km_meters) >= 1.0
+            and orig_coords
+        ):
+            from_m = min(km_meters, end_km_meters)
+            to_m = max(km_meters, end_km_meters)
+            sliced = slice_polyline(
+                orig_coords,
+                c_start_m,
+                c_end_m,
+                from_m,
+                to_m,
+            )
+            if sliced and len(sliced) >= 2:
+                best_candidate["coords"] = sliced
+                best_candidate["clipped"] = True
+                clipped_len = round(abs(end_km_meters - km_meters), 1)
+                best_candidate["clipped_length_meters"] = clipped_len
+                is_clipped = True
+
+        # Discrete points & Physical Node Snapping
+        node_points = []
+        snapped_nwr_node = None
+
+        if km_meters is not None and orig_coords:
+            pt_main = interpolate_pt_along_coords(
+                orig_coords,
+                c_start_m,
+                c_end_m,
+                km_meters,
+            )
+            if pt_main:
+                # Query physical nwr_track_nodes near pt_main
+                cur.execute(
+                    """
+                    SELECT fid, asset_id, valency, x, y,
+                           SQRT(POWER(x - %s, 2) + POWER(y - %s, 2)) AS dist
+                    FROM nwr_track_nodes
+                    WHERE x BETWEEN %s - 90.0 AND %s + 90.0
+                      AND y BETWEEN %s - 90.0 AND %s + 90.0
+                    ORDER BY dist ASC
+                    LIMIT 6
+                    """,
+                    (pt_main[0], pt_main[1], pt_main[0], pt_main[0], pt_main[1], pt_main[1]),
+                )
+                nearby_nodes = cur.fetchall()
+                if nearby_nodes:
+                    if tps_valency is not None and tps_valency >= 3:
+                        # Prioritize switch/turnout nodes with valency >= 3
+                        switch_nodes = [nd for nd in nearby_nodes if nd["valency"] >= 3]
+                        picked = switch_nodes[0] if switch_nodes else nearby_nodes[0]
+                    else:
+                        picked = nearby_nodes[0]
+
+                    snapped_nwr_node = {
+                        "fid": picked["fid"],
+                        "asset_id": picked["asset_id"],
+                        "valency": picked["valency"],
+                        "valency_desc": VALENCY_DESC.get(picked["valency"], f"Valency {picked['valency']}"),
+                        "x": picked["x"],
+                        "y": picked["y"],
+                        "dist_meters": round(picked["dist"], 2),
+                        "is_switch": picked["valency"] >= 3,
+                    }
+
+                # Construct discrete node points
+                if end_km_meters is not None and abs(end_km_meters - km_meters) >= 1.0:
+                    pt_end = interpolate_pt_along_coords(
+                        orig_coords,
+                        c_start_m,
+                        c_end_m,
+                        end_km_meters,
+                    )
+                    start_lbl = f"Start Node ({meters_to_miles_chains(int(km_meters))})"
+                    end_lbl = f"End Node ({meters_to_miles_chains(int(end_km_meters))})"
+                    node_points.append({
+                        "x": pt_main[0],
+                        "y": pt_main[1],
+                        "label": start_lbl,
+                        "color": "#38bdf8",
+                        "shape": "circle",
+                        "snapped_node": snapped_nwr_node,
+                    })
+                    if pt_end:
+                        node_points.append({
+                            "x": pt_end[0],
+                            "y": pt_end[1],
+                            "label": end_lbl,
+                            "color": "#10b981",
+                            "shape": "circle",
+                        })
+                else:
+                    m_suffix = f" ({meters_to_miles_chains(int(km_meters))})" if km_meters is not None else ""
+                    if asset_type == "signal":
+                        is_buf = bool(item_label and "buffer" in item_label.lower())
+                        pt_icon = "🛑" if is_buf else "🚦"
+                        pt_label = f"{pt_icon} {item_label or 'Signal'}{m_suffix}"
+                        pt_col = "#ef4444" if is_buf else "#f59e0b"
+                        pt_shape = "signal"
+                        use_x = pt_main[0]
+                        use_y = pt_main[1]
+                    elif asset_type == "points":
+                        use_x = snapped_nwr_node["x"] if snapped_nwr_node else pt_main[0]
+                        use_y = snapped_nwr_node["y"] if snapped_nwr_node else pt_main[1]
+                        pt_label = f"🔀 {item_label or 'Points'}{m_suffix}"
+                        pt_col = "#a855f7"
+                        pt_shape = "diamond"
+                    elif asset_type == "node":
+                        use_x = snapped_nwr_node["x"] if snapped_nwr_node else pt_main[0]
+                        use_y = snapped_nwr_node["y"] if snapped_nwr_node else pt_main[1]
+                        if tps_valency and tps_valency >= 3:
+                            pt_label = f"🔀 {item_label or 'Points Node'}{m_suffix}"
+                            pt_col = "#a855f7"
+                            pt_shape = "diamond"
+                        else:
+                            pt_label = f"📍 {item_label or 'Track Node'}{m_suffix}"
+                            pt_col = "#10b981"
+                            pt_shape = "circle"
+                    else:
+                        if snapped_nwr_node and snapped_nwr_node["is_switch"]:
+                            pt_label = f"🔀 Points #{snapped_nwr_node['asset_id']}{m_suffix}"
+                            pt_col = "#a855f7"
+                            pt_shape = "diamond"
+                            use_x = snapped_nwr_node["x"]
+                            use_y = snapped_nwr_node["y"]
+                        elif snapped_nwr_node:
+                            pt_label = f"📍 Physical Node #{snapped_nwr_node['asset_id']}{m_suffix}"
+                            pt_col = "#38bdf8"
+                            pt_shape = "circle"
+                            use_x = snapped_nwr_node["x"]
+                            use_y = snapped_nwr_node["y"]
+                        else:
+                            pt_label = f"{item_label or 'Point'}{m_suffix}"
+                            pt_col = "#38bdf8"
+                            pt_shape = "circle"
+                            use_x = pt_main[0]
+                            use_y = pt_main[1]
+
+                    node_points.append({
+                        "x": use_x,
+                        "y": use_y,
+                        "label": pt_label,
+                        "color": pt_col,
+                        "shape": pt_shape,
+                        "snapped_node": snapped_nwr_node,
+                    })
+
+        # Geographic snap camera target
+        geo_snap = None
+        if node_points:
+            if len(node_points) == 1:
+                geo_snap = {
+                    "x": node_points[0]["x"],
+                    "y": node_points[0]["y"],
+                    "elr": elr,
+                    "mileage_meters": km_meters,
+                    "mileage_str": meters_to_miles_chains(int(km_meters)) if km_meters else None,
+                    "target_zoom": 0.28,
+                    "is_extrapolated": is_extrapolated,
+                }
+            elif len(node_points) >= 2:
+                p1 = node_points[0]
+                p2 = node_points[1]
+                mid_x = round((p1["x"] + p2["x"]) / 2.0, 3)
+                mid_y = round((p1["y"] + p2["y"]) / 2.0, 3)
+                span = math.hypot(p2["x"] - p1["x"], p2["y"] - p1["y"])
+                calc_zoom = round(min(0.28, max(0.04, 450.0 / max(span, 250.0))), 3)
+                mid_m = ((km_meters or 0) + (end_km_meters or 0)) / 2.0
+                geo_snap = {
+                    "x": mid_x,
+                    "y": mid_y,
+                    "elr": elr,
+                    "mileage_meters": mid_m,
+                    "mileage_str": meters_to_miles_chains(int(mid_m)),
+                    "target_zoom": calc_zoom,
+                    "is_extrapolated": is_extrapolated,
+                }
+        elif best_candidate and best_candidate.get("coords"):
+            mid_c = best_candidate["coords"][len(best_candidate["coords"]) // 2]
+            geo_snap = {
+                "x": mid_c[0],
+                "y": mid_c[1],
+                "elr": elr,
+                "mileage_meters": km_meters,
+                "mileage_str": meters_to_miles_chains(int(km_meters)) if km_meters else None,
+                "target_zoom": 0.15,
+                "is_extrapolated": is_extrapolated,
+            }
+
+        return {
+            "elr_record": elr_rec,
+            "centrelines": [best_candidate],
+            "corridor_centrelines": candidates[:10],
+            "best_centreline": best_candidate,
+            "node_point": node_points[0] if node_points else None,
+            "node_points": node_points,
+            "snapped_node": snapped_nwr_node,
+            "geo_snap": geo_snap,
+            "clipped": is_clipped,
+            "clipped_length_meters": clipped_len if is_clipped else None,
+            "single_match": True,
+        }
     except Exception:
-        return {"elr_record": None, "centrelines": []}
+        return {
+            "elr_record": None,
+            "centrelines": [],
+            "corridor_centrelines": [],
+            "best_centreline": None,
+            "node_point": None,
+            "node_points": [],
+            "snapped_node": None,
+            "geo_snap": None,
+            "single_match": False,
+        }
 
 
 @app.get("/api/asset/{asset_type}/{asset_id}")
@@ -1203,7 +1749,28 @@ def api_get_asset(asset_type: str, asset_id: int):
                 # Station Bank Corridors (<stationbank> / <stationbanksection>) containing this Timing Point — O(1) in-memory lookup
                 station_banks = get_timing_catalog().get("station_to_banks", {}).get(str(asset_id), [])
 
-                elr = decode_code("kmregionmasterdesc", st["km_region_id"])
+                elr = decode_code("kmregionmasterdesc", st["km_region_id"]) if st.get("km_region_id") else None
+                st_km = st.get("km_value")
+                is_st_extrapolated = False
+                if not elr or st_km is None or st_km <= 0:
+                    cur.execute(
+                        """
+                        SELECT n.km_region_id, n.km_value
+                        FROM station_tracks s_trk
+                        JOIN nodes n ON n.node_id = ANY(s_trk.node_ids)
+                        WHERE s_trk.station_id = %s AND n.km_value > 0
+                        ORDER BY n.km_value ASC
+                        LIMIT 1
+                        """,
+                        (asset_id,),
+                    )
+                    found_st = cur.fetchone()
+                    if found_st:
+                        if not elr and found_st.get("km_region_id"):
+                            elr = decode_code("kmregionmasterdesc", found_st["km_region_id"])
+                        st_km = found_st.get("km_value")
+                        is_st_extrapolated = True
+
                 decoded = {
                     "Station ID": st["station_id"],
                     "Abbreviation (TIPLOC)": st["abbrev"],
@@ -1214,8 +1781,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "UIC Station Code": f"{st['uiccode']}-{st['uicstationcode']}" if st["uicstationcode"] else "—",
                     "Timing Point Role (Station Type)": f"{decode_code('stationtypedesc', st['station_type'])} (ID {st['station_type']})",
                     "Planning Location Category": f"{decode_code('stationcategorydesc', st['station_category'])} (ID {st['station_category']})",
-                    "Engineer's Line Ref (ELR)": f"{elr} (Region {st['km_region_id']})" if elr else str(st["km_region_id"] or "—"),
-                    "Mileage / Kilometrage": meters_to_miles_chains(st["km_value"]) or "—",
+                    "Engineer's Line Ref (ELR)": f"{elr}{' (Extrapolated)' if is_st_extrapolated else ''}" if elr else str(st["km_region_id"] or "—"),
+                    "Mileage / Kilometrage": f"{meters_to_miles_chains(st_km)}{' (Extrapolated)' if is_st_extrapolated else ''}" if st_km else "—",
                     "Standard Stopping Time": f"{st['std_stopping_time']} s",
                     "Standard Connection Time": f"{st['std_connection_time']} s",
                     "Compulsory Stop": st["compulsory_stop"],
@@ -1239,7 +1806,14 @@ def api_get_asset(asset_type: str, asset_id: int):
                         "routes": routes,
                         "station_banks": station_banks,
                         "positions": st["positions"],
-                        "nwr_cross_links": find_nwr_cross_links_for_tps(cur, elr, st["km_value"]),
+                        "nwr_cross_links": find_nwr_cross_links_for_tps(
+                            cur,
+                            elr,
+                            st_km,
+                            item_label=f"Station {st['longname'] or st['abbrev']}",
+                            is_extrapolated=is_st_extrapolated,
+                            asset_type="station",
+                        ),
                     },
                     "highlight": {
                         "ways": highlight_ways,
@@ -1369,8 +1943,35 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (ed["x0"] + ed["x1"]) / 2.0 if ed["x0"] is not None else None
                 cy = (ed["y0"] + ed["y1"]) / 2.0 if ed["y0"] is not None else None
 
-                km_val = n_start["km_value"] if (n_start and n_start.get("km_value")) else (n_end["km_value"] if n_end else None)
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, elr_start, km_val)
+                start_km = n_start["km_value"] if (n_start and n_start.get("km_value")) else None
+                end_km = n_end["km_value"] if (n_end and n_end.get("km_value")) else None
+                is_ed_extrapolated = False
+                if start_km is not None and end_km is None and ed.get("length"):
+                    end_km = start_km + ed["length"]
+                    is_ed_extrapolated = True
+                elif end_km is not None and start_km is None and ed.get("length"):
+                    start_km = max(0, end_km - ed["length"])
+                    is_ed_extrapolated = True
+
+                edge_dir = None
+                if start_km is not None and end_km is not None:
+                    if start_km < end_km:
+                        edge_dir = "down"
+                    elif start_km > end_km:
+                        edge_dir = "up"
+                track_hint = tracks[0]["name"] if tracks else None
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    elr_start or (decode_code("kmregionmasterdesc", n_end["km_region_id"]) if n_end else None),
+                    start_km,
+                    end_km_meters=end_km,
+                    direction_hint=edge_dir,
+                    track_name_hint=track_hint,
+                    item_label=f"Edge #{ed['edge_id']}",
+                    is_extrapolated=is_ed_extrapolated,
+                    asset_type="edge",
+                )
 
                 return {
                     "asset_type": "edge",
@@ -1472,13 +2073,52 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "Last Modified": nd["last_modified"],
                 }
 
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, elr1, nd["km_value"])
+                nd_km = nd.get("km_value")
+                is_nd_extrapolated = False
+                if not elr1 or nd_km is None or nd_km <= 0:
+                    cur.execute(
+                        """
+                        SELECT e.length, e.start_node_id, n.km_region_id, n.km_value
+                        FROM edges e
+                        JOIN nodes n ON (n.node_id = CASE WHEN e.start_node_id = %s THEN e.end_node_id ELSE e.start_node_id END)
+                        WHERE (e.start_node_id = %s OR e.end_node_id = %s)
+                          AND n.km_value > 0
+                        LIMIT 1
+                        """,
+                        (nd["node_id"], nd["node_id"], nd["node_id"]),
+                    )
+                    adj_nd = cur.fetchone()
+                    if adj_nd:
+                        if not elr1 and adj_nd.get("km_region_id"):
+                            elr1 = decode_code("kmregionmasterdesc", adj_nd["km_region_id"])
+                        if adj_nd["start_node_id"] == nd["node_id"]:
+                            nd_km = max(0, adj_nd["km_value"] - (adj_nd["length"] or 0))
+                        else:
+                            nd_km = adj_nd["km_value"] + (adj_nd["length"] or 0)
+                        is_nd_extrapolated = True
+
+                is_points_node = len(conn_edges) >= 3
+                decoded["Node Classification"] = (
+                    f"Points / Turnout (Valency {len(conn_edges)})"
+                    if is_points_node
+                    else ("Continuous Track Joint (Valency 2)" if len(conn_edges) == 2 else "Buffer Stop / Dead End (Valency 1)")
+                )
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    elr1,
+                    nd_km,
+                    tps_valency=len(conn_edges),
+                    item_label=f"Points #{nd['node_id']}" if is_points_node else f"Track Node #{nd['node_id']}",
+                    is_extrapolated=is_nd_extrapolated,
+                    asset_type="points" if is_points_node else "node",
+                )
 
                 return {
                     "asset_type": "node",
                     "id": nd["node_id"],
-                    "title": f"Track Node #{nd['node_id']}",
-                    "subtitle": f"ELR {elr1 or 'N/A'} • {meters_to_miles_chains(nd['km_value']) or ''} • ({nd['netx']}, {nd['nety']})",
+                    "title": f"Points Node #{nd['node_id']} (Valency {len(conn_edges)})" if is_points_node else f"Track Node #{nd['node_id']}",
+                    "subtitle": f"{'Points • ' if is_points_node else ''}ELR {elr1 or 'N/A'} • {meters_to_miles_chains(nd['km_value']) or ''} • ({nd['netx']}, {nd['nety']})",
                     "x": nd["netx"],
                     "y": nd["nety"],
                     "decoded": decoded,
@@ -1499,18 +2139,39 @@ def api_get_asset(asset_type: str, asset_id: int):
                             for e in conn_edges if e["x0"] is not None
                         ],
                         "points": [
-                            {"x": nd["netx"], "y": nd["nety"], "label": f"Node #{nd['node_id']}", "color": "#f43f5e"}
+                            {
+                                "x": nd["netx"],
+                                "y": nd["nety"],
+                                "label": f"Points #{nd['node_id']}" if is_points_node else f"Track Node #{nd['node_id']}",
+                                "color": "#a855f7" if is_points_node else "#10b981",
+                                "shape": "diamond" if is_points_node else "circle",
+                            }
                         ],
                     },
                     "raw_attrs": nd["raw_attrs"],
                     "raw_children": nd["raw_children"],
                 }
 
-            elif asset_type == "signal":
+            elif asset_type in ("signal", "points"):
                 cur.execute("SELECT * FROM signals WHERE pk = %s", (asset_id,))
                 sig = cur.fetchone()
                 if not sig:
-                    raise HTTPException(status_code=404, detail="Signal not found")
+                    cur.execute("SELECT * FROM signals WHERE id = %s", (asset_id,))
+                    sig = cur.fetchone()
+                if not sig:
+                    raise HTTPException(status_code=404, detail="Signal or Points not found")
+
+                sig_name_raw = (sig["name"] or sig["master_name"] or "").strip()
+                is_points_asset = (
+                    asset_type == "points"
+                    or sig["interlocking_sys_id"] in (15, 16)
+                    or sig_name_raw.upper().startswith("POINT")
+                )
+                clean_item_name = clean_rail_asset_name(
+                    sig_name_raw,
+                    "points" if is_points_asset else "signal",
+                    is_bumper=bool(sig["bumper"]),
+                )
 
                 # Interlocking system details
                 ilock = lookup.get("interlockingsystem", {}).get(str(sig["interlocking_sys_id"]), {})
@@ -1555,10 +2216,10 @@ def api_get_asset(asset_type: str, asset_id: int):
                     highlight_points.append({
                         "x": sig["x"],
                         "y": sig["y"],
-                        "label": f"🚦 {sig['name'] or sig['master_name']}",
-                        "color": "#f59e0b",
-                        "group": "signal",
-                        "shape": "signal",
+                        "label": f"🔀 {clean_item_name}" if is_points_asset else f"🚦 {clean_item_name}",
+                        "color": "#a855f7" if is_points_asset else "#f59e0b",
+                        "group": "points" if is_points_asset else "signal",
+                        "shape": "diamond" if is_points_asset else "signal",
                     })
 
                 # 1. Resolve Approach Blocks & Protected Outgoing Blocks connected at signal nodes
@@ -1612,10 +2273,13 @@ def api_get_asset(asset_type: str, asset_id: int):
                             for es in cur.fetchall():
                                 if len(nids) >= 2 and es["start_node_id"] == nids[1]:
                                     continue
+                                es_name = es["name"] or es["master_name"]
+                                es_is_pts = (es["interlocking_sys_id"] in (15, 16)) or (es_name and es_name.upper().startswith("POINT"))
                                 entry_sigs.append({
                                     "pk": es["pk"],
                                     "signal_id": es["signal_id"],
-                                    "name": es["name"] or es["master_name"],
+                                    "name": es_name,
+                                    "is_points": es_is_pts,
                                     "interlocking_desc": decode_code("interlockingsystem", es["interlocking_sys_id"]),
                                     "x": es["x"],
                                     "y": es["y"],
@@ -1624,10 +2288,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     highlight_points.append({
                                         "x": es["x"],
                                         "y": es["y"],
-                                        "label": f"Rear: {es['name'] or es['master_name']}",
-                                        "color": "#38bdf8",
+                                        "label": f"Rear {'Points' if es_is_pts else 'Signal'}: {es_name}",
+                                        "color": "#a855f7" if es_is_pts else "#38bdf8",
                                         "group": "approach",
                                         "block_id": b["block_id"],
+                                        "shape": "diamond" if es_is_pts else "circle",
                                     })
 
                             if sight_pt:
@@ -1703,10 +2368,13 @@ def api_get_asset(asset_type: str, asset_id: int):
                                     (nids[-2], nids[-1], nids[-1], nids[-1]),
                                 )
                                 for xs in cur.fetchall():
+                                    xs_name = xs["name"] or xs["master_name"]
+                                    xs_is_pts = (xs["interlocking_sys_id"] in (15, 16)) or (xs_name and xs_name.upper().startswith("POINT"))
                                     exit_sigs.append({
                                         "pk": xs["pk"],
                                         "signal_id": xs["signal_id"],
-                                        "name": xs["name"] or xs["master_name"],
+                                        "name": xs_name,
+                                        "is_points": xs_is_pts,
                                         "interlocking_desc": decode_code("interlockingsystem", xs["interlocking_sys_id"]),
                                         "x": xs["x"],
                                         "y": xs["y"],
@@ -1715,10 +2383,11 @@ def api_get_asset(asset_type: str, asset_id: int):
                                         highlight_points.append({
                                             "x": xs["x"],
                                             "y": xs["y"],
-                                            "label": f"Next: {xs['name'] or xs['master_name']}",
-                                            "color": "#10b981",
+                                            "label": f"Next {'Points' if xs_is_pts else 'Signal'}: {xs_name}",
+                                            "color": "#a855f7" if xs_is_pts else "#10b981",
                                             "group": "outgoing",
                                             "block_id": b["block_id"],
+                                            "shape": "diamond" if xs_is_pts else "circle",
                                         })
 
                             if b_coords:
@@ -1862,44 +2531,165 @@ def api_get_asset(asset_type: str, asset_id: int):
                     })
 
                 # 4. NWR Track Model Cross-Links (OSGB36)
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, sig_elr, sig_km_val)
+                is_sig_extrapolated = False
+                if not sig_elr or sig_km_val is None or sig_km_val <= 0:
+                    for alt_nid in (sig.get("start_node_id"), sig.get("end_node_id"), sig.get("point_node_id")):
+                        if alt_nid:
+                            cur.execute(
+                                "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s AND km_value > 0",
+                                (alt_nid,),
+                            )
+                            alt_nd = cur.fetchone()
+                            if alt_nd:
+                                if not sig_elr and alt_nd.get("km_region_id"):
+                                    sig_elr = decode_code("kmregionmasterdesc", alt_nd["km_region_id"])
+                                sig_km_val = alt_nd["km_value"]
+                                is_sig_extrapolated = True
+                                break
+
+                # Fallback to connected track edges if node mileage is missing
+                if not sig_elr or sig_km_val is None or sig_km_val <= 0:
+                    cand_nids = [
+                        nid
+                        for nid in (
+                            sig.get("start_node_id"),
+                            sig.get("end_node_id"),
+                            sig.get("point_node_id"),
+                        )
+                        if nid
+                    ]
+                    if cand_nids:
+                        cur.execute(
+                            """
+                            SELECT e.edge_id, e.length, e.start_node_id, e.end_node_id,
+                                   ns.km_region_id AS s_reg, ns.km_value AS s_km,
+                                   ne.km_region_id AS e_reg, ne.km_value AS e_km
+                            FROM edges e
+                            JOIN nodes ns ON ns.node_id = e.start_node_id
+                            JOIN nodes ne ON ne.node_id = e.end_node_id
+                            WHERE (e.start_node_id = ANY(%s) OR e.end_node_id = ANY(%s))
+                              AND (ns.km_value > 0 OR ne.km_value > 0)
+                            LIMIT 1
+                            """,
+                            (cand_nids, cand_nids),
+                        )
+                        adj_e = cur.fetchone()
+                        if adj_e:
+                            if not sig_elr:
+                                reg_id = adj_e["s_reg"] or adj_e["e_reg"]
+                                if reg_id:
+                                    sig_elr = decode_code("kmregionmasterdesc", reg_id)
+                            if adj_e["s_km"] and adj_e["s_km"] > 0:
+                                sig_km_val = adj_e["s_km"]
+                            elif adj_e["e_km"] and adj_e["e_km"] > 0:
+                                sig_km_val = adj_e["e_km"]
+                            is_sig_extrapolated = True
+
+                sig_dir = None
+                sig_name_str = (sig["name"] or sig["master_name"] or "").strip().upper()
+                if sig_name_str.startswith("DN") or " DOWN " in f" {sig_name_str} " or sig_name_str.startswith("D"):
+                    sig_dir = "down"
+                elif sig_name_str.startswith("UP") or " UP " in f" {sig_name_str} " or sig_name_str.startswith("U"):
+                    sig_dir = "up"
+                elif approach_edge and approach_edge.get("start_node_id") and approach_edge.get("end_node_id"):
+                    cur.execute("SELECT km_value FROM nodes WHERE node_id = %s", (approach_edge["start_node_id"],))
+                    n_a = cur.fetchone()
+                    cur.execute("SELECT km_value FROM nodes WHERE node_id = %s", (approach_edge["end_node_id"],))
+                    n_b = cur.fetchone()
+                    if n_a and n_b and n_a.get("km_value") and n_b.get("km_value"):
+                        sig_dir = "down" if n_a["km_value"] < n_b["km_value"] else "up"
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    sig_elr,
+                    sig_km_val,
+                    direction_hint=sig_dir,
+                    item_label=clean_item_name,
+                    is_extrapolated=is_sig_extrapolated,
+                    asset_type="points" if is_points_asset else "signal",
+                )
 
                 ov_summary = (
                     f"{len(enriched_overlaps)} overlap(s): "
-                    + ", ".join(f"#{o['index']} ({o['length_meters']}m / {o['length_yards']}yd @ {o['vmax']} km/h)" for o in enriched_overlaps)
+                    + ", ".join(
+                        f"#{o['index']} ({o['length_meters']}m / {o['length_yards']}yd @ {o['vmax']} km/h)"
+                        for o in enriched_overlaps
+                    )
                     if enriched_overlaps
                     else "None defined"
                 )
 
+                type_label = (
+                    "Points"
+                    if is_points_asset
+                    else ("Buffer Stop" if sig["bumper"] else "Signal")
+                )
                 decoded = {
-                    "Signal PK / XML ID": f"{sig['pk']} / {sig['id']}",
-                    "Master Signal ID & Name": f"#{sig['signal_id']} — {sig['master_name']}",
-                    "Signal Plate Name": sig["name"] or sig["master_name"],
+                    f"{type_label} PK / XML ID": f"{sig['pk']} / {sig['id']}",
+                    f"Master {type_label} ID & Name": f"#{sig['signal_id']} — {sig['master_name']}",
+                    f"{type_label} Plate Name": sig["name"] or sig["master_name"],
                     "Interlocking System Class": f"{ilock_name} (ID {sig['interlocking_sys_id']})",
-                    "Base Signal Type & Aspects": f"{base_sig_type or '—'} ({aspects_cnt} aspects)" if aspects_cnt else (base_sig_type or "—"),
-                    "Interlocking Route Set / Release Time": f"Set: {set_time} s • Release/Freeing: {freeing_time} s (Release Mode: {ilock_attrs.get('releasemode', '—')})",
-                    "Engineer's Line Ref (ELR) & Mileage": f"{sig_elr or '—'} • {meters_to_miles_chains(sig_km_val) or '—'}",
-                    "Directed Signal Edge": (
+                    "Base Operating Type": (
+                        f"{base_sig_type or '—'} ({aspects_cnt} aspects)"
+                        if aspects_cnt
+                        else (base_sig_type or "—")
+                    ),
+                    "Interlocking Route Set / Release Time": (
+                        f"Set: {set_time} s • Release/Freeing: {freeing_time} s "
+                        f"(Release Mode: {ilock_attrs.get('releasemode', '—')})"
+                    ),
+                    "Engineer's Line Ref (ELR) & Mileage": (
+                        f"{sig_elr or '—'} • {meters_to_miles_chains(sig_km_val) or '—'}"
+                    ),
+                    "Directed Track Connection": (
                         f"#{sig['start_node_id']} → #{sig['end_node_id']}"
-                        + (f" (Edge #{approach_edge['edge_id']}, {approach_edge['length']}m, Vmax {approach_edge['vmax']} km/h)" if approach_edge else "")
+                        + (
+                            f" (Edge #{approach_edge['edge_id']}, {approach_edge['length']}m, "
+                            f"Vmax {approach_edge['vmax']} km/h)"
+                            if approach_edge else ""
+                        )
                         if sig["start_node_id"]
                         else f"Point Node #{sig['point_node_id']}"
                     ),
-                    "Approach Blocks (In Rear)": f"{len(approach_blocks)} block(s) terminating at signal",
-                    "Protected Blocks (In Advance)": f"{len(outgoing_blocks)} block(s) governed by signal",
+                    "Approach Blocks (In Rear)": (
+                        f"{len(approach_blocks)} block(s) terminating at {type_label.lower()}"
+                    ),
+                    "Protected Blocks (In Advance)": (
+                        f"{len(outgoing_blocks)} block(s) governed by {type_label.lower()}"
+                    ),
                     "Safety Overlaps (Security Sections)": ov_summary,
-                    "Overlap Release Timer": f"{sig['sec_sect_freeing_time']} s (Timed Release Active: {sig['use_sec_sect_freeing_time']})",
-                    "Buffer Stop / Bumper": "Yes (Bumper / Buffer Stop)" if sig["bumper"] else "No",
+                    "Overlap Release Timer": (
+                        f"{sig['sec_sect_freeing_time']} s "
+                        f"(Timed Release Active: {sig['use_sec_sect_freeing_time']})"
+                    ),
+                    "Buffer Stop / Bumper": (
+                        "Yes (Bumper / Buffer Stop)" if sig["bumper"] else "No"
+                    ),
                     "Temporarily Closed": sig["tmp_closed"],
                     "Schematic Coordinates (x, y)": f"({sig['x']}, {sig['y']})",
                     "Validity Window": f"{sig['valid_from']} → {sig['valid_to']}",
                 }
 
+                if is_points_asset:
+                    asset_title = clean_item_name
+                    asset_sub = (
+                        f"Points • {ilock_name} • {sig_elr or base_sig_type or ''} • "
+                        f"{len(outgoing_blocks)} Protected Block(s) • "
+                        f"{len(enriched_overlaps)} Overlap(s)"
+                    )
+                else:
+                    asset_title = clean_item_name
+                    asset_sub = (
+                        f"{ilock_name} • {sig_elr or base_sig_type or ''} • "
+                        f"{len(outgoing_blocks)} Protected Block(s) • "
+                        f"{len(enriched_overlaps)} Overlap(s)"
+                    )
+
                 return {
-                    "asset_type": "signal",
+                    "asset_type": "points" if is_points_asset else "signal",
                     "id": sig["pk"],
-                    "title": f"Signal {sig['name'] or sig['master_name']}",
-                    "subtitle": f"{ilock_name} • { sig_elr or base_sig_type or '' } • {len(outgoing_blocks)} Protected Block(s) • {len(enriched_overlaps)} Overlap(s)",
+                    "title": asset_title,
+                    "subtitle": asset_sub,
                     "x": sig["x"],
                     "y": sig["y"],
                     "decoded": decoded,
@@ -1988,16 +2778,28 @@ def api_get_asset(asset_type: str, asset_id: int):
 
                 trk_elr = None
                 trk_km = None
+                trk_end_km = None
                 if trk.get("node_ids"):
                     cur.execute(
-                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s LIMIT 1",
-                        (trk["node_ids"][0],),
+                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = ANY(%s) AND km_value IS NOT NULL ORDER BY km_value ASC",
+                        (trk["node_ids"],),
                     )
-                    tn = cur.fetchone()
-                    if tn:
-                        trk_elr = decode_code("kmregionmasterdesc", tn["km_region_id"]) if tn.get("km_region_id") else None
-                        trk_km = tn.get("km_value")
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, trk_elr, trk_km)
+                    t_nodes = cur.fetchall()
+                    if t_nodes:
+                        if t_nodes[0].get("km_region_id"):
+                            trk_elr = decode_code("kmregionmasterdesc", t_nodes[0]["km_region_id"])
+                        trk_km = t_nodes[0].get("km_value")
+                        if len(t_nodes) > 1:
+                            trk_end_km = t_nodes[-1].get("km_value")
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    trk_elr,
+                    trk_km,
+                    end_km_meters=trk_end_km,
+                    track_name_hint=trk.get("name"),
+                    item_label=f"Track {trk['name']}",
+                    asset_type="track",
+                )
 
                 return {
                     "asset_type": "track",
@@ -2119,10 +2921,16 @@ def api_get_asset(asset_type: str, asset_id: int):
                         (nids[-2], nids[-1]),
                     )
                     for xs in cur.fetchall():
+                        xs_name = xs["name"] or xs["master_name"]
+                        xs_is_pts = (
+                            (xs["interlocking_sys_id"] in (15, 16))
+                            or (xs_name and xs_name.upper().startswith("POINT"))
+                        )
                         exit_sigs.append({
                             "pk": xs["pk"],
                             "signal_id": xs["signal_id"],
-                            "name": xs["name"] or xs["master_name"],
+                            "name": xs_name,
+                            "is_points": xs_is_pts,
                             "interlocking_desc": decode_code("interlockingsystem", xs["interlocking_sys_id"]),
                             "x": xs["x"],
                             "y": xs["y"],
@@ -2131,9 +2939,10 @@ def api_get_asset(asset_type: str, asset_id: int):
                             highlight_points.append({
                                 "x": xs["x"],
                                 "y": xs["y"],
-                                "label": f"Exit: {xs['name'] or xs['master_name']}",
-                                "color": "#f59e0b",
-                                "group": "signal",
+                                "label": f"Exit {'Points' if xs_is_pts else 'Signal'}: {xs_name}",
+                                "color": "#a855f7" if xs_is_pts else "#f59e0b",
+                                "group": "points" if xs_is_pts else "signal",
+                                "shape": "diamond" if xs_is_pts else "circle",
                             })
                         for idx, ss in enumerate(xs["security_sections"] or []):
                             ss_nids = [n["nodeid"] for n in ss.get("nodes", []) if n.get("nodeid") is not None]
@@ -2150,7 +2959,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 })
                                 exit_overlaps.append({
                                     "index": idx + 1,
-                                    "signal_name": xs["name"] or xs["master_name"],
+                                    "signal_name": xs_name,
                                     "length_meters": ov_p["length_meters"],
                                     "length_yards": round(ov_p["length_meters"] / 0.9144, 1),
                                     "vmax": ss.get("vmax", 0),
@@ -2161,7 +2970,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     highlight_points.append({
                         "x": tn["x"],
                         "y": tn["y"],
-                        "label": f"Switch Node #{tn['node_id']}",
+                        "label": f"Points #{tn['node_id']}",
                         "color": "#a855f7",
                         "group": "outgoing",
                         "shape": "diamond",
@@ -2178,7 +2987,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "Pre-Signal Distance (AWS/Distant)": f"{blk['pre_signal_distance']} m",
                     "Signal Sighting Distance": f"{blk['sight_distance']} m",
                     "Speed Envelope (Vmax)": f"{p_info['min_vmax']}–{p_info['max_vmax']} km/h" if p_info["min_vmax"] else "—",
-                    "Switches / Turnouts Traversed": f"{len(p_info['turnout_nodes'])} switch node(s)",
+                    "Points Traversed": f"{len(p_info['turnout_nodes'])} points",
                     "Priority": blk["priority"],
                     "ATC Flag / Length": f"{blk['atc_flag']} ({blk['atc_length']} m)",
                     "Moving Block / Shunting Flag": f"Moving: {blk['moving_block']} • Shunting: {blk['shunting_flag']}",
@@ -2191,17 +3000,53 @@ def api_get_asset(asset_type: str, asset_id: int):
 
                 blk_elr = None
                 blk_km = None
+                blk_end_km = None
+                blk_dir = None
+                is_blk_extrapolated = False
                 if nids:
                     cur.execute(
-                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s OR node_id = %s LIMIT 2",
-                        (nids[0], nids[-1]),
+                        "SELECT node_id, km_region_id, km_value FROM nodes WHERE node_id = %s",
+                        (nids[0],),
                     )
-                    for bn in cur.fetchall():
-                        if bn.get("km_region_id") and not blk_elr:
-                            blk_elr = decode_code("kmregionmasterdesc", bn["km_region_id"])
-                        if bn.get("km_value") and blk_km is None:
-                            blk_km = bn["km_value"]
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, blk_elr, blk_km)
+                    bn_start = cur.fetchone()
+                    cur.execute(
+                        "SELECT node_id, km_region_id, km_value FROM nodes WHERE node_id = %s",
+                        (nids[-1],),
+                    )
+                    bn_end = cur.fetchone()
+                    if bn_start:
+                        if bn_start.get("km_region_id"):
+                            blk_elr = decode_code("kmregionmasterdesc", bn_start["km_region_id"])
+                        blk_km = bn_start.get("km_value")
+                    if bn_end:
+                        if not blk_elr and bn_end.get("km_region_id"):
+                            blk_elr = decode_code("kmregionmasterdesc", bn_end["km_region_id"])
+                        blk_end_km = bn_end.get("km_value")
+                    if (not blk_elr or blk_km is None) and len(nids) > 2:
+                        cur.execute(
+                            "SELECT km_region_id, km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                            (nids,),
+                        )
+                        mid_bn = cur.fetchone()
+                        if mid_bn:
+                            if not blk_elr and mid_bn.get("km_region_id"):
+                                blk_elr = decode_code("kmregionmasterdesc", mid_bn["km_region_id"])
+                            if blk_km is None:
+                                blk_km = mid_bn.get("km_value")
+                            is_blk_extrapolated = True
+                    if blk_km is not None and blk_end_km is not None:
+                        blk_dir = "down" if blk_km < blk_end_km else "up"
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    blk_elr,
+                    blk_km,
+                    end_km_meters=blk_end_km,
+                    direction_hint=blk_dir,
+                    item_label=f"Block #{blk['block_id']}",
+                    is_extrapolated=is_blk_extrapolated,
+                    asset_type="block",
+                )
 
                 return {
                     "asset_type": "block",
@@ -2258,16 +3103,48 @@ def api_get_asset(asset_type: str, asset_id: int):
 
                 rt_elr = None
                 rt_km = None
+                rt_end_km = None
+                is_rt_extrapolated = False
                 if rt.get("node_ids"):
                     cur.execute(
-                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s LIMIT 1",
+                        "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s",
                         (rt["node_ids"][0],),
                     )
-                    rn = cur.fetchone()
-                    if rn:
-                        rt_elr = decode_code("kmregionmasterdesc", rn["km_region_id"]) if rn.get("km_region_id") else None
-                        rt_km = rn.get("km_value")
-                nwr_cross_links = find_nwr_cross_links_for_tps(cur, rt_elr, rt_km)
+                    rn_start = cur.fetchone()
+                    if rn_start:
+                        if rn_start.get("km_region_id"):
+                            rt_elr = decode_code("kmregionmasterdesc", rn_start["km_region_id"])
+                        rt_km = rn_start.get("km_value")
+                    if len(rt["node_ids"]) > 1:
+                        cur.execute(
+                            "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s",
+                            (rt["node_ids"][-1],),
+                        )
+                        rn_end = cur.fetchone()
+                        if rn_end and rn_end.get("km_value"):
+                            rt_end_km = rn_end["km_value"]
+                    if (not rt_elr or rt_km is None) and len(rt["node_ids"]) > 2:
+                        cur.execute(
+                            "SELECT km_region_id, km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                            (rt["node_ids"],),
+                        )
+                        mid_rn = cur.fetchone()
+                        if mid_rn:
+                            if not rt_elr and mid_rn.get("km_region_id"):
+                                rt_elr = decode_code("kmregionmasterdesc", mid_rn["km_region_id"])
+                            if rt_km is None:
+                                rt_km = mid_rn.get("km_value")
+                            is_rt_extrapolated = True
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    rt_elr,
+                    rt_km,
+                    end_km_meters=rt_end_km,
+                    item_label=f"Route #{rt['route_id']}",
+                    is_extrapolated=is_rt_extrapolated,
+                    asset_type="route",
+                )
 
                 return {
                     "asset_type": "route",
@@ -2339,6 +3216,37 @@ def api_get_asset(asset_type: str, asset_id: int):
                 cx = (asec["min_x"] + asec["max_x"]) / 2.0 if asec["min_x"] is not None else None
                 cy = (asec["min_y"] + asec["max_y"]) / 2.0 if asec["min_y"] is not None else None
 
+                as_km = None
+                as_end_km = None
+                is_as_extrapolated = False
+                if asec.get("section_attrs"):
+                    for sa in asec["section_attrs"]:
+                        if sa.get("kmvaluebegin"):
+                            as_km = float(sa["kmvaluebegin"])
+                        if sa.get("kmvalueend"):
+                            as_end_km = float(sa["kmvalueend"])
+                        if as_km is not None:
+                            break
+                if as_km is None and asec.get("node_ids"):
+                    cur.execute(
+                        "SELECT km_value FROM nodes WHERE node_id = ANY(%s) AND km_value > 0 LIMIT 1",
+                        (asec["node_ids"],),
+                    )
+                    as_nd = cur.fetchone()
+                    if as_nd:
+                        as_km = as_nd["km_value"]
+                        is_as_extrapolated = True
+
+                nwr_cross_links = find_nwr_cross_links_for_tps(
+                    cur,
+                    elr or asec.get("description"),
+                    as_km,
+                    end_km_meters=as_end_km,
+                    item_label=f"Attribute Section {asec['short_description']}",
+                    is_extrapolated=is_as_extrapolated,
+                    asset_type="attributesection",
+                )
+
                 return {
                     "asset_type": "attributesection",
                     "id": asec["pk"],
@@ -2351,6 +3259,7 @@ def api_get_asset(asset_type: str, asset_id: int):
                     "related": {
                         "section_attributes": decoded_sattrs,
                         "node_ids": asec["node_ids"],
+                        "nwr_cross_links": nwr_cross_links,
                     },
                     "highlight": {
                         "segments": asec["coords"],
@@ -3852,10 +4761,16 @@ def api_nwr_pick(
                 (x, y, min_x, max_x, min_y, max_y),
             )
             for r in cur.fetchall():
+                is_pts = r["valency"] >= 3
+                lbl = (
+                    f"Points {r['asset_id']} (Valency {r['valency']})"
+                    if is_pts
+                    else f"Node {r['asset_id']} (Valency {r['valency']})"
+                )
                 candidates.append({
                     "type": "nwr_node",
                     "id": r["fid"],
-                    "label": f"Node {r['asset_id']} (Valency {r['valency']})",
+                    "label": lbl,
                     "dist": round(r["dist"], 2),
                     "x": r["x"],
                     "y": r["y"],
