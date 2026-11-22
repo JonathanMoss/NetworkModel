@@ -350,6 +350,59 @@ function savePersistedOsmSettings() {
   );
 }
 
+const TPS_LAYER_KEYS = ["edges", "tracks", "vectors", "texts", "stations", "signals", "blocks", "nodes", "polys"];
+const NWR_LAYER_MAP = [
+  ["osm", "nwr-layer-osm"],
+  ["centrelines", "nwr-layer-centrelines"],
+  ["elrs", "nwr-layer-elrs"],
+  ["nodes", "nwr-layer-nodes"],
+  ["waymarks", "nwr-layer-waymarks"],
+  ["curvature", "nwr-layer-curvature"],
+  ["nf_points", "nwr-layer-nf-points"],
+];
+
+function loadPersistedLayerToggles() {
+  const saved = getCookie("nr_layer_toggles");
+  if (saved && typeof saved === "object") {
+    if (saved.tps && typeof saved.tps === "object") {
+      for (const k of TPS_LAYER_KEYS) {
+        if (typeof saved.tps[k] === "boolean") {
+          STATE.layers[k] = saved.tps[k];
+        }
+      }
+    }
+    if (saved.nwr && typeof saved.nwr === "object") {
+      for (const [k] of NWR_LAYER_MAP) {
+        if (typeof saved.nwr[k] === "boolean") {
+          STATE.nwrLayers[k] = saved.nwr[k];
+        }
+      }
+    }
+  }
+}
+
+function savePersistedLayerToggles() {
+  setCookie(
+    "nr_layer_toggles",
+    {
+      tps: { ...STATE.layers },
+      nwr: { ...STATE.nwrLayers },
+    },
+    365
+  );
+}
+
+function updateLayerToggleUi() {
+  for (const k of TPS_LAYER_KEYS) {
+    const el = document.getElementById(`layer-${k}`);
+    if (el) el.checked = Boolean(STATE.layers[k]);
+  }
+  for (const [k, id] of NWR_LAYER_MAP) {
+    const el = document.getElementById(id);
+    if (el) el.checked = Boolean(STATE.nwrLayers[k]);
+  }
+}
+
 function hexToRgba(hex, alpha = 1) {
   if (!hex || typeof hex !== "string") return `rgba(56, 189, 248, ${alpha})`;
   if (hex.startsWith("rgba")) return hex;
@@ -4154,11 +4207,14 @@ async function handleCanvasClick(wx, wy, sx, sy, targetView = null) {
   await loadAssetDetails(primary.type, primary.id, false);
 }
 
-async function loadAssetDetails(assetType, assetId, shouldFly = true) {
+async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = null) {
   const isNwrAsset = String(assetType).startsWith("nwr_") || String(assetType).startsWith("nf_");
   const apiPrefix = isNwrAsset ? "/api/nwr/asset" : "/api/asset";
+  const querySuffix = (!isNwrAsset && nwrFid !== null && nwrFid !== undefined && nwrFid !== "")
+    ? `?nwr_fid=${encodeURIComponent(nwrFid)}`
+    : "";
   try {
-    const res = await fetch(`${apiPrefix}/${assetType}/${assetId}`);
+    const res = await fetch(`${apiPrefix}/${assetType}/${assetId}${querySuffix}`);
     if (!res.ok) return;
     const data = await res.json();
     STATE.selectedAsset = data;
@@ -5300,11 +5356,57 @@ function renderElevationProfileSvg(nfData) {
   `;
 }
 
+window.switchNwrCrossTrack = function (fid) {
+  if (!STATE.selectedAsset) return;
+  const parsedFid = (fid === null || fid === undefined || fid === "" || fid === "auto") ? null : Number(fid);
+  loadAssetDetails(STATE.selectedAsset.asset_type, STATE.selectedAsset.id, false, parsedFid);
+};
+
+window.saveNwrCrossTrackOverride = async function (fid) {
+  if (!STATE.selectedAsset || fid === null || fid === undefined) return;
+  try {
+    const res = await fetch("/api/nwr/track-override", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        asset_type: STATE.selectedAsset.asset_type,
+        asset_id: STATE.selectedAsset.id,
+        nwr_fid: Number(fid),
+      }),
+    });
+    if (res.ok) {
+      await loadAssetDetails(STATE.selectedAsset.asset_type, STATE.selectedAsset.id, false, null);
+    }
+  } catch (err) {
+    console.error("Failed to save track override:", err);
+  }
+};
+
+window.resetNwrCrossTrackOverride = async function () {
+  if (!STATE.selectedAsset) return;
+  const mi = STATE.selectedAsset.related?.nwr_cross_links?.match_info || {};
+  try {
+    if (mi.saved_override || mi.saved_fid) {
+      await fetch(
+        `/api/nwr/track-override/${encodeURIComponent(STATE.selectedAsset.asset_type)}/${encodeURIComponent(STATE.selectedAsset.id)}`,
+        { method: "DELETE" }
+      );
+    }
+    await loadAssetDetails(STATE.selectedAsset.asset_type, STATE.selectedAsset.id, false, null);
+  } catch (err) {
+    console.error("Failed to reset track override:", err);
+  }
+};
+
 function buildNwrCrossLinkWidget(nwrCross) {
   if (!nwrCross) return "";
   const best = nwrCross.best_centreline || (nwrCross.centrelines && nwrCross.centrelines[0]);
   const snapped = nwrCross.snapped_node;
   const corridor = nwrCross.corridor_centrelines || [];
+  const matchInfo = nwrCross.match_info || {};
+  const isSaved = Boolean(matchInfo.saved_override);
+  const isManual = Boolean(matchInfo.manual_override);
+  const autoBestFid = matchInfo.auto_best_fid;
 
   if (!best && !snapped && (!nwrCross.elr_record || !nwrCross.elr_record.elr)) {
     return "";
@@ -5318,13 +5420,22 @@ function buildNwrCrossLinkWidget(nwrCross) {
     const lenStr = isClipped
       ? `${best.clipped_length_meters || '?'}m (Exact Sub-segment)`
       : `${best.length_meters || '?'}m`;
+    const badgeText = isSaved
+      ? "Saved Override"
+      : (isManual ? "Manual Preview" : "Auto Best Match");
+    const badgeStyle = isSaved
+      ? "background: rgba(16, 185, 129, 0.22); color: #34d399;"
+      : (isManual
+        ? "background: rgba(245, 158, 11, 0.22); color: #fbbf24;"
+        : "background: rgba(6, 182, 212, 0.2); color: #38bdf8;");
+    const borderCol = isSaved ? "#10b981" : (isManual ? "#f59e0b" : "#06b6d4");
 
     html += `
-      <div class="rel-card" style="border-left: 3px solid #06b6d4;" onclick="jumpToNwrAsset('nwr_centreline', ${best.fid})">
+      <div class="rel-card" style="border-left: 3px solid ${borderCol};" onclick="jumpToNwrAsset('nwr_centreline', ${best.fid})">
         <div class="rel-card-top">
           <span style="font-weight: 700; color: #22d3ee;">
             ${escapeHtml(best.elr)} / Track ${escapeHtml(best.track_id)}
-            <span style="font-size: 10px; background: rgba(6, 182, 212, 0.2); color: #38bdf8; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">Single Best Match</span>
+            <span style="font-size: 10px; ${badgeStyle} padding: 2px 6px; border-radius: 4px; margin-left: 6px;">${badgeText}</span>
           </span>
           <span style="color:#38bdf8">Open in OSGB36 View &rarr;</span>
         </div>
@@ -5334,8 +5445,38 @@ function buildNwrCrossLinkWidget(nwrCross) {
         <div class="rel-card-sub" style="font-size: 11px; opacity: 0.85;">
           Chainage: ${Number(best.start_mile_yards).toFixed(4)} → ${Number(best.end_mile_yards).toFixed(4)} mi.yd (${Number(best.start_meters).toFixed(0)}m → ${Number(best.end_meters).toFixed(0)}m)
         </div>
+        ${matchInfo.source ? `
+          <div class="rel-card-sub" style="font-size: 11px; margin-top: 3px; color: ${isSaved ? '#34d399' : (isManual ? '#fbbf24' : '#94a3b8')};">
+            Match Basis: ${escapeHtml(matchInfo.source)}${matchInfo.direction_hint ? ` • Dir: ${escapeHtml(String(matchInfo.direction_hint).toUpperCase())}` : ''}${matchInfo.platform_num ? ` • Plat ${escapeHtml(String(matchInfo.platform_num))}` : ''}
+          </div>
+        ` : ''}
       </div>
     `;
+
+    // Manual Track Switcher + Persistent Override Controls
+    if (corridor.length > 1) {
+      const optionsHtml = corridor.map(c => {
+        const isSelected = c.fid === best.fid;
+        const isAuto = autoBestFid && c.fid === autoBestFid;
+        const isSavedItem = matchInfo.saved_fid && c.fid === matchInfo.saved_fid;
+        const tag = isSavedItem ? " ★ Saved" : (isAuto ? " ★ Auto" : "");
+        return `<option value="${c.fid}" ${isSelected ? "selected" : ""}>Track ${escapeHtml(c.track_id)} — ${escapeHtml(c.track_id_decoded || '')} (${Number(c.length_meters).toFixed(0)}m)${tag}</option>`;
+      }).join("");
+
+      const showSaveBtn = isManual && !isSaved;
+      const showResetBtn = isManual || isSaved;
+
+      html += `
+        <div class="nwr-track-switcher">
+          <label class="nwr-track-switcher-label" for="nwr-track-switcher-select">Plot on Track:</label>
+          <select id="nwr-track-switcher-select" class="nwr-track-switcher-select" onchange="switchNwrCrossTrack(this.value)">
+            ${optionsHtml}
+          </select>
+          ${showSaveBtn ? `<button type="button" class="nwr-track-save-btn" title="Persist this track override in PostgreSQL" onclick="saveNwrCrossTrackOverride(${best.fid})">💾 Save</button>` : ""}
+          ${showResetBtn ? `<button type="button" class="nwr-track-reset-btn" title="Clear override and reset to automatic best match" onclick="resetNwrCrossTrackOverride()">↺ Auto</button>` : ""}
+        </div>
+      `;
+    }
   }
 
   if (snapped) {
@@ -5374,7 +5515,10 @@ function buildNwrCrossLinkWidget(nwrCross) {
               <div class="rel-card" style="padding: 6px 8px;" onclick="jumpToNwrAsset('nwr_centreline', ${c.fid})">
                 <div class="rel-card-top">
                   <span>Track ${escapeHtml(c.track_id)} (${escapeHtml(c.track_id_decoded || '')})</span>
-                  <span style="color:#38bdf8">View &rarr;</span>
+                  <span style="display:flex; align-items:center; gap:6px;">
+                    <button type="button" class="nwr-plot-here-btn" onclick="event.stopPropagation(); switchNwrCrossTrack(${c.fid});">Plot Here</button>
+                    <span style="color:#38bdf8">View &rarr;</span>
+                  </span>
                 </div>
                 <div class="rel-card-sub">${c.length_meters}m • ${Number(c.start_mile_yards).toFixed(4)} → ${Number(c.end_mile_yards).toFixed(4)} mi.yd</div>
               </div>
@@ -6622,30 +6766,24 @@ document.getElementById("nwr-color-mode").addEventListener("change", (e) => {
   requestRender();
 });
 
-for (const key of ["edges", "tracks", "vectors", "texts", "stations", "signals", "blocks", "nodes", "polys"]) {
+for (const key of TPS_LAYER_KEYS) {
   const el = document.getElementById(`layer-${key}`);
   if (el) {
     el.addEventListener("change", () => {
       STATE.layers[key] = el.checked;
+      savePersistedLayerToggles();
       scheduleViewportFetch();
       requestRender();
     });
   }
 }
 
-for (const [key, id] of [
-  ["osm", "nwr-layer-osm"],
-  ["centrelines", "nwr-layer-centrelines"],
-  ["elrs", "nwr-layer-elrs"],
-  ["nodes", "nwr-layer-nodes"],
-  ["waymarks", "nwr-layer-waymarks"],
-  ["curvature", "nwr-layer-curvature"],
-  ["nf_points", "nwr-layer-nf-points"],
-]) {
+for (const [key, id] of NWR_LAYER_MAP) {
   const el = document.getElementById(id);
   if (el) {
     el.addEventListener("change", () => {
       STATE.nwrLayers[key] = el.checked;
+      savePersistedLayerToggles();
       if (key === "osm") {
         savePersistedOsmSettings();
         requestRender();
@@ -7486,10 +7624,12 @@ function escapeHtml(str) {
 async function initApp() {
   loadPersistedLayerStyles();
   loadPersistedOsmSettings();
+  loadPersistedLayerToggles();
   resizeCanvas();
   updateLegend();
   updateLabelUi();
   updateLayerStyleUi();
+  updateLayerToggleUi();
   setupProfileDrawerEvents();
 
   const overlay = document.getElementById("ingest-overlay");

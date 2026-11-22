@@ -325,3 +325,11 @@ CREATE TABLE IF NOT EXISTS raw_tps_elements (
     raw_children JSONB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tps_nwr_track_overrides (
+    asset_type TEXT NOT NULL,
+    asset_id BIGINT NOT NULL,
+    nwr_fid INTEGER NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (asset_type, asset_id)
+);
+
