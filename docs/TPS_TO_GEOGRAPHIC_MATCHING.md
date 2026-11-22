@@ -107,7 +107,7 @@ In NWR's 4-digit `track_id` (`D C NN`):
 | | Opposite direction (`1xxx` vs Down, `2xxx` vs Up) | `-60` |
 | | Reversible hinted: `3xxx` / `secondary_dir` match / opposite | `+70` / `+30` / `+10` |
 | **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (classes `1,2,4,5,6,8,9`) | `+120` |
-| | Different non-zero `track_id[2:4]` | `-25` |
+| | Different non-zero `track_id[2:4]` | `-75` |
 | | `platform_num is None` and primary open-line `xx00` (classes `1,2,4`) | `+5` |
 | **Track Class (`C`)** | Engine / Carriage / Reception / Washer / Back Line (`crl`, `ecl`, `cl1`, `w1`, ...) | `8: +55`, `9: +35`, `1/2: -25` |
 | | Siding / Yard / Depot / Headshunt (`sdg`, `ms1`, `mbr`, ...) | `9: +55`, `8: +35`, `1/2: -25` |

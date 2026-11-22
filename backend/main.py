@@ -1867,8 +1867,8 @@ def score_track_candidate(
             if tid_nn == platform_num:
                 score += 120.0
             elif tid_nn > 0:
-                # Explicitly numbered for a different platform/siding (e.g. 3610 = Plat 10 vs Plat 12)
-                score -= 25.0
+                # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6)
+                score -= 75.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4") and tid[2:4] == "00":
         # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
         score += 5.0
