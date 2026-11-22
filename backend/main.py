@@ -7,7 +7,7 @@ from typing import Optional
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Body
 from fastapi.responses import ORJSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +32,56 @@ OVERVIEW_CACHE = None
 NWR_OVERVIEW_CACHE = None
 LOOKUP_CACHE = None
 TIMING_CATALOG_CACHE = None
+ELR_POLARITY_CACHE = None
+OVERRIDES_TABLE_READY = False
+
+
+def ensure_track_overrides_table(cur):
+    """Lazily ensure the persistent manual track-override table exists in PostgreSQL."""
+    global OVERRIDES_TABLE_READY
+    if OVERRIDES_TABLE_READY:
+        return
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tps_nwr_track_overrides (
+            asset_type TEXT NOT NULL,
+            asset_id BIGINT NOT NULL,
+            nwr_fid INTEGER NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (asset_type, asset_id)
+        )
+        """
+    )
+    OVERRIDES_TABLE_READY = True
+
+
+def get_saved_track_override(cur, asset_type: str, asset_id: int) -> Optional[int]:
+    """Return the persisted NWR centreline fid override for a TPS asset, if any."""
+    try:
+        ensure_track_overrides_table(cur)
+        if asset_type in ("signal", "points"):
+            cur.execute(
+                """
+                SELECT nwr_fid FROM tps_nwr_track_overrides
+                WHERE asset_type IN ('signal', 'points') AND asset_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (asset_id,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT nwr_fid FROM tps_nwr_track_overrides
+                WHERE asset_type = %s AND asset_id = %s
+                LIMIT 1
+                """,
+                (asset_type, asset_id),
+            )
+        row = cur.fetchone()
+        return int(row["nwr_fid"]) if row else None
+    except Exception:
+        return None
 
 
 def get_conn():
@@ -1209,6 +1259,548 @@ def slice_polyline(coords: list, c_start_m: float, c_end_m: float, from_m: float
     return out if len(out) >= 2 else coords
 
 
+def load_elr_polarity_cache(cur) -> dict:
+    """Compute per-ELR mileage polarity (+1: Down increases km, -1: Down decreases km) from directed station_tracks."""
+    global ELR_POLARITY_CACHE
+    if ELR_POLARITY_CACHE is not None:
+        return ELR_POLARITY_CACHE
+
+    cache = {}
+    try:
+        cur.execute(
+            """
+            WITH track_dirs AS (
+                SELECT n1.km_region_id,
+                       CASE
+                           WHEN st.description ILIKE '%down%' OR st.name ILIKE 'D-%' OR st.name ILIKE 'E-D%' THEN 'down'
+                           WHEN st.description ILIKE '%up%' OR st.name ILIKE 'U-%' OR st.name ILIKE 'E-U%' THEN 'up'
+                       END AS dir,
+                       SIGN(n2.km_value - n1.km_value) AS km_sign
+                FROM station_tracks st
+                JOIN nodes n1 ON n1.node_id = st.node_ids[1]
+                JOIN nodes n2 ON n2.node_id = st.node_ids[array_length(st.node_ids, 1)]
+                WHERE st.directed = true
+                  AND array_length(st.node_ids, 1) >= 2
+                  AND n1.km_region_id > 0 AND n1.km_region_id = n2.km_region_id
+                  AND n1.km_value > 0 AND n2.km_value > 0 AND n1.km_value <> n2.km_value
+            )
+            SELECT km_region_id,
+                   COUNT(*) FILTER (WHERE (dir = 'down' AND km_sign > 0) OR (dir = 'up' AND km_sign < 0)) AS normal_votes,
+                   COUNT(*) FILTER (WHERE (dir = 'down' AND km_sign < 0) OR (dir = 'up' AND km_sign > 0)) AS reverse_votes
+            FROM track_dirs
+            WHERE dir IS NOT NULL
+            GROUP BY km_region_id
+            """
+        )
+        for row in cur.fetchall():
+            elr_name = decode_code("kmregionmasterdesc", row["km_region_id"])
+            if not elr_name:
+                continue
+            elr_key = str(elr_name).strip().upper()
+            if row["reverse_votes"] > row["normal_votes"]:
+                cache[elr_key] = -1
+            elif row["normal_votes"] > row["reverse_votes"]:
+                cache[elr_key] = 1
+    except Exception:
+        pass
+
+    ELR_POLARITY_CACHE = cache
+    return cache
+
+
+def infer_direction_from_km_delta(
+    cur,
+    elr: Optional[str],
+    start_km: Optional[float],
+    end_km: Optional[float],
+) -> Optional[str]:
+    """Infer Up/Down direction from mileage delta using the data-driven per-ELR mileage polarity."""
+    if start_km is None or end_km is None or start_km == end_km:
+        return None
+    polarity = 1
+    if elr:
+        pol_map = load_elr_polarity_cache(cur)
+        polarity = pol_map.get(str(elr).strip().upper(), 1)
+    delta = (end_km - start_km) * polarity
+    return "down" if delta > 0 else "up"
+
+
+def _extract_direction_from_tokens(
+    name: Optional[str],
+    description: Optional[str],
+    sa_code: Optional[str],
+    rop_code: Optional[str],
+) -> Optional[str]:
+    """Extract physical track direction ('up', 'down', or 'reversible') from TPS track metadata."""
+    desc_l = (description or "").strip().lower()
+    sa_u = (sa_code or "").strip().upper()
+    rop_u = (rop_code or "").strip().upper()
+    name_u = (name or "").strip().upper()
+
+    if sa_u in ("NOT SET", "_", "NONE", "N/A"):
+        sa_u = ""
+    if rop_u in ("NOT SET", "_", "NONE", "N/A"):
+        rop_u = ""
+
+    # 1. Explicit reversible / bi-directional / Up & Down markers (check BEFORE D-/U- prefixes)
+    if any(
+        w in desc_l
+        for w in (
+            "reversible",
+            "bi-directional",
+            "bidirectional",
+            "bi-dir",
+            "up & down",
+            "up and down",
+            "down & up",
+            "down and up",
+            "u&d",
+            "d&u",
+        )
+    ):
+        return "reversible"
+    for code in (sa_u, rop_u, name_u):
+        if not code:
+            continue
+        if re.search(r"(?:^|[^A-Z])(?:UD[A-Z]*|U&D[A-Z]*|D&U[A-Z]*|U/D[A-Z]*|D/U[A-Z]*|RVL|BGL|REV|BI|BD)(?:$|[^A-Z])", code):
+            return "reversible"
+
+    # 2. Physical line direction in description (e.g. 'D-Up Main' -> physical line is Up Main)
+    has_up_word = bool(re.search(r"\bup\b", desc_l))
+    has_down_word = bool(re.search(r"\bdown\b|\bdn\b", desc_l))
+    if has_up_word and not has_down_word:
+        return "up"
+    if has_down_word and not has_up_word:
+        return "down"
+
+    # 3. SA / ROP line code (describes the physical line: DM, UM, DF, UF, DS, US, DG, UG, DL, UL, ULL, DLL, UML, DML)
+    for code in (sa_u, rop_u):
+        if not code:
+            continue
+        if re.match(r"^D(?:M|ML|F|FL|S|SL|G|GL|L|LL|R|RL|SDG|SGL|E|W|N|B)", code) or code in ("DM", "DF", "DS", "DG", "DL", "DN"):
+            return "down"
+        if re.match(r"^U(?:M|ML|F|FL|S|SL|G|GL|L|LL|R|RL|SDG|SGL|E|W|N|B)", code) or code in ("UM", "UF", "US", "UG", "UL", "UP"):
+            return "up"
+
+    # 4. Track name physical-line suffix before working-direction prefix (e.g. 'U-DML' is physically Down Main)
+    if re.match(r"^(?:U|D|E)-D(?:M|ML|F|FL|S|SL|G|GL|L|LL)\b", name_u):
+        return "down"
+    if re.match(r"^(?:U|D|E)-U(?:M|ML|F|FL|S|SL|G|GL|L|LL)\b", name_u):
+        return "up"
+
+    # 5. Track name prefixes (D-ML, U-ML, E-DM, E-UM, D-1, U-2, D-SDG, U-SDG)
+    if re.match(r"^(?:D-|E-D|DN\b)", name_u):
+        return "down"
+    if re.match(r"^(?:U-|E-U|UP\b)", name_u):
+        return "up"
+
+    return None
+
+
+def _extract_platform_number(
+    name: Optional[str],
+    longname: Optional[str],
+    description: Optional[str],
+    sa_code: Optional[str],
+) -> Optional[int]:
+    """Extract a 1..99 platform/track/siding sequence number from TPS station_track metadata."""
+    # 1. Pure numeric longname (e.g. '12', '10', '4') or SA code ('12')
+    for candidate in (longname, sa_code):
+        s = (candidate or "").strip()
+        if s.isdigit():
+            val = int(s)
+            if 1 <= val <= 99:
+                return val
+
+    # 2. Explicit 'Platform 12' / 'Plat 12' / 'Bay 10' / 'Siding 1' / 'Line 3' in description or name
+    for candidate in (description, name):
+        s = (candidate or "").strip()
+        m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})\b", s, flags=re.IGNORECASE)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                return val
+
+    # 3. Directed platform/line/siding track name like 'D-12', 'U-L3', 'D-MS1', 'U-SDG2', 'D-DL2', 'U-CL1'
+    name_s = (name or "").strip().upper()
+    m = re.match(r"^(?:D|U|E)-(?:MS|SDG|DL|CL|RCP|S|L|W)?(\d{1,2})[A-Z]?$", name_s)
+    if m:
+        val = int(m.group(1))
+        if 1 <= val <= 99:
+            return val
+
+    return None
+
+
+def _parse_station_track_rows(
+    rows: list,
+    start_node_id: Optional[int] = None,
+    end_node_id: Optional[int] = None,
+) -> dict:
+    """Choose the best matching station_track row and extract direction, platform number, and track name hints."""
+    if not rows:
+        return {"direction_hint": None, "secondary_dir": None, "track_name_hint": None, "platform_num": None, "label": None}
+
+    scored = []
+    phys_dirs_on_same_nodes = set()
+    for r in rows:
+        nids = r.get("node_ids") or []
+        sa_code = decode_code("salinecodedesc", r.get("sa_line_code")) if r.get("sa_line_code") else None
+        rop_code = decode_code("roplinecodedesc", r.get("rop_line_code")) if r.get("rop_line_code") else None
+        if sa_code and sa_code.strip().lower() in ("not set", "_"):
+            sa_code = None
+        if rop_code and rop_code.strip().lower() in ("not set", "_"):
+            rop_code = None
+
+        row_score = 0
+        has_start = start_node_id is not None and start_node_id in nids
+        has_end = end_node_id is not None and end_node_id in nids
+        if has_start and has_end:
+            row_score += 50
+            try:
+                if nids.index(start_node_id) < nids.index(end_node_id):
+                    row_score += 40
+            except ValueError:
+                pass
+        elif has_end or has_start:
+            row_score += 20
+
+        # Prefer rows with explicit description or SA line code
+        if r.get("description"):
+            row_score += 10
+        if sa_code:
+            row_score += 10
+        # Penalize generic BUS/non-rail tracks
+        name_u = (r.get("name") or "").strip().upper()
+        if name_u == "BUS":
+            row_score -= 100
+
+        pdir = _extract_direction_from_tokens(r.get("name"), r.get("description"), sa_code, rop_code)
+        if pdir and (has_start or has_end or (start_node_id is None and end_node_id is None)):
+            phys_dirs_on_same_nodes.add((str(r.get("longname") or "").strip().upper(), pdir))
+
+        scored.append((row_score, r, sa_code, rop_code, pdir))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    _, best, sa_code, rop_code, best_dir = scored[0]
+    secondary_dir = best_dir if best_dir in ("up", "down") else None
+    if secondary_dir is None:
+        desc_l = (best.get("description") or "").lower()
+        has_u = bool(re.search(r"\bup\b", desc_l))
+        has_d = bool(re.search(r"\bdown\b|\bdn\b", desc_l))
+        if has_u and not has_d:
+            secondary_dir = "up"
+        elif has_d and not has_u:
+            secondary_dir = "down"
+
+    # If the exact same physical track (matching longname) has both Up and Down rows on the matched node(s),
+    # mark it reversible while preserving secondary_dir as a tiebreaker.
+    best_ln = str(best.get("longname") or "").strip().upper()
+    dirs_for_best = {d for ln, d in phys_dirs_on_same_nodes if ln == best_ln}
+    if "up" in dirs_for_best and "down" in dirs_for_best:
+        best_dir = "reversible"
+
+    plat_num = _extract_platform_number(
+        best.get("name"),
+        best.get("longname"),
+        best.get("description"),
+        sa_code,
+    )
+
+    parts = [p for p in (best.get("name"), best.get("description"), sa_code, rop_code) if p]
+    hint_str = " | ".join(parts) if parts else None
+    short_lbl = " / ".join(p for p in (best.get("name"), best.get("description")) if p) or sa_code or rop_code
+    return {
+        "direction_hint": best_dir,
+        "secondary_dir": secondary_dir,
+        "track_name_hint": hint_str,
+        "platform_num": plat_num,
+        "label": short_lbl,
+    }
+
+
+def resolve_tps_track_identity(
+    cur,
+    node_ids: list,
+    start_node_id: Optional[int] = None,
+    end_node_id: Optional[int] = None,
+    elr: Optional[str] = None,
+    start_km: Optional[float] = None,
+    end_km: Optional[float] = None,
+) -> dict:
+    """
+    Resolve physical track direction, platform number, and line class for any TPS asset using:
+      1. Direct station_tracks membership
+      2. Direct routes membership
+      3. Bounded graph walk along valency-2 TPS edges to nearest station_tracks
+      4. Data-driven per-ELR mileage polarity fallback
+    """
+    clean_nids = [int(n) for n in (node_ids or []) if n is not None]
+    partial_hint = None
+    partial_plat = None
+    partial_source = None
+
+    if clean_nids:
+        # 1. Direct station_tracks lookup (GIN indexed on node_ids)
+        cur.execute(
+            """
+            SELECT track_id, name, longname, description, rop_line_code, sa_line_code, directed, node_ids
+            FROM station_tracks
+            WHERE node_ids && %s::int[]
+            LIMIT 20
+            """,
+            (clean_nids,),
+        )
+        st_rows = cur.fetchall()
+        if st_rows:
+            parsed = _parse_station_track_rows(st_rows, start_node_id=start_node_id, end_node_id=end_node_id)
+            if parsed["direction_hint"]:
+                sec_dir = parsed.get("secondary_dir") or (
+                    infer_direction_from_km_delta(cur, elr, start_km, end_km)
+                    if parsed["direction_hint"] == "reversible"
+                    else None
+                )
+                return {
+                    "direction_hint": parsed["direction_hint"],
+                    "secondary_dir": sec_dir,
+                    "track_name_hint": parsed["track_name_hint"],
+                    "platform_num": parsed["platform_num"],
+                    "source": f"TPS Track ({parsed['label']})" if parsed["label"] else "TPS Track",
+                }
+            if parsed["track_name_hint"]:
+                partial_hint = parsed["track_name_hint"]
+                partial_plat = parsed["platform_num"]
+                partial_source = f"TPS Track ({parsed['label']})" if parsed["label"] else "TPS Track"
+
+        # 2. Direct routes lookup (GIN indexed on node_ids)
+        cur.execute(
+            """
+            SELECT route_id, rop_line_code_id, sa_line_code_id, node_ids
+            FROM routes
+            WHERE node_ids && %s::int[]
+            LIMIT 20
+            """,
+            (clean_nids,),
+        )
+        rt_rows = cur.fetchall()
+        if rt_rows:
+            norm_rt = [
+                {
+                    "name": None,
+                    "longname": None,
+                    "description": None,
+                    "rop_line_code": r.get("rop_line_code_id"),
+                    "sa_line_code": r.get("sa_line_code_id"),
+                    "node_ids": r.get("node_ids"),
+                }
+                for r in rt_rows
+            ]
+            parsed = _parse_station_track_rows(norm_rt, start_node_id=start_node_id, end_node_id=end_node_id)
+            if parsed["direction_hint"]:
+                sec_dir = parsed.get("secondary_dir") or (
+                    infer_direction_from_km_delta(cur, elr, start_km, end_km)
+                    if parsed["direction_hint"] == "reversible"
+                    else None
+                )
+                return {
+                    "direction_hint": parsed["direction_hint"],
+                    "secondary_dir": sec_dir,
+                    "track_name_hint": parsed["track_name_hint"] or partial_hint,
+                    "platform_num": parsed["platform_num"] if parsed["platform_num"] is not None else partial_plat,
+                    "source": f"TPS Route ({parsed['label']})" if parsed["label"] else "TPS Route",
+                }
+            if parsed["track_name_hint"] and not partial_hint:
+                partial_hint = parsed["track_name_hint"]
+                partial_plat = parsed["platform_num"]
+                partial_source = f"TPS Route ({parsed['label']})" if parsed["label"] else "TPS Route"
+
+        # 3. Bounded straight-through graph walk along TPS edges
+        # Continues through valency-2 nodes AND straight-through legs (cos_sim >= 0.92) of turnouts
+        # without diverging onto parallel tracks via crossovers.
+        visited = set(clean_nids)
+        if start_node_id is not None and end_node_id is not None and start_node_id != end_node_id:
+            frontier = [(int(end_node_id), int(start_node_id)), (int(start_node_id), int(end_node_id))]
+        else:
+            frontier = [(nid, None) for nid in clean_nids]
+
+        for hop in range(1, 25):
+            if not frontier:
+                break
+            curr_ids = list({c for c, _ in frontier})
+            cur.execute(
+                """
+                SELECT start_node_id, end_node_id
+                FROM edges
+                WHERE start_node_id = ANY(%s) OR end_node_id = ANY(%s)
+                """,
+                (curr_ids, curr_ids),
+            )
+            adj_map = {}
+            for e in cur.fetchall():
+                a, b = e["start_node_id"], e["end_node_id"]
+                if a is not None and b is not None:
+                    adj_map.setdefault(a, set()).add(b)
+                    adj_map.setdefault(b, set()).add(a)
+
+            # Fetch schematic coordinates if any frontier node is a turnout (deg >= 3)
+            coord_needed = set()
+            for curr_id, prev_id in frontier:
+                nbrs = adj_map.get(curr_id, set())
+                if len(nbrs) > 2:
+                    coord_needed.add(curr_id)
+                    if prev_id is not None:
+                        coord_needed.add(prev_id)
+                    coord_needed.update(nbrs)
+
+            node_xy = {}
+            if coord_needed:
+                cur.execute(
+                    "SELECT node_id, netx, nety FROM nodes WHERE node_id = ANY(%s)",
+                    (list(coord_needed),),
+                )
+                for nr in cur.fetchall():
+                    if nr["netx"] is not None and nr["nety"] is not None:
+                        node_xy[nr["node_id"]] = (float(nr["netx"]), float(nr["nety"]))
+
+            next_frontier = []
+            next_nids = []
+            for curr_id, prev_id in frontier:
+                nbrs = adj_map.get(curr_id, set())
+                cand_nbrs = [nb for nb in nbrs if nb != prev_id and nb not in visited]
+                if not cand_nbrs:
+                    continue
+
+                if len(nbrs) <= 2:
+                    chosen = cand_nbrs
+                elif prev_id is not None and prev_id in node_xy and curr_id in node_xy:
+                    px, py = node_xy[prev_id]
+                    cx, cy = node_xy[curr_id]
+                    dx_in, dy_in = cx - px, cy - py
+                    len_in = math.hypot(dx_in, dy_in)
+                    best_nb = None
+                    best_cos = -2.0
+                    if len_in > 1e-6:
+                        for nb in cand_nbrs:
+                            if nb not in node_xy:
+                                continue
+                            nx, ny = node_xy[nb]
+                            dx_out, dy_out = nx - cx, ny - cy
+                            len_out = math.hypot(dx_out, dy_out)
+                            if len_out > 1e-6:
+                                cos_sim = (dx_in * dx_out + dy_in * dy_out) / (len_in * len_out)
+                                if cos_sim > best_cos:
+                                    best_cos = cos_sim
+                                    best_nb = nb
+                    # Only continue through a turnout along a straight-through leg (deflection <= ~23 deg)
+                    chosen = [best_nb] if (best_nb is not None and best_cos >= 0.92) else []
+                    # At hop 1 (e.g. POINTS asset whose edge is an angled 45-deg crossover leg),
+                    # find the collinear straight-through running-line pair at this turnout and walk it.
+                    if not chosen and hop == 1 and len(nbrs) >= 3:
+                        nbr_list = [nb for nb in nbrs if nb in node_xy]
+                        best_pair = None
+                        min_pair_cos = 2.0
+                        for idx_a, na in enumerate(nbr_list):
+                            v_ax, v_ay = node_xy[na][0] - cx, node_xy[na][1] - cy
+                            la = math.hypot(v_ax, v_ay)
+                            if la <= 1e-6:
+                                continue
+                            for nb in nbr_list[idx_a + 1:]:
+                                v_bx, v_by = node_xy[nb][0] - cx, node_xy[nb][1] - cy
+                                lb = math.hypot(v_bx, v_by)
+                                if lb <= 1e-6:
+                                    continue
+                                p_cos = (v_ax * v_bx + v_ay * v_by) / (la * lb)
+                                if p_cos < min_pair_cos:
+                                    min_pair_cos = p_cos
+                                    best_pair = (na, nb)
+                        if best_pair and min_pair_cos <= -0.92:
+                            chosen = [nb for nb in best_pair if nb not in visited]
+                elif hop == 1 and curr_id in node_xy and len(nbrs) >= 3:
+                    # Started directly on a turnout node (prev_id is None): follow the collinear running-line pair
+                    cx, cy = node_xy[curr_id]
+                    nbr_list = [nb for nb in nbrs if nb in node_xy]
+                    best_pair = None
+                    min_pair_cos = 2.0
+                    for idx_a, na in enumerate(nbr_list):
+                        v_ax, v_ay = node_xy[na][0] - cx, node_xy[na][1] - cy
+                        la = math.hypot(v_ax, v_ay)
+                        if la <= 1e-6:
+                            continue
+                        for nb in nbr_list[idx_a + 1:]:
+                            v_bx, v_by = node_xy[nb][0] - cx, node_xy[nb][1] - cy
+                            lb = math.hypot(v_bx, v_by)
+                            if lb <= 1e-6:
+                                continue
+                            p_cos = (v_ax * v_bx + v_ay * v_by) / (la * lb)
+                            if p_cos < min_pair_cos:
+                                min_pair_cos = p_cos
+                                best_pair = (na, nb)
+                    chosen = [nb for nb in best_pair if nb not in visited] if (best_pair and min_pair_cos <= -0.92) else []
+                else:
+                    chosen = []
+
+                for nb in chosen:
+                    if nb not in visited:
+                        visited.add(nb)
+                        next_frontier.append((nb, curr_id))
+                        next_nids.append(nb)
+
+            if not next_nids:
+                break
+
+            cur.execute(
+                """
+                SELECT track_id, name, longname, description, rop_line_code, sa_line_code, directed, node_ids
+                FROM station_tracks
+                WHERE node_ids && %s::int[]
+                LIMIT 20
+                """,
+                (next_nids,),
+            )
+            walk_rows = cur.fetchall()
+            if walk_rows:
+                parsed = _parse_station_track_rows(walk_rows)
+                if parsed["direction_hint"]:
+                    sec_dir = parsed.get("secondary_dir") or (
+                        infer_direction_from_km_delta(cur, elr, start_km, end_km)
+                        if parsed["direction_hint"] == "reversible"
+                        else None
+                    )
+                    return {
+                        "direction_hint": parsed["direction_hint"],
+                        "secondary_dir": sec_dir,
+                        "track_name_hint": parsed["track_name_hint"] or partial_hint,
+                        "platform_num": parsed["platform_num"] if parsed["platform_num"] is not None else partial_plat,
+                        "source": f"TPS Track Walk ({hop} hop{'s' if hop > 1 else ''}: {parsed['label']})",
+                    }
+                if parsed["track_name_hint"] and not partial_hint:
+                    partial_hint = parsed["track_name_hint"]
+                    partial_plat = parsed["platform_num"]
+                    partial_source = f"TPS Track Walk ({hop} hop{'s' if hop > 1 else ''}: {parsed['label']})"
+            frontier = next_frontier[:16]
+
+    # 4. Data-driven per-ELR mileage polarity fallback (combines with any directionless route/track hint)
+    km_dir = infer_direction_from_km_delta(cur, elr, start_km, end_km)
+    if km_dir:
+        pol_src = f"ELR {elr} Mileage Polarity" if elr else "Mileage Polarity"
+        return {
+            "direction_hint": km_dir,
+            "track_name_hint": partial_hint,
+            "platform_num": partial_plat,
+            "source": f"{partial_source} + {pol_src}" if partial_source else pol_src,
+        }
+
+    if partial_hint:
+        return {
+            "direction_hint": None,
+            "track_name_hint": partial_hint,
+            "platform_num": partial_plat,
+            "source": partial_source,
+        }
+
+    return {"direction_hint": None, "track_name_hint": None, "platform_num": None, "source": None}
+
+
 def score_track_candidate(
     track_id: str,
     dir_hint: Optional[str],
@@ -1216,60 +1808,222 @@ def score_track_candidate(
     c_start: float,
     c_end: float,
     target_m: Optional[float],
+    asset_type: Optional[str] = None,
+    platform_num: Optional[int] = None,
+    secondary_dir: Optional[str] = None,
+    edge_vmax: Optional[int] = None,
 ) -> float:
     """Score a candidate NWR centreline to pick the single best match."""
     score = 50.0
     tid = str(track_id or "")
 
-    # Coverage bonus / penalty
+    # Coverage bonus / penalty (strict containment must strongly outrank non-overlapping segments)
     if target_m is not None:
         min_m = min(c_start, c_end)
         max_m = max(c_start, c_end)
-        if min_m - 50.0 <= target_m <= max_m + 50.0:
-            score += 40.0
+        if min_m <= target_m <= max_m:
+            score += 85.0
+        elif min_m - 50.0 <= target_m <= max_m + 50.0:
+            score += 35.0
         else:
-            mid = (c_start + c_end) / 2.0
-            score -= min(30.0, abs(mid - target_m) * 0.02)
+            dist_to_seg = min(abs(min_m - target_m), abs(max_m - target_m))
+            score -= 40.0 + min(40.0, dist_to_seg * 0.15)
 
     # Direction matching (1 = UP, 2 = DOWN, 3 = REVERSIBLE)
+    is_rev_hint = False
     if dir_hint:
         dh = dir_hint.lower()
-        if "down" in dh or dh == "dn":
+        if "rev" in dh or "bi" in dh:
+            is_rev_hint = True
+            if tid.startswith("3"):
+                score += 70.0
+            elif tid.startswith(("1", "2")):
+                # When NWR codes a bi-directionalised main line as 1xxx/2xxx (no 3xxx), break ties using secondary_dir
+                if secondary_dir == "down":
+                    score += 30.0 if tid.startswith("2") else 10.0
+                elif secondary_dir == "up":
+                    score += 30.0 if tid.startswith("1") else 10.0
+                else:
+                    score += 20.0
+        elif "down" in dh or dh == "dn":
             if tid.startswith("2"):
-                score += 60.0
+                score += 70.0
             elif tid.startswith("3"):
                 score += 25.0
             elif tid.startswith("1"):
-                score -= 50.0
+                score -= 60.0
         elif "up" in dh:
             if tid.startswith("1"):
-                score += 60.0
+                score += 70.0
             elif tid.startswith("3"):
                 score += 25.0
             elif tid.startswith("2"):
-                score -= 50.0
+                score -= 60.0
 
-    # Name matching (Fast / Slow / Platform / Loop / Siding)
-    if name_hint:
+    # Platform / Track / Siding sequence number matching (3rd & 4th digits NN of NWR 4-digit track_id)
+    if platform_num is not None and 1 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
+        tid_nn = int(tid[2:4])
+        if tid[1] in ("1", "2", "4", "5", "6", "8", "9"):
+            if tid_nn == platform_num:
+                score += 120.0
+            elif tid_nn > 0:
+                # Explicitly numbered for a different platform/siding (e.g. 3610 = Plat 10 vs Plat 12)
+                score -= 25.0
+    elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4") and tid[2:4] == "00":
+        # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
+        score += 5.0
+
+    # Line class matching (2nd digit of NWR Appendix A track_id)
+    matched_class = False
+    if name_hint and len(tid) >= 2:
         nh = name_hint.lower()
-        if any(w in nh for w in ("fast", "main", "line 1")):
-            if len(tid) >= 2 and tid[1] == "1":
-                score += 45.0
-        elif any(w in nh for w in ("slow", "relief", "line 2")):
-            if len(tid) >= 2 and tid[1] == "2":
-                score += 45.0
-        elif "loop" in nh:
-            if len(tid) >= 2 and tid[1] == "5":
-                score += 45.0
-        elif "siding" in nh or "yard" in nh:
-            if len(tid) >= 2 and tid[1] == "9":
-                score += 45.0
-        elif "crossover" in nh:
-            if len(tid) >= 2 and tid[1] == "7":
-                score += 45.0
-        elif "platform" in nh or "plat" in nh:
-            if len(tid) >= 2 and tid[1] in ("4", "6", "8"):
+        tokens = set(re.findall(r"[a-z0-9]+", nh))
+        d2 = tid[1]
+
+        if (
+            any(w in nh for w in ("engine", "carriage", "cariage", "reception", "back line", "washer", "arrivals", "departures", "departure"))
+            or bool(tokens & {"crl", "ecl", "cl1", "cl2", "rec", "rcp1", "rcp2", "w1", "w2", "wrb"})
+        ):
+            matched_class = True
+            if d2 == "8":
+                score += 55.0
+            elif d2 == "9":
                 score += 35.0
+            elif d2 in ("1", "2"):
+                score -= 25.0
+            elif d2 == "7":
+                score -= 20.0
+            else:
+                score -= 10.0
+        elif any(w in nh for w in ("siding", "sding", "yard", "depot", "headshunt")) or bool(tokens & {"sdg", "ms1", "ms2", "ms3", "mbr"}):
+            matched_class = True
+            if d2 == "9":
+                score += 55.0
+            elif d2 == "8":
+                # Engine / Reception / Other lines (e.g. Paddington 3800) are the standard NWR class when no x9xx exists
+                score += 35.0
+            elif d2 in ("1", "2"):
+                score -= 25.0
+            elif d2 == "7":
+                score -= 20.0
+            else:
+                score -= 10.0
+        elif "crossover" in nh or "xover" in nh:
+            matched_class = True
+            score += 50.0 if d2 == "7" else -15.0
+        elif any(w in nh for w in ("bay", "terminal")):
+            matched_class = True
+            if d2 == "6":
+                score += 60.0
+            elif d2 in ("1", "2"):
+                score -= 15.0
+            elif d2 in ("7", "8", "9"):
+                score -= 25.0
+        elif (
+            "loop" in nh
+            or bool(tokens & {"dl", "ul", "udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "bgl", "rvl"})
+            or bool(re.search(r"\b(?:d&u|u&d|d/u|u/d)(?:g|p)?l\b", nh))
+        ):
+            matched_class = True
+            if d2 == "5":
+                score += 55.0
+            elif d2 == "3" and ("goods" in nh or "g" in tokens or "gl" in nh):
+                score += 20.0
+            elif d2 in ("6", "7", "8", "9"):
+                score -= 25.0
+            else:
+                score -= 10.0
+        elif (
+            any(w in nh for w in ("goods", "freight", "independent", "indep"))
+            or bool(tokens & {"dg", "ug", "gl", "dmi", "umi", "mil", "ind", "di", "ui"})
+        ):
+            matched_class = True
+            if d2 == "3":
+                score += 55.0
+            elif d2 == "2":
+                # Independent / Goods lines on 4-track corridors are often coded x2xx (Slow) in NWR when no x3xx exists
+                score += 25.0
+            elif d2 == "5":
+                score += 10.0
+            elif d2 == "1":
+                score -= 20.0
+            else:
+                score -= 15.0
+        elif "single" in nh or bool(tokens & {"sgl"}):
+            matched_class = True
+            if d2 == "4":
+                score += 55.0
+                if tid.startswith("3"):
+                    score += 15.0
+            else:
+                score -= 10.0
+        elif (
+            ("platform" in nh or "plat" in nh)
+            and not any(w in nh for w in ("fast", "main", "slow", "relief", "goods", "freight", "bay", "terminal"))
+        ):
+            # Dedicated station platform tracks (e.g. Stafford 'Up Platform' / 'Down Platform' with SA=UF/DF)
+            # map to NWR Platform Loops (1500/2500/3500) when present alongside non-platform Fast through lines,
+            # falling back cleanly to 1100/2100/1200/2200 at stations without platform loops.
+            matched_class = True
+            if d2 == "5":
+                score += 55.0
+            elif d2 == "1":
+                score += 25.0 if bool(tokens & {"uf", "df", "um", "dm"}) else 15.0
+            elif d2 == "2":
+                score += 25.0 if (is_rev_hint or bool(tokens & {"us", "ds"})) else 15.0
+            elif d2 in ("4", "6"):
+                score += 15.0
+            elif d2 in ("7", "8", "9"):
+                score -= 30.0
+        elif (
+            any(w in nh for w in ("slow", "relief", "line 2", "up 2", "down 2", "local"))
+            or bool(tokens & {"ds", "us", "sl", "rl", "dsl", "usl", "drl", "url", "l2"})
+        ):
+            matched_class = True
+            if d2 == "2":
+                score += 50.0
+            elif d2 == "1":
+                score -= 15.0
+            elif d2 in ("6", "8"):
+                score -= 30.0
+            elif d2 in ("7", "9"):
+                score -= 40.0
+        elif (
+            any(w in nh for w in ("fast", "main", "line 1", "up 1", "down 1"))
+            or bool(tokens & {"dm", "um", "df", "uf", "ml", "fl", "dml", "uml", "dfl", "ufl", "l1", "dfi", "ufi"})
+        ):
+            matched_class = True
+            if d2 == "1":
+                score += 50.0
+            elif d2 == "2":
+                # Reversible through platforms (e.g. Crewe 3212) are coded 32xx; don't penalize them behind bays/engine lines
+                score += 10.0 if (is_rev_hint or platform_num is not None) else -10.0
+            elif d2 in ("6", "8"):
+                score -= 35.0
+            elif d2 == "7":
+                score -= 40.0
+            elif d2 == "9":
+                score -= 45.0
+        elif "platform" in nh or "plat" in nh:
+            matched_class = True
+            if d2 in ("1", "2", "4", "5", "6"):
+                score += 25.0
+            elif d2 in ("7", "8", "9"):
+                score -= 25.0
+
+    # Line-speed (vmax) Fast vs Slow tiebreaker when TPS gave no explicit line class
+    if not matched_class and edge_vmax and edge_vmax > 0 and len(tid) >= 2:
+        if edge_vmax >= 145 and tid[1] == "1":
+            score += 20.0
+        elif edge_vmax <= 80 and tid[1] == "2":
+            score += 15.0
+
+    # Gentle running-line tiebreaker for main signals with no siding/crossover hint
+    if not matched_class and asset_type == "signal" and len(tid) >= 2:
+        if tid[1] in ("1", "2", "4"):
+            score += 10.0
+        elif tid[1] in ("7", "8", "9"):
+            score -= 15.0
 
     return score
 
@@ -1285,6 +2039,12 @@ def find_nwr_cross_links_for_tps(
     item_label: Optional[str] = None,
     is_extrapolated: bool = False,
     asset_type: Optional[str] = None,
+    preferred_fid: Optional[int] = None,
+    match_source: Optional[str] = None,
+    platform_num: Optional[int] = None,
+    saved_fid: Optional[int] = None,
+    secondary_dir: Optional[str] = None,
+    edge_vmax: Optional[int] = None,
 ):
     """Find matching NWR Track Model (OSGB36) ELR, single best-match track, and discrete node/signal points."""
     if not elr:
@@ -1298,6 +2058,7 @@ def find_nwr_cross_links_for_tps(
             "snapped_node": None,
             "geo_snap": None,
             "single_match": False,
+            "match_info": None,
         }
     try:
         cur.execute(
@@ -1328,10 +2089,12 @@ def find_nwr_cross_links_for_tps(
                 WHERE elr = %s
                   AND LEAST(start_meters, end_meters) <= %s
                   AND GREATEST(start_meters, end_meters) >= %s
-                ORDER BY ABS(((start_meters + end_meters) / 2.0) - %s) ASC
-                LIMIT 16
+                ORDER BY
+                  CASE WHEN %s BETWEEN LEAST(start_meters, end_meters) AND GREATEST(start_meters, end_meters) THEN 0 ELSE 1 END ASC,
+                  ABS(((start_meters + end_meters) / 2.0) - %s) ASC
+                LIMIT 64
                 """,
-                (elr, span_max, span_min, target_m),
+                (elr, span_max, span_min, target_m, target_m),
             )
         else:
             cur.execute(
@@ -1342,7 +2105,7 @@ def find_nwr_cross_links_for_tps(
                 FROM nwr_track_centrelines
                 WHERE elr = %s
                 ORDER BY start_meters ASC
-                LIMIT 8
+                LIMIT 24
                 """,
                 (elr,),
             )
@@ -1360,11 +2123,30 @@ def find_nwr_cross_links_for_tps(
                 ORDER BY LEAST(ABS(start_meters - %s), ABS(end_meters - %s)) ASC
                 LIMIT 1
                 """,
-                (elr, target_m if target_m is not None else 0),
+                (elr, target_m if target_m is not None else 0, target_m if target_m is not None else 0),
             )
             raw_candidates = cur.fetchall()
             if raw_candidates:
                 is_extrapolated = True
+
+        effective_pref_fid = preferred_fid if preferred_fid is not None else saved_fid
+
+        # If a manual/saved override fid was requested and isn't already in raw_candidates, fetch it directly
+        if effective_pref_fid is not None and not any(c["fid"] == effective_pref_fid for c in raw_candidates):
+            cur.execute(
+                """
+                SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                       start_meters, end_meters, length_meters, owner, coords,
+                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                FROM nwr_track_centrelines
+                WHERE fid = %s
+                LIMIT 1
+                """,
+                (effective_pref_fid,),
+            )
+            pref_row = cur.fetchone()
+            if pref_row:
+                raw_candidates = list(raw_candidates) + [pref_row]
 
         if not raw_candidates:
             geo_snap = None
@@ -1391,7 +2173,37 @@ def find_nwr_cross_links_for_tps(
                 "snapped_node": None,
                 "geo_snap": geo_snap,
                 "single_match": False,
+                "match_info": None,
             }
+
+        # For points/turnouts, check which candidate track_ids have an actual valency >= 3 switch endpoint near target_m
+        is_pts_asset = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)
+        switch_track_boost = {}
+        if is_pts_asset and target_m is not None and len(raw_candidates) > 1:
+            near_node_ids = set()
+            cand_endpoint_dists = []
+            for c in raw_candidates:
+                if c.get("start_node_id") and c.get("start_meters") is not None:
+                    d_s = abs(float(c["start_meters"]) - float(target_m))
+                    if d_s <= 35.0:
+                        near_node_ids.add(c["start_node_id"])
+                        cand_endpoint_dists.append((c["track_id"], c["start_node_id"], d_s))
+                if c.get("end_node_id") and c.get("end_meters") is not None:
+                    d_e = abs(float(c["end_meters"]) - float(target_m))
+                    if d_e <= 35.0:
+                        near_node_ids.add(c["end_node_id"])
+                        cand_endpoint_dists.append((c["track_id"], c["end_node_id"], d_e))
+            if near_node_ids:
+                cur.execute(
+                    "SELECT asset_id FROM nwr_track_nodes WHERE asset_id = ANY(%s) AND valency >= 3",
+                    (list(near_node_ids),),
+                )
+                sw_ids = {r["asset_id"] for r in cur.fetchall()}
+                for tid_c, nid_c, d_c in cand_endpoint_dists:
+                    if nid_c in sw_ids:
+                        boost = 60.0 if d_c <= 15.0 else 35.0
+                        if boost > switch_track_boost.get(tid_c, 0.0):
+                            switch_track_boost[tid_c] = boost
 
         candidates = []
         for c in raw_candidates:
@@ -1402,7 +2214,13 @@ def find_nwr_cross_links_for_tps(
                 c["start_meters"],
                 c["end_meters"],
                 target_m,
+                asset_type=asset_type,
+                platform_num=platform_num,
+                secondary_dir=secondary_dir,
+                edge_vmax=edge_vmax,
             )
+            if switch_track_boost:
+                score += switch_track_boost.get(c["track_id"], 0.0)
             candidates.append({
                 **c,
                 "track_id_decoded": decode_track_id(c["track_id"]),
@@ -1410,7 +2228,18 @@ def find_nwr_cross_links_for_tps(
             })
 
         candidates.sort(key=lambda x: x["_score"], reverse=True)
+        auto_best_fid = candidates[0]["fid"]
+        manual_override = False
+        is_saved_override = False
         best_candidate = dict(candidates[0])
+        if effective_pref_fid is not None:
+            for c in candidates:
+                if c["fid"] == effective_pref_fid:
+                    best_candidate = dict(c)
+                    is_saved_override = saved_fid is not None and c["fid"] == saved_fid
+                    manual_override = c["fid"] != auto_best_fid or is_saved_override
+                    break
+
         orig_coords = list(best_candidate.get("coords") or [])
         c_start_m = best_candidate["start_meters"]
         c_end_m = best_candidate["end_meters"]
@@ -1439,7 +2268,7 @@ def find_nwr_cross_links_for_tps(
                 best_candidate["clipped_length_meters"] = clipped_len
                 is_clipped = True
 
-        # Discrete points & Physical Node Snapping
+        # Discrete points & Track-Constrained Physical Node Snapping
         node_points = []
         snapped_nwr_node = None
 
@@ -1451,27 +2280,60 @@ def find_nwr_cross_links_for_tps(
                 km_meters,
             )
             if pt_main:
-                # Query physical nwr_track_nodes near pt_main
+                # Query physical nwr_track_nodes near pt_main, tagged with whether they lie on best_candidate's track_id
                 cur.execute(
                     """
-                    SELECT fid, asset_id, valency, x, y,
-                           SQRT(POWER(x - %s, 2) + POWER(y - %s, 2)) AS dist
-                    FROM nwr_track_nodes
-                    WHERE x BETWEEN %s - 90.0 AND %s + 90.0
-                      AND y BETWEEN %s - 90.0 AND %s + 90.0
+                    SELECT n.fid, n.asset_id, n.valency, n.x, n.y,
+                           SQRT(POWER(n.x - %s, 2) + POWER(n.y - %s, 2)) AS dist,
+                           EXISTS (
+                               SELECT 1
+                               FROM nwr_track_centrelines c
+                               WHERE c.elr = %s
+                                 AND c.track_id = %s
+                                 AND (c.start_node_id = n.asset_id OR c.end_node_id = n.asset_id)
+                           ) AS on_matched_track
+                    FROM nwr_track_nodes n
+                    WHERE n.x BETWEEN %s - 90.0 AND %s + 90.0
+                      AND n.y BETWEEN %s - 90.0 AND %s + 90.0
                     ORDER BY dist ASC
-                    LIMIT 6
+                    LIMIT 32
                     """,
-                    (pt_main[0], pt_main[1], pt_main[0], pt_main[0], pt_main[1], pt_main[1]),
+                    (
+                        pt_main[0],
+                        pt_main[1],
+                        best_candidate["elr"],
+                        best_candidate["track_id"],
+                        pt_main[0],
+                        pt_main[0],
+                        pt_main[1],
+                        pt_main[1],
+                    ),
                 )
                 nearby_nodes = cur.fetchall()
                 if nearby_nodes:
-                    if tps_valency is not None and tps_valency >= 3:
-                        # Prioritize switch/turnout nodes with valency >= 3
-                        switch_nodes = [nd for nd in nearby_nodes if nd["valency"] >= 3]
-                        picked = switch_nodes[0] if switch_nodes else nearby_nodes[0]
+                    is_pts_snap = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)
+                    if is_pts_snap:
+                        # Prioritize: (1) switch on matched track, (2) switch within 20m, (3) any node on matched track, (4) nearest switch, (5) nearest node
+                        sw_on_trk = [nd for nd in nearby_nodes if nd["valency"] >= 3 and nd["on_matched_track"]]
+                        sw_close = [nd for nd in nearby_nodes if nd["valency"] >= 3 and nd["dist"] <= 20.0]
+                        any_on_trk = [nd for nd in nearby_nodes if nd["on_matched_track"]]
+                        sw_any = [nd for nd in nearby_nodes if nd["valency"] >= 3]
+                        picked = (
+                            sw_on_trk[0]
+                            if sw_on_trk
+                            else (
+                                sw_close[0]
+                                if sw_close
+                                else (
+                                    any_on_trk[0]
+                                    if any_on_trk
+                                    else (sw_any[0] if sw_any else nearby_nodes[0])
+                                )
+                            )
+                        )
                     else:
-                        picked = nearby_nodes[0]
+                        any_on_trk = [nd for nd in nearby_nodes if nd["on_matched_track"] and nd["dist"] <= 45.0]
+                        picked = any_on_trk[0] if any_on_trk else nearby_nodes[0]
 
                     snapped_nwr_node = {
                         "fid": picked["fid"],
@@ -1482,6 +2344,7 @@ def find_nwr_cross_links_for_tps(
                         "y": picked["y"],
                         "dist_meters": round(picked["dist"], 2),
                         "is_switch": picked["valency"] >= 3,
+                        "on_matched_track": bool(picked["on_matched_track"]),
                     }
 
                 # Construct discrete node points
@@ -1611,7 +2474,7 @@ def find_nwr_cross_links_for_tps(
         return {
             "elr_record": elr_rec,
             "centrelines": [best_candidate],
-            "corridor_centrelines": candidates[:10],
+            "corridor_centrelines": candidates[:24],
             "best_centreline": best_candidate,
             "node_point": node_points[0] if node_points else None,
             "node_points": node_points,
@@ -1620,6 +2483,20 @@ def find_nwr_cross_links_for_tps(
             "clipped": is_clipped,
             "clipped_length_meters": clipped_len if is_clipped else None,
             "single_match": True,
+            "match_info": {
+                "direction_hint": direction_hint,
+                "track_name_hint": track_name_hint,
+                "platform_num": platform_num,
+                "source": (
+                    "Saved Track Override"
+                    if is_saved_override
+                    else ("Manual Track Override" if manual_override else (match_source or "ELR & Mileage Match"))
+                ),
+                "manual_override": manual_override,
+                "saved_override": is_saved_override,
+                "saved_fid": saved_fid,
+                "auto_best_fid": auto_best_fid,
+            },
         }
     except Exception:
         return {
@@ -1632,15 +2509,60 @@ def find_nwr_cross_links_for_tps(
             "snapped_node": None,
             "geo_snap": None,
             "single_match": False,
+            "match_info": None,
         }
 
 
+@app.post("/api/nwr/track-override")
+def api_save_track_override(payload: dict = Body(...)):
+    asset_type = str(payload.get("asset_type") or "").strip().lower()
+    asset_id = payload.get("asset_id")
+    nwr_fid = payload.get("nwr_fid")
+    if not asset_type or asset_id is None or nwr_fid is None:
+        raise HTTPException(status_code=400, detail="asset_type, asset_id, and nwr_fid are required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_track_overrides_table(cur)
+            cur.execute(
+                """
+                INSERT INTO tps_nwr_track_overrides (asset_type, asset_id, nwr_fid, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (asset_type, asset_id)
+                DO UPDATE SET nwr_fid = EXCLUDED.nwr_fid, updated_at = NOW()
+                """,
+                (asset_type, int(asset_id), int(nwr_fid)),
+            )
+            conn.commit()
+    return {"ok": True, "asset_type": asset_type, "asset_id": int(asset_id), "nwr_fid": int(nwr_fid)}
+
+
+@app.delete("/api/nwr/track-override/{asset_type}/{asset_id}")
+def api_delete_track_override(asset_type: str, asset_id: int):
+    atype = str(asset_type or "").strip().lower()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_track_overrides_table(cur)
+            if atype in ("signal", "points"):
+                cur.execute(
+                    "DELETE FROM tps_nwr_track_overrides WHERE asset_type IN ('signal', 'points') AND asset_id = %s",
+                    (asset_id,),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM tps_nwr_track_overrides WHERE asset_type = %s AND asset_id = %s",
+                    (atype, asset_id),
+                )
+            conn.commit()
+    return {"ok": True, "asset_type": atype, "asset_id": asset_id}
+
+
 @app.get("/api/asset/{asset_type}/{asset_id}")
-def api_get_asset(asset_type: str, asset_id: int):
+def api_get_asset(asset_type: str, asset_id: int, nwr_fid: Optional[int] = Query(default=None)):
     lookup = load_lookup_cache()
 
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
+            saved_override_fid = get_saved_track_override(cur, asset_type, asset_id)
             if asset_type == "station":
                 cur.execute("SELECT * FROM stations WHERE station_id = %s", (asset_id,))
                 st = cur.fetchone()
@@ -1813,6 +2735,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                             item_label=f"Station {st['longname'] or st['abbrev']}",
                             is_extrapolated=is_st_extrapolated,
                             asset_type="station",
+                            preferred_fid=nwr_fid,
+                            saved_fid=saved_override_fid,
                         ),
                     },
                     "highlight": {
@@ -1953,24 +2877,32 @@ def api_get_asset(asset_type: str, asset_id: int):
                     start_km = max(0, end_km - ed["length"])
                     is_ed_extrapolated = True
 
-                edge_dir = None
-                if start_km is not None and end_km is not None:
-                    if start_km < end_km:
-                        edge_dir = "down"
-                    elif start_km > end_km:
-                        edge_dir = "up"
-                track_hint = tracks[0]["name"] if tracks else None
+                edge_elr = elr_start or (decode_code("kmregionmasterdesc", n_end["km_region_id"]) if n_end else None)
+                edge_identity = resolve_tps_track_identity(
+                    cur,
+                    [ed["start_node_id"], ed["end_node_id"]],
+                    start_node_id=ed["start_node_id"],
+                    end_node_id=ed["end_node_id"],
+                    elr=edge_elr,
+                    start_km=start_km,
+                    end_km=end_km,
+                )
+                track_hint = edge_identity["track_name_hint"] or (tracks[0]["name"] if tracks else None)
 
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
-                    elr_start or (decode_code("kmregionmasterdesc", n_end["km_region_id"]) if n_end else None),
+                    edge_elr,
                     start_km,
                     end_km_meters=end_km,
-                    direction_hint=edge_dir,
+                    direction_hint=edge_identity["direction_hint"],
                     track_name_hint=track_hint,
                     item_label=f"Edge #{ed['edge_id']}",
                     is_extrapolated=is_ed_extrapolated,
                     asset_type="edge",
+                    preferred_fid=nwr_fid,
+                    match_source=edge_identity["source"],
+                    platform_num=edge_identity.get("platform_num"),
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
@@ -2104,14 +3036,25 @@ def api_get_asset(asset_type: str, asset_id: int):
                     else ("Continuous Track Joint (Valency 2)" if len(conn_edges) == 2 else "Buffer Stop / Dead End (Valency 1)")
                 )
 
+                nd_identity = resolve_tps_track_identity(
+                    cur,
+                    [nd["node_id"]],
+                    elr=elr1,
+                )
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     elr1,
                     nd_km,
+                    direction_hint=nd_identity["direction_hint"],
+                    track_name_hint=nd_identity["track_name_hint"],
                     tps_valency=len(conn_edges),
                     item_label=f"Points #{nd['node_id']}" if is_points_node else f"Track Node #{nd['node_id']}",
                     is_extrapolated=is_nd_extrapolated,
                     asset_type="points" if is_points_node else "node",
+                    preferred_fid=nwr_fid,
+                    match_source=nd_identity["source"],
+                    platform_num=nd_identity.get("platform_num"),
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
@@ -2585,28 +3528,76 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 sig_km_val = adj_e["e_km"]
                             is_sig_extrapolated = True
 
-                sig_dir = None
-                sig_name_str = (sig["name"] or sig["master_name"] or "").strip().upper()
-                if sig_name_str.startswith("DN") or " DOWN " in f" {sig_name_str} " or sig_name_str.startswith("D"):
-                    sig_dir = "down"
-                elif sig_name_str.startswith("UP") or " UP " in f" {sig_name_str} " or sig_name_str.startswith("U"):
-                    sig_dir = "up"
-                elif approach_edge and approach_edge.get("start_node_id") and approach_edge.get("end_node_id"):
-                    cur.execute("SELECT km_value FROM nodes WHERE node_id = %s", (approach_edge["start_node_id"],))
-                    n_a = cur.fetchone()
-                    cur.execute("SELECT km_value FROM nodes WHERE node_id = %s", (approach_edge["end_node_id"],))
-                    n_b = cur.fetchone()
-                    if n_a and n_b and n_a.get("km_value") and n_b.get("km_value"):
-                        sig_dir = "down" if n_a["km_value"] < n_b["km_value"] else "up"
+                # Resolve physical track direction & line class from TPS station_tracks / routes / graph walk / ELR polarity
+                sig_start_km = None
+                sig_end_km = None
+                if sig.get("start_node_id") and sig.get("end_node_id"):
+                    cur.execute(
+                        "SELECT node_id, km_value FROM nodes WHERE node_id IN (%s, %s)",
+                        (sig["start_node_id"], sig["end_node_id"]),
+                    )
+                    km_pair = {r["node_id"]: r["km_value"] for r in cur.fetchall()}
+                    sig_start_km = km_pair.get(sig["start_node_id"])
+                    sig_end_km = km_pair.get(sig["end_node_id"])
+
+                sig_node_list = [
+                    nid
+                    for nid in (sig.get("end_node_id"), sig.get("start_node_id"), sig.get("point_node_id"))
+                    if nid is not None
+                ]
+                sig_identity = resolve_tps_track_identity(
+                    cur,
+                    sig_node_list,
+                    start_node_id=sig.get("start_node_id"),
+                    end_node_id=sig.get("end_node_id"),
+                    elr=sig_elr,
+                    start_km=sig_start_km,
+                    end_km=sig_end_km,
+                )
+                sig_dir = sig_identity["direction_hint"]
+                sig_track_hint = sig_identity["track_name_hint"]
+                sig_match_source = sig_identity["source"]
+
+                # Only fall back to explicit UP/DOWN words in signal name if TPS topology gave no direction
+                if not sig_dir:
+                    sig_name_str = (sig["name"] or sig["master_name"] or "").strip().upper()
+                    if re.search(r"\b(?:DOWN|DN)\b", sig_name_str):
+                        sig_dir = "down"
+                        sig_match_source = "Signal Name"
+                    elif re.search(r"\bUP\b", sig_name_str):
+                        sig_dir = "up"
+                        sig_match_source = "Signal Name"
+
+                # Compute TPS node valency for points assets so NWR snapping prioritizes switch nodes on the matched track
+                sig_tps_valency = None
+                if is_points_asset:
+                    pt_nid = sig.get("point_node_id") or sig.get("end_node_id") or sig.get("start_node_id")
+                    if pt_nid:
+                        cur.execute(
+                            "SELECT COUNT(*) AS cnt FROM edges WHERE start_node_id = %s OR end_node_id = %s",
+                            (pt_nid, pt_nid),
+                        )
+                        vc_row = cur.fetchone()
+                        sig_tps_valency = max(3, int(vc_row["cnt"])) if vc_row else 3
+                    else:
+                        sig_tps_valency = 3
 
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     sig_elr,
                     sig_km_val,
                     direction_hint=sig_dir,
+                    track_name_hint=sig_track_hint,
+                    tps_valency=sig_tps_valency,
                     item_label=clean_item_name,
                     is_extrapolated=is_sig_extrapolated,
                     asset_type="points" if is_points_asset else "signal",
+                    preferred_fid=nwr_fid,
+                    match_source=sig_match_source,
+                    platform_num=sig_identity.get("platform_num"),
+                    saved_fid=saved_override_fid,
+                    secondary_dir=sig_identity.get("secondary_dir"),
+                    edge_vmax=approach_edge.get("vmax") if approach_edge else None,
                 )
 
                 ov_summary = (
@@ -2791,14 +3782,20 @@ def api_get_asset(asset_type: str, asset_id: int):
                         trk_km = t_nodes[0].get("km_value")
                         if len(t_nodes) > 1:
                             trk_end_km = t_nodes[-1].get("km_value")
+                trk_parsed = _parse_station_track_rows([trk])
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     trk_elr,
                     trk_km,
                     end_km_meters=trk_end_km,
-                    track_name_hint=trk.get("name"),
+                    direction_hint=trk_parsed["direction_hint"],
+                    track_name_hint=trk_parsed["track_name_hint"] or trk.get("name"),
                     item_label=f"Track {trk['name']}",
                     asset_type="track",
+                    preferred_fid=nwr_fid,
+                    match_source=f"TPS Track ({trk_parsed['label']})" if trk_parsed["label"] else "TPS Track",
+                    platform_num=trk_parsed.get("platform_num"),
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
@@ -3034,8 +4031,23 @@ def api_get_asset(asset_type: str, asset_id: int):
                             if blk_km is None:
                                 blk_km = mid_bn.get("km_value")
                             is_blk_extrapolated = True
-                    if blk_km is not None and blk_end_km is not None:
-                        blk_dir = "down" if blk_km < blk_end_km else "up"
+                    blk_identity = resolve_tps_track_identity(
+                        cur,
+                        nids,
+                        start_node_id=nids[0] if nids else None,
+                        end_node_id=nids[-1] if nids else None,
+                        elr=blk_elr,
+                        start_km=blk_km,
+                        end_km=blk_end_km,
+                    )
+                    blk_dir = blk_identity["direction_hint"]
+                    blk_track_hint = blk_identity["track_name_hint"]
+                    blk_match_source = blk_identity["source"]
+                    blk_plat_num = blk_identity.get("platform_num")
+                else:
+                    blk_track_hint = None
+                    blk_match_source = None
+                    blk_plat_num = None
 
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
@@ -3043,9 +4055,14 @@ def api_get_asset(asset_type: str, asset_id: int):
                     blk_km,
                     end_km_meters=blk_end_km,
                     direction_hint=blk_dir,
+                    track_name_hint=blk_track_hint,
                     item_label=f"Block #{blk['block_id']}",
                     is_extrapolated=is_blk_extrapolated,
                     asset_type="block",
+                    preferred_fid=nwr_fid,
+                    match_source=blk_match_source,
+                    platform_num=blk_plat_num,
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
@@ -3136,14 +4153,29 @@ def api_get_asset(asset_type: str, asset_id: int):
                                 rt_km = mid_rn.get("km_value")
                             is_rt_extrapolated = True
 
+                rt_identity = resolve_tps_track_identity(
+                    cur,
+                    rt.get("node_ids") or [],
+                    start_node_id=rt["node_ids"][0] if rt.get("node_ids") else None,
+                    end_node_id=rt["node_ids"][-1] if rt.get("node_ids") else None,
+                    elr=rt_elr,
+                    start_km=rt_km,
+                    end_km=rt_end_km,
+                )
                 nwr_cross_links = find_nwr_cross_links_for_tps(
                     cur,
                     rt_elr,
                     rt_km,
                     end_km_meters=rt_end_km,
+                    direction_hint=rt_identity["direction_hint"],
+                    track_name_hint=rt_identity["track_name_hint"],
                     item_label=f"Route #{rt['route_id']}",
                     is_extrapolated=is_rt_extrapolated,
                     asset_type="route",
+                    preferred_fid=nwr_fid,
+                    match_source=rt_identity["source"],
+                    platform_num=rt_identity.get("platform_num"),
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
@@ -3245,6 +4277,8 @@ def api_get_asset(asset_type: str, asset_id: int):
                     item_label=f"Attribute Section {asec['short_description']}",
                     is_extrapolated=is_as_extrapolated,
                     asset_type="attributesection",
+                    preferred_fid=nwr_fid,
+                    saved_fid=saved_override_fid,
                 )
 
                 return {
