@@ -1365,18 +1365,29 @@ def _extract_direction_from_tokens(
         if re.search(r"(?:^|[^A-Z])(?:UD[A-Z]*|U&D[A-Z]*|D&U[A-Z]*|U/D[A-Z]*|D/U[A-Z]*|RVL|BGL|REV|BI|BD)(?:$|[^A-Z])", code):
             return "reversible"
 
-    # 2. Physical line direction in description (e.g. 'D-Up Main' -> physical line is Up Main)
+    # 2. Physical line direction in description (e.g. 'D-Up Main' -> physical line is Up Main;
+    #    'Down Up Slow' -> working Down on physical Up Slow!)
     has_up_word = bool(re.search(r"\bup\b", desc_l))
     has_down_word = bool(re.search(r"\bdown\b|\bdn\b", desc_l))
     if has_up_word and not has_down_word:
         return "up"
     if has_down_word and not has_up_word:
         return "down"
+    if has_up_word and has_down_word:
+        # e.g. 'Down Up Slow' (wrong-direction working on Up Slow) vs 'Up Down Slow' (on Down Slow)
+        if re.search(r"\b(?:down|dn)\s+up\b", desc_l):
+            return "up"
+        if re.search(r"\bup\s+(?:down|dn)\b", desc_l):
+            return "down"
 
     # 3. SA / ROP line code (describes the physical line: DM, UM, DF, UF, DS, US, DG, UG, DL, UL, ULL, DLL, UML, DML)
     for code in (sa_u, rop_u):
         if not code:
             continue
+        if code in ("DUS", "DUF", "DUM", "DUR"):
+            return "up"
+        if code in ("UDS", "UDF", "UDM", "UDR"):
+            return "down"
         if re.match(r"^D(?:M|ML|F|FL|S|SL|G|GL|L|LL|R|RL|SDG|SGL|E|W|N|B)", code) or code in ("DM", "DF", "DS", "DG", "DL", "DN"):
             return "down"
         if re.match(r"^U(?:M|ML|F|FL|S|SL|G|GL|L|LL|R|RL|SDG|SGL|E|W|N|B)", code) or code in ("UM", "UF", "US", "UG", "UL", "UP"):
@@ -1958,25 +1969,32 @@ def score_track_candidate(
             else:
                 score -= 10.0
         elif (
-            ("platform" in nh or "plat" in nh)
-            and not any(w in nh for w in ("fast", "main", "slow", "relief", "goods", "freight", "bay", "terminal"))
+            bool(re.search(r"\b(?:platform|plat)\b", nh))
+            and not bool(re.search(r"\b(?:fast|main|slow|relief|goods|freight|bay|terminal)\b", nh))
         ):
-            # Dedicated station platform tracks (e.g. Stafford 'Up Platform' / 'Down Platform' with SA=UF/DF)
-            # map to NWR Platform Loops (1500/2500/3500) when present alongside non-platform Fast through lines,
-            # falling back cleanly to 1100/2100/1200/2200 at stations without platform loops.
+            # Dedicated station platform tracks (e.g. Stafford 'Up Platform' / 'Down Platform', Reading 'Platform 7 | DML',
+            # Birmingham New Street 'U-Platform 1' -> 3801)
             matched_class = True
+            has_fast_tok = bool(tokens & {"uf", "df", "um", "dm", "ufl", "dfl", "uml", "dml"})
+            has_slow_tok = bool(tokens & {"us", "ds", "usl", "dsl", "url", "drl"})
             if d2 == "5":
-                score += 55.0
+                score += 75.0
             elif d2 == "1":
-                score += 25.0 if bool(tokens & {"uf", "df", "um", "dm"}) else 15.0
+                score += 35.0 if has_fast_tok else 15.0
             elif d2 == "2":
-                score += 25.0 if (is_rev_hint or bool(tokens & {"us", "ds"})) else 15.0
+                score += 35.0 if (has_slow_tok or (is_rev_hint and not has_fast_tok)) else 15.0
             elif d2 in ("4", "6"):
                 score += 15.0
-            elif d2 in ("7", "8", "9"):
+            elif d2 == "8":
+                # Station platform tracks at major hubs (e.g. Birmingham New St 3801-3812, York 3809-3811)
+                if platform_num is not None and len(tid) == 4 and tid[2:4].isdigit() and int(tid[2:4]) == platform_num:
+                    score += 5.0
+                else:
+                    score -= 10.0
+            elif d2 in ("7", "9"):
                 score -= 30.0
         elif (
-            any(w in nh for w in ("slow", "relief", "line 2", "up 2", "down 2", "local"))
+            bool(re.search(r"\b(?:slow|relief|line 2|up 2|down 2|local)\b", nh))
             or bool(tokens & {"ds", "us", "sl", "rl", "dsl", "usl", "drl", "url", "l2"})
         ):
             matched_class = True
@@ -1989,7 +2007,7 @@ def score_track_candidate(
             elif d2 in ("7", "9"):
                 score -= 40.0
         elif (
-            any(w in nh for w in ("fast", "main", "line 1", "up 1", "down 1"))
+            bool(re.search(r"\b(?:fast|main|line 1|up 1|down 1)\b", nh))
             or bool(tokens & {"dm", "um", "df", "uf", "ml", "fl", "dml", "uml", "dfl", "ufl", "l1", "dfi", "ufi"})
         ):
             matched_class = True
@@ -2004,11 +2022,13 @@ def score_track_candidate(
                 score -= 40.0
             elif d2 == "9":
                 score -= 45.0
-        elif "platform" in nh or "plat" in nh:
+        elif bool(re.search(r"\b(?:platform|plat)\b", nh)):
             matched_class = True
             if d2 in ("1", "2", "4", "5", "6"):
                 score += 25.0
-            elif d2 in ("7", "8", "9"):
+            elif d2 == "8":
+                score -= 5.0
+            elif d2 in ("7", "9"):
                 score -= 25.0
 
     # Line-speed (vmax) Fast vs Slow tiebreaker when TPS gave no explicit line class
@@ -2176,6 +2196,56 @@ def find_nwr_cross_links_for_tps(
                 "match_info": None,
             }
 
+        # Multi-ELR major hub fallback: if a numbered platform (e.g. Liverpool St 11-17 on LVS,
+        # York 2/4 on YMS, Reading 4-6 on RDG2) is not present on the primary ELR, search spatially
+        # within ±300m across adjacent ELRs for a platform centreline ending in that exact 2-digit number.
+        ref_pt_xy = None
+        if platform_num is not None and 1 <= platform_num <= 99 and raw_candidates:
+            plat_suffix = f"{platform_num:02d}"
+            has_plat_on_elr = any(
+                len(str(c.get("track_id") or "")) == 4
+                and str(c["track_id"])[2:4] == plat_suffix
+                and str(c["track_id"])[1] in ("1", "2", "4", "5", "6", "8")
+                for c in raw_candidates
+            )
+            if not has_plat_on_elr:
+                # Get spatial anchor (E, N) from primary ELR's first candidate
+                c0 = raw_candidates[0]
+                if km_meters is not None and c0.get("coords"):
+                    ref_pt_xy = interpolate_pt_along_coords(
+                        c0["coords"], c0["start_meters"], c0["end_meters"], km_meters
+                    )
+                if not ref_pt_xy and c0.get("min_x") is not None and c0.get("min_y") is not None:
+                    ref_pt_xy = (
+                        (float(c0["min_x"]) + float(c0["max_x"])) / 2.0,
+                        (float(c0["min_y"]) + float(c0["max_y"])) / 2.0,
+                    )
+                if ref_pt_xy:
+                    rx, ry = ref_pt_xy
+                    cur.execute(
+                        """
+                        SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                               start_meters, end_meters, length_meters, owner, coords,
+                               start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                        FROM nwr_track_centrelines
+                        WHERE elr <> %s
+                          AND RIGHT(track_id, 2) = %s
+                          AND SUBSTRING(track_id, 2, 1) IN ('1', '2', '4', '5', '6', '8')
+                          AND max_x >= %s - 300.0 AND min_x <= %s + 300.0
+                          AND max_y >= %s - 300.0 AND min_y <= %s + 300.0
+                        LIMIT 16
+                        """,
+                        (elr, plat_suffix, rx, rx, ry, ry),
+                    )
+                    cross_elr_rows = cur.fetchall()
+                    if cross_elr_rows:
+                        existing_fids = {c["fid"] for c in raw_candidates}
+                        raw_candidates = list(raw_candidates) + [
+                            {**r, "_cross_elr": True}
+                            for r in cross_elr_rows
+                            if r["fid"] not in existing_fids
+                        ]
+
         # For points/turnouts, check which candidate track_ids have an actual valency >= 3 switch endpoint near target_m
         is_pts_asset = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)
         switch_track_boost = {}
@@ -2207,13 +2277,20 @@ def find_nwr_cross_links_for_tps(
 
         candidates = []
         for c in raw_candidates:
+            # For spatially matched cross-ELR station platforms (e.g. LVS at Liverpool St, YMS at York),
+            # evaluate coverage using their own midpoint so they aren't penalized for having a different ELR origin.
+            cand_target_m = (
+                (float(c["start_meters"]) + float(c["end_meters"])) / 2.0
+                if c.get("_cross_elr")
+                else target_m
+            )
             score = score_track_candidate(
                 c["track_id"],
                 direction_hint,
                 track_name_hint,
                 c["start_meters"],
                 c["end_meters"],
-                target_m,
+                cand_target_m,
                 asset_type=asset_type,
                 platform_num=platform_num,
                 secondary_dir=secondary_dir,
@@ -2273,12 +2350,24 @@ def find_nwr_cross_links_for_tps(
         snapped_nwr_node = None
 
         if km_meters is not None and orig_coords:
-            pt_main = interpolate_pt_along_coords(
-                orig_coords,
-                c_start_m,
-                c_end_m,
-                km_meters,
-            )
+            if best_candidate.get("_cross_elr") and ref_pt_xy:
+                # Project primary-ELR spatial anchor onto the cross-ELR platform polyline
+                rx, ry = ref_pt_xy
+                best_proj = orig_coords[len(orig_coords) // 2]
+                best_d2 = float("inf")
+                for pt_c in orig_coords:
+                    d2 = (pt_c[0] - rx) ** 2 + (pt_c[1] - ry) ** 2
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_proj = pt_c
+                pt_main = [round(best_proj[0], 3), round(best_proj[1], 3)]
+            else:
+                pt_main = interpolate_pt_along_coords(
+                    orig_coords,
+                    c_start_m,
+                    c_end_m,
+                    km_meters,
+                )
             if pt_main:
                 # Query physical nwr_track_nodes near pt_main, tagged with whether they lie on best_candidate's track_id
                 cur.execute(
