@@ -1365,6 +1365,13 @@ def _extract_direction_from_tokens(
         if re.search(r"(?:^|[^A-Z])(?:UD[A-Z]*|U&D[A-Z]*|D&U[A-Z]*|U/D[A-Z]*|D/U[A-Z]*|RVL|BGL|REV|BI|BD)(?:$|[^A-Z])", code):
             return "reversible"
 
+    # 1b. Track name physical-line suffix before working-direction prefix (e.g. 'U-DM' / 'U-DML' is physically Down Main
+    #     even when description says 'U-DM Fast Up'; 'D-US' is physically Up Slow)
+    if re.match(r"^(?:U|D|E)-D(?:M|ML|F|FL|S|SL|G|GL|L|LL)\b", name_u):
+        return "down"
+    if re.match(r"^(?:U|D|E)-U(?:M|ML|F|FL|S|SL|G|GL|L|LL)\b", name_u):
+        return "up"
+
     # 2. Physical line direction in description (e.g. 'D-Up Main' -> physical line is Up Main;
     #    'Down Up Slow' -> working Down on physical Up Slow!)
     has_up_word = bool(re.search(r"\bup\b", desc_l))
@@ -2057,6 +2064,9 @@ def score_track_candidate(
     # Platform / Track / Siding sequence number matching (3rd & 4th digits NN of NWR 4-digit track_id)
     nh_l = (name_hint or "").lower()
     nh_tokens = set(re.findall(r"[a-z0-9]+", nh_l)) if nh_l else set()
+    is_siding_hint = any(w in nh_l for w in ("siding", "sding", "yard", "depot", "headshunt")) or bool(
+        nh_tokens & {"sdg", "ms1", "ms2", "ms3", "mbr"}
+    )
     is_secondary_fast = bool(nh_l) and (
         (bool(nh_tokens & {"dl", "ul"}) and bool(re.search(r"\bfast\b", nh_l)))
         or bool(re.search(r"\bsuburb", nh_l))
@@ -2069,7 +2079,8 @@ def score_track_candidate(
     )
     if platform_num is not None and 1 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
         tid_nn = int(tid[2:4])
-        if tid[1] in ("1", "2", "4", "5", "6", "8", "9"):
+        allowed_classes = ("8", "9") if is_siding_hint else ("1", "2", "4", "5", "6", "8", "9")
+        if tid[1] in allowed_classes:
             if tid_nn == platform_num:
                 score += 120.0
             elif tid_nn > 0:
@@ -2077,6 +2088,15 @@ def score_track_candidate(
                 # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                 score -= 55.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
+        # Lettered approach lines (e.g. Euston Camden Bank A->1101, B->1202, C->2203, E->1104)
+        letter_m = re.match(r"^(?:u|d|e)-([a-f])\b", nh_l)
+        if letter_m and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
+            lnum = ord(letter_m.group(1)) - ord("a") + 1
+            tnn = int(tid[2:4])
+            if tnn == lnum:
+                score += 25.0
+            elif lnum > 1 and tnn > 1:
+                score += max(2.0, 15.0 - abs(tnn - lnum) * 2.0)
         if is_secondary_fast:
             # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
             if tid[2:4] == "50":
@@ -2250,7 +2270,9 @@ def score_track_candidate(
     if not matched_class and asset_type == "signal" and len(tid) >= 2:
         if tid[1] in ("1", "2", "4"):
             score += 10.0
-        elif tid[1] in ("7", "8", "9"):
+        elif tid[1] == "7":
+            score -= 45.0
+        elif tid[1] in ("8", "9"):
             score -= 15.0
 
     return score
@@ -2453,6 +2475,54 @@ def find_nwr_cross_links_for_tps(
                             for r in cross_elr_rows
                             if r["fid"] not in existing_fids
                         ]
+        elif platform_num is None and track_name_hint and raw_candidates and target_m is not None:
+            # Multi-ELR flyover/dive-under Slow/Relief fallback (e.g. Norton Bridge Down Slow on LEC6 2200
+            # while TPS tags SC5609/SC5611/SC5615 on LEC4 where 2200 is absent across the flyover span).
+            th_l = track_name_hint.lower()
+            th_toks = set(re.findall(r"[a-z0-9]+", th_l))
+            wants_slow = bool(re.search(r"\b(?:slow|relief)\b", th_l)) or bool(th_toks & {"ds", "us", "dsl", "usl", "drl", "url"})
+            if wants_slow and direction_hint in ("up", "down"):
+                want_d1 = "2" if direction_hint == "down" else "1"
+                has_covering_slow = any(
+                    len(str(c.get("track_id") or "")) == 4
+                    and str(c["track_id"])[0] in (want_d1, "3")
+                    and str(c["track_id"])[1] == "2"
+                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    <= target_m
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    for c in raw_candidates
+                )
+                if not has_covering_slow:
+                    c0 = raw_candidates[0]
+                    if km_meters is not None and c0.get("coords"):
+                        ref_pt_xy = interpolate_pt_along_coords(
+                            c0["coords"], c0["start_meters"], c0["end_meters"], km_meters
+                        )
+                    if ref_pt_xy:
+                        rx, ry = ref_pt_xy
+                        cur.execute(
+                            """
+                            SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                                   start_meters, end_meters, length_meters, owner, coords,
+                                   start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                            FROM nwr_track_centrelines
+                            WHERE elr <> %s
+                              AND SUBSTRING(track_id, 1, 1) IN (%s, '3')
+                              AND SUBSTRING(track_id, 2, 1) = '2'
+                              AND LEAST(start_meters, end_meters) <= %s
+                              AND GREATEST(start_meters, end_meters) >= %s
+                              AND max_x >= %s - 1200.0 AND min_x <= %s + 1200.0
+                              AND max_y >= %s - 1200.0 AND min_y <= %s + 1200.0
+                            LIMIT 8
+                            """,
+                            (elr, want_d1, target_m, target_m, rx, rx, ry, ry),
+                        )
+                        flyover_rows = cur.fetchall()
+                        if flyover_rows:
+                            existing_fids = {c["fid"] for c in raw_candidates}
+                            raw_candidates = list(raw_candidates) + [
+                                r for r in flyover_rows if r["fid"] not in existing_fids
+                            ]
 
         # For points/turnouts, check which candidate track_ids have an actual valency >= 3 switch endpoint near target_m
         is_pts_asset = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)

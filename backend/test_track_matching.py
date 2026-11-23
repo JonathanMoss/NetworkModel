@@ -44,7 +44,16 @@ REGRESSION_CASES = [
     ("SB931 (Didcot Down Main)", "signal", 17874, "MLN1", "2100"),
     # Euston (LEC1)
     ("WM101 (Euston D-MBR)", "signal", 59530, "LEC1", "3902"),
+    ("WM107 (Euston Line E UF)", "signal", 17709, "LEC1", "1104"),
+    ("WM488 (Euston Line A UF)", "signal", 14046, "LEC1", "1101"),
+    ("WM501 (Euston Line A UF)", "signal", 43068, "LEC1", "1101"),
     ("POINTS 2001B (Euston MBR)", "points", 57088, "LEC1", "3901"),
+    # Norton Bridge Flyover (LEC4 -> LEC6 multi-ELR Down Slow)
+    ("SC5609 (Norton Brg DS LEC6)", "signal", 48110, "LEC6", "2200"),
+    ("SC5611 (Norton Brg DS LEC6)", "signal", 48112, "LEC6", "2200"),
+    # Leeds East & West approaches (DOL2 / HUL4)
+    ("LEEDS 13621 (DOL2 not xover)", "signal", 15320, "DOL2", "2100"),
+    ("LEEDSEJ (HUL4 U-DM -> 2100)", "signal", 15310, "HUL4", "2100"),
     # Liverpool Street (LTN1 + LVS multi-ELR)
     ("LIVST Plat 1", "signal", 28727, "LTN1", "3601"),
     ("LIVST Plat 10", "signal", 4338, "LTN1", "3610"),
