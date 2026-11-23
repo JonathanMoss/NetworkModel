@@ -101,7 +101,7 @@ In NWR's 4-digit `track_id` (`D C NN`):
    - **Multi-ELR Slow/Relief & Named-Branch Flyovers**:
      - On grade-separated Slow/Relief flyovers (e.g. Norton Bridge Down Slow `SC5609`/`SC5611`/`SC5615` on `LEC6 2200` while TPS tags `LEC4`), when `platform_num is None`, the TPS hint requests Slow/Relief (`d2 == 2`), and no covering same-direction Slow track exists within `±50 m` on the primary ELR, the backend searches spatially (`±1200 m`) across adjacent ELRs for a covering `12xx`/`22xx` track at `target_m`.
      - On named-branch flyovers/chords (e.g. `U-UNB` / `D-DNB` Norton Bridge flyover signals `NS4328`–`NS4333`), the backend first checks for a same-chainage adjacent-ELR flyover (`LEC6 1101`, `+25` bonus), and if none exists, checks for a uniquely adjacent (or `station_tracks`-confirmed) re-chained branch ELR within `±1500 m` (`NBS 1100`/`2100`, spatially projected via `_cross_elr`).
-     - On single-track bi-directional chords (where opposing TPS signals share the exact reverse edge `start_node_id <-> end_node_id`, e.g. Norton Bridge `NS5692`/`NS5693` and `NS5694`/`NS5695`), `resolve_tps_track_identity` marks the track `reversible` and `find_nwr_cross_links_for_tps` checks adjacent ELRs (`±1200 m`) for a covering `31xx`/`34xx` chord (`NBS1 3100`) when none exists on the primary ELR (`NBS`).
+     - On single-track bi-directional chords: (a) when opposing TPS signals share the exact reverse edge `start_node_id <-> end_node_id` (e.g. `NS5692`/`NS5693`, `NS5694`/`NS5695`), `resolve_tps_track_identity` marks the track `reversible` and `find_nwr_cross_links_for_tps` checks adjacent ELRs (`±1200 m`) for a covering `31xx`/`34xx` chord (`NBS1 3100`); (b) when an adjacent-ELR `3100`/`3400` chord lies within `±1200 m`, a zero-turnout valency-2 walk (`_find_valency2_adjacent_elr`) checks whether the signal's track crosses directly into that adjacent ELR (e.g. `NS5688`/`NS5691` tagged `LEC4` crossing directly into `NBS` → `NBS1 3100`, `+75` topological chord bonus).
 
 #### Scoring Matrix (`score_track_candidate`)
 *(All keyword checks use regex word boundaries `\b...\b` so place names like `Wilmslow`, `Hounslow`, or `Winslow` never trigger `"slow"`.)*
@@ -175,7 +175,7 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 83 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 85 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
@@ -194,7 +194,7 @@ docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points 
 - `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
 
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **83 / 83** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **85 / 85** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
 - **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).
@@ -250,7 +250,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 83-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 85-case regression suite, and UK-wide audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`

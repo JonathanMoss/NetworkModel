@@ -61,6 +61,8 @@ REGRESSION_CASES = [
     ("NS5693 (Norton Brg NBS1 3100)", "signal", 48119, "NBS1", "3100"),
     ("NS5694 (Norton Brg NBS1 3100)", "signal", 17286, "NBS1", "3100"),
     ("NS5695 (Norton Brg NBS1 3100)", "signal", 48118, "NBS1", "3100"),
+    ("NS5688 (Norton Brg NBS1 3100)", "signal", 17319, "NBS1", "3100"),
+    ("NS5691 (Norton Brg NBS1 3100)", "signal", 48121, "NBS1", "3100"),
     # Leeds East & West approaches (DOL2 / HUL4)
     ("LEEDS 13621 (DOL2 not xover)", "signal", 15320, "DOL2", "2100"),
     ("LEEDS L3644 (DOL2 Line A)", "signal", 15335, "DOL2", "3101"),
@@ -162,6 +164,7 @@ def run_tests() -> int:
                     platform_num=ident.get("platform_num"),
                     secondary_dir=ident.get("secondary_dir"),
                     edge_vmax=s.get("vmax"),
+                    tps_node_ids=nids,
                 )
                 b = res.get("best_centreline") or {}
                 got_elr, got_tid = b.get("elr"), b.get("track_id")

@@ -2342,6 +2342,45 @@ def score_track_candidate(
     return score
 
 
+def _find_valency2_adjacent_elr(cur, node_ids: list, primary_elr: str, max_hops: int = 10) -> Optional[str]:
+    """Walk strictly through valency <= 2 nodes (zero turnouts) to detect if a single-track chord crosses into another ELR."""
+    clean = [int(n) for n in (node_ids or []) if n is not None]
+    if not clean or not primary_elr:
+        return None
+    visited = set(clean)
+    frontier = list(clean)
+    for _ in range(max_hops):
+        if not frontier:
+            break
+        cur.execute(
+            "SELECT start_node_id, end_node_id FROM edges WHERE start_node_id = ANY(%s) OR end_node_id = ANY(%s)",
+            (frontier, frontier),
+        )
+        adj: dict[int, set[int]] = {}
+        for e in cur.fetchall():
+            a, b = e["start_node_id"], e["end_node_id"]
+            if a is not None and b is not None:
+                adj.setdefault(a, set()).add(b)
+                adj.setdefault(b, set()).add(a)
+        nxt = []
+        for u in frontier:
+            nbrs = adj.get(u, set())
+            if len(nbrs) <= 2:
+                for v in nbrs:
+                    if v not in visited:
+                        visited.add(v)
+                        nxt.append(v)
+        if not nxt:
+            break
+        cur.execute("SELECT node_id, km_region_id FROM nodes WHERE node_id = ANY(%s)", (nxt,))
+        for nr in cur.fetchall():
+            elr_name = decode_code("kmregionmasterdesc", nr["km_region_id"])
+            if elr_name and elr_name != primary_elr and elr_name != "---":
+                return elr_name
+        frontier = nxt
+    return None
+
+
 def find_nwr_cross_links_for_tps(
     cur,
     elr: Optional[str],
@@ -2359,6 +2398,7 @@ def find_nwr_cross_links_for_tps(
     saved_fid: Optional[int] = None,
     secondary_dir: Optional[str] = None,
     edge_vmax: Optional[int] = None,
+    tps_node_ids: Optional[list] = None,
 ):
     """Find matching NWR Track Model (OSGB36) ELR, single best-match track, and discrete node/signal points."""
     if not elr:
@@ -2728,6 +2768,51 @@ def find_nwr_cross_links_for_tps(
                                     if r["fid"] not in existing_fids
                                 ]
 
+            # Zero-turnout valency-2 cross-ELR chord fallback (e.g. Norton Bridge NS5688/NS5691 tagged LEC4
+            # on the southern end of single-track bi-directional chord NBS1 3100 leading directly into NBS).
+            has_primary_rev_main = any(
+                len(str(c.get("track_id") or "")) == 4 and str(c["track_id"])[:2] in ("31", "34")
+                for c in raw_candidates
+            )
+            if tps_node_ids and not has_primary_rev_main and not any(c.get("_flyover_branch") for c in raw_candidates):
+                if ref_pt_xy is None:
+                    c0 = raw_candidates[0]
+                    if km_meters is not None and c0.get("coords"):
+                        ref_pt_xy = interpolate_pt_along_coords(
+                            c0["coords"], c0["start_meters"], c0["end_meters"], km_meters
+                        )
+                if ref_pt_xy:
+                    rx, ry = ref_pt_xy
+                    cur.execute(
+                        """
+                        SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                               start_meters, end_meters, length_meters, owner, coords,
+                               start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                        FROM nwr_track_centrelines
+                        WHERE elr <> %s
+                          AND track_id IN ('3100', '3400')
+                          AND max_x >= %s - 1200.0 AND min_x <= %s + 1200.0
+                          AND max_y >= %s - 1200.0 AND min_y <= %s + 1200.0
+                        LIMIT 8
+                        """,
+                        (elr, rx, rx, ry, ry),
+                    )
+                    near_chords = cur.fetchall()
+                    if near_chords:
+                        adj_elr = _find_valency2_adjacent_elr(cur, tps_node_ids, elr, max_hops=10)
+                        if adj_elr:
+                            matching_chords = [
+                                r for r in near_chords
+                                if r["elr"] == adj_elr or r["elr"].startswith(adj_elr)
+                            ]
+                            if matching_chords:
+                                existing_fids = {c["fid"] for c in raw_candidates}
+                                raw_candidates = list(raw_candidates) + [
+                                    {**r, "_cross_elr": True, "_valency2_chord": True}
+                                    for r in matching_chords
+                                    if r["fid"] not in existing_fids
+                                ]
+
         # For points/turnouts, check which candidate track_ids have an actual valency >= 3 switch endpoint near target_m
         is_pts_asset = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)
         switch_track_boost = {}
@@ -2782,6 +2867,8 @@ def find_nwr_cross_links_for_tps(
                 score += switch_track_boost.get(c["track_id"], 0.0)
             if c.get("_flyover_branch"):
                 score += 25.0
+            if c.get("_valency2_chord"):
+                score += 75.0
             candidates.append({
                 **c,
                 "track_id_decoded": decode_track_id(c["track_id"]),
@@ -4171,6 +4258,7 @@ def api_get_asset(asset_type: str, asset_id: int, nwr_fid: Optional[int] = Query
                     saved_fid=saved_override_fid,
                     secondary_dir=sig_identity.get("secondary_dir"),
                     edge_vmax=approach_edge.get("vmax") if approach_edge else None,
+                    tps_node_ids=[n for n in (sig["start_node_id"], sig["end_node_id"]) if n is not None],
                 )
 
                 ov_summary = (
