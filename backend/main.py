@@ -1536,6 +1536,143 @@ def _parse_station_track_rows(
     }
 
 
+def _resolve_reversible_through_line_dir(
+    cur,
+    clean_nids: list,
+    start_node_id: Optional[int],
+    end_node_id: Optional[int],
+    max_hops: int = 16,
+) -> Optional[str]:
+    """Walk straight-through out of a bi-directional platform to find its physical running-line direction.
+
+    When a bi-directional through platform shares a running line (e.g. Up Main 1100 or Down Main 2100)
+    with no 2-digit platform suffix in NWR, a wrong-direction signal's facing direction (e.g. U-5 on
+    Down Main) does not match the physical line's direction. Walking straight-through past the platform
+    onto the adjacent open running line reveals the unanimous physical line direction ('up' or 'down').
+    """
+    visited = set(clean_nids)
+    if start_node_id is not None and end_node_id is not None and start_node_id != end_node_id:
+        frontier = [(int(end_node_id), int(start_node_id)), (int(start_node_id), int(end_node_id))]
+    else:
+        frontier = [(nid, None) for nid in clean_nids]
+
+    found_dirs: set[str] = set()
+    for _ in range(max_hops):
+        if not frontier:
+            break
+        curr_ids = list({c for c, _ in frontier})
+        cur.execute(
+            """
+            SELECT start_node_id, end_node_id
+            FROM edges
+            WHERE start_node_id = ANY(%s) OR end_node_id = ANY(%s)
+            """,
+            (curr_ids, curr_ids),
+        )
+        adj_map: dict[int, set[int]] = {}
+        for e in cur.fetchall():
+            a, b = e["start_node_id"], e["end_node_id"]
+            if a is not None and b is not None:
+                adj_map.setdefault(a, set()).add(b)
+                adj_map.setdefault(b, set()).add(a)
+
+        coord_needed: set[int] = set()
+        for curr_id, prev_id in frontier:
+            nbrs = adj_map.get(curr_id, set())
+            if len(nbrs) > 2:
+                coord_needed.add(curr_id)
+                if prev_id is not None:
+                    coord_needed.add(prev_id)
+                coord_needed.update(nbrs)
+
+        node_xy: dict[int, tuple[float, float]] = {}
+        if coord_needed:
+            cur.execute(
+                "SELECT node_id, netx, nety FROM nodes WHERE node_id = ANY(%s)",
+                (list(coord_needed),),
+            )
+            for nr in cur.fetchall():
+                if nr["netx"] is not None and nr["nety"] is not None:
+                    node_xy[nr["node_id"]] = (float(nr["netx"]), float(nr["nety"]))
+
+        next_frontier = []
+        next_nids = []
+        for curr_id, prev_id in frontier:
+            nbrs = adj_map.get(curr_id, set())
+            cand_nbrs = [nb for nb in nbrs if nb != prev_id and nb not in visited]
+            if not cand_nbrs:
+                continue
+            if len(nbrs) <= 2:
+                chosen = cand_nbrs
+            elif prev_id is not None and prev_id in node_xy and curr_id in node_xy:
+                px, py = node_xy[prev_id]
+                cx, cy = node_xy[curr_id]
+                dx_in, dy_in = cx - px, cy - py
+                len_in = math.hypot(dx_in, dy_in)
+                best_nb = None
+                best_cos = -2.0
+                if len_in > 1e-6:
+                    for nb in cand_nbrs:
+                        if nb not in node_xy:
+                            continue
+                        nx, ny = node_xy[nb]
+                        dx_out, dy_out = nx - cx, ny - cy
+                        len_out = math.hypot(dx_out, dy_out)
+                        if len_out > 1e-6:
+                            cos_sim = (dx_in * dx_out + dy_in * dy_out) / (len_in * len_out)
+                            if cos_sim > best_cos:
+                                best_cos = cos_sim
+                                best_nb = nb
+                chosen = [best_nb] if (best_nb is not None and best_cos >= 0.90) else []
+            else:
+                chosen = []
+
+            for nb in chosen:
+                visited.add(nb)
+                next_frontier.append((nb, curr_id))
+                next_nids.append(nb)
+
+        if not next_nids:
+            break
+
+        cur.execute(
+            """
+            SELECT track_id, name, longname, description, rop_line_code, sa_line_code, directed, node_ids
+            FROM station_tracks
+            WHERE node_ids && %s::int[]
+            LIMIT 20
+            """,
+            (next_nids,),
+        )
+        hop_rows = cur.fetchall()
+        matched_running_nodes: set[int] = set()
+        for r in hop_rows:
+            sa_c = decode_code("salinecodedesc", r.get("sa_line_code")) if r.get("sa_line_code") else None
+            pnum = _extract_platform_number(r.get("name"), r.get("longname"), r.get("description"), sa_c)
+            if pnum is not None:
+                continue
+            desc_l = str(r.get("description") or "").strip().lower()
+            if re.search(r"\b(?:up\s*(?:&|and)\s*down|down\s*(?:&|and)\s*up|reversible)\b", desc_l):
+                continue
+            line_dir = None
+            if re.search(r"\bup\s+(?:main|fast|slow|relief|line)\b", desc_l):
+                line_dir = "up"
+            elif re.search(r"\b(?:down|dn)\s+(?:main|fast|slow|relief|line)\b", desc_l):
+                line_dir = "down"
+            if line_dir:
+                found_dirs.add(line_dir)
+                r_nids = set(r.get("node_ids") or [])
+                matched_running_nodes.update(n for n in next_nids if n in r_nids)
+
+        if matched_running_nodes:
+            next_frontier = [(n, p) for n, p in next_frontier if n not in matched_running_nodes]
+        if len(found_dirs) > 1:
+            return None
+        frontier = next_frontier
+
+    return next(iter(found_dirs)) if len(found_dirs) == 1 else None
+
+
 def resolve_tps_track_identity(
     cur,
     node_ids: list,
@@ -1577,6 +1714,29 @@ def resolve_tps_track_identity(
                     if parsed["direction_hint"] == "reversible"
                     else None
                 )
+                hint_l = (parsed.get("track_name_hint") or "").lower()
+                has_explicit_sa_dir = any(
+                    _extract_direction_from_tokens(
+                        None,
+                        None,
+                        decode_code("salinecodedesc", r.get("sa_line_code")) if r.get("sa_line_code") else None,
+                        None,
+                    )
+                    in ("up", "down")
+                    for r in st_rows
+                )
+                if (
+                    parsed["direction_hint"] == "reversible"
+                    and parsed.get("platform_num") is not None
+                    and not has_explicit_sa_dir
+                    and "terminal" not in hint_l
+                    and "bay" not in hint_l
+                ):
+                    phys_dir = _resolve_reversible_through_line_dir(
+                        cur, clean_nids, start_node_id=start_node_id, end_node_id=end_node_id
+                    )
+                    if phys_dir in ("up", "down"):
+                        sec_dir = phys_dir
                 return {
                     "direction_hint": parsed["direction_hint"],
                     "secondary_dir": sec_dir,

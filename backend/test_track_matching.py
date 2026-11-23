@@ -54,8 +54,11 @@ REGRESSION_CASES = [
     # York (ECM4 / ECM5 / YMS multi-ELR)
     ("YORK Plat 1", "signal", 3234, "ECM4", "3601"),
     ("YORK Plat 2 (YMS)", "signal", 3236, "YMS", "3602"),
+    ("YORK Y221 Plat 3 Dn (ECM4)", "signal", 3239, "ECM4", "1100"),
     ("YORK Y235 Plat 4 (YMS)", "signal", 3242, "YMS", "3804"),
+    ("YORK Y228 Plat 5 Up (ECM4)", "signal", 3243, "ECM4", "2100"),
     ("YORK Plat 8", "signal", 3235, "ECM5", "3608"),
+    ("YORK Y231 Plat 8 (ECM5)", "signal", 3248, "ECM5", "3608"),
     ("YORK Plat 11", "signal", 3251, "ECM4", "3811"),
     # Birmingham New Street (RBS1 / RBS2)
     ("BHAMNWS Plat 1", "signal", 37602, "RBS2", "3801"),
