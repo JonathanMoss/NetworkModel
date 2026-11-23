@@ -91,8 +91,12 @@ REGRESSION_CASES = [
     ("RDG T1697 (Plat 14)", "signal", 43980, "MLN1", "1514"),
     ("RDG T1698 (Plat 15 URL)", "signal", 43973, "MLN1", "1200"),
     ("RDG T1706 (Plat 15 Dn)", "signal", 43974, "MLN1", "1200"),
-    # King's Cross (ECM1 sub-platforms)
+    # King's Cross (ECM1 platforms, Plat 0, Belle Isle A-F, Holloway)
+    ("KGX P0 (Plat 0 Bay)", "signal", 52202, "ECM1", "3600"),
+    ("KGX YA1000 (Plat 0 Bay)", "signal", 52203, "ECM1", "3600"),
     ("KGX P10 (10B Bay)", "signal", 52223, "ECM1", "3610"),
+    ("KGX Belle Isle Line D", "signal", 62157, "ECM1", "3104"),
+    ("KGX YA1073 (ECM1 Dn Slow)", "signal", 67235, "ECM1", "2200"),
 ]
 
 

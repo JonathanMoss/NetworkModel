@@ -1422,30 +1422,30 @@ def _extract_platform_number(
     sa_code: Optional[str],
 ) -> Optional[int]:
     """Extract a 1..99 platform/track/siding sequence number from TPS station_track metadata."""
-    # 1. Pure numeric or sub-platform longname/SA code (e.g. '12', '10', '10B', '9A', '4C')
+    # 1. Pure numeric or sub-platform longname/SA code (e.g. '0', '0F', '0R', '12', '10B', '9A', '4C')
     for candidate in (longname, sa_code):
         s = (candidate or "").strip()
-        m = re.match(r"^(\d{1,2})[A-D]?$", s, flags=re.IGNORECASE)
+        m = re.match(r"^(\d{1,2})[A-FR]?$", s, flags=re.IGNORECASE)
         if m:
             val = int(m.group(1))
-            if 1 <= val <= 99:
+            if 0 <= val <= 99:
                 return val
 
     # 2. Explicit 'Platform 12' / 'Platform 15A' / 'Bay 10B' / 'Siding 1' / 'Line 3' in description or name
     for candidate in (description, name):
         s = (candidate or "").strip()
-        m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})[A-D]?\b", s, flags=re.IGNORECASE)
+        m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})[A-FR]?\b", s, flags=re.IGNORECASE)
         if m:
             val = int(m.group(1))
-            if 1 <= val <= 99:
+            if 0 <= val <= 99:
                 return val
 
-    # 3. Directed platform/line/siding track name like 'D-12', 'U-10B~A', 'U-L3', 'D-MS1', 'U-SDG2', 'D-DL2', 'U-CL1'
+    # 3. Directed platform/line/siding track name like 'D-0F~A', 'U-0R~A', 'D-12', 'U-10B~A', 'U-L3', 'D-MS1'
     name_s = (name or "").strip().upper()
-    m = re.match(r"^(?:D|U|E)-(?:MS|SDG|DL|CL|RCP|S|L|W)?(\d{1,2})[A-D]?(?:~[A-Z0-9]+)?$", name_s)
+    m = re.match(r"^(?:D|U|E)-(?:MS|SDG|DL|CL|RCP|S|L|W)?(\d{1,2})[A-FR]?(?:~[A-Z0-9]+)?$", name_s)
     if m:
         val = int(m.group(1))
-        if 1 <= val <= 99:
+        if 0 <= val <= 99:
             return val
 
     return None
@@ -2077,26 +2077,36 @@ def score_track_candidate(
             and not bool(re.search(r"\b(?:main|fast|slow|relief|goods|freight|loop|single|siding|yard|depot|platform|bay|terminal)\b", nh_l))
         )
     )
-    if platform_num is not None and 1 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
+    if platform_num is not None and 0 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
         tid_nn = int(tid[2:4])
-        allowed_classes = ("8", "9") if is_siding_hint else ("1", "2", "4", "5", "6", "8", "9")
-        if tid[1] in allowed_classes:
-            if tid_nn == platform_num:
-                score += 120.0
-            elif tid_nn > 0:
-                # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6),
-                # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
-                score -= 55.0
+        if platform_num == 0:
+            # Platform 0 (e.g. King's Cross 3600, Leeds 0A/0B): match xx00 only on bay/station-platform classes
+            if tid[1] in ("6", "8"):
+                if tid_nn == 0:
+                    score += 120.0
+                else:
+                    score -= 55.0
+        else:
+            allowed_classes = ("8", "9") if is_siding_hint else ("1", "2", "4", "5", "6", "8", "9")
+            if tid[1] in allowed_classes:
+                if tid_nn == platform_num:
+                    score += 120.0
+                elif tid_nn > 0:
+                    # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6),
+                    # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
+                    score -= 55.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
-        # Lettered approach lines (e.g. Euston Camden Bank A->1101, B->1202, C->2203, E->1104)
-        letter_m = re.match(r"^(?:u|d|e)-([a-f])\b", nh_l)
+        # Lettered approach lines (e.g. Euston Camden Bank A->1101..E->1104, King's Cross Belle Isle A->3101..F->3106)
+        letter_m = re.match(r"^(?:u|d|e)-([a-f])(?:~|\b)", nh_l)
         if letter_m and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
             lnum = ord(letter_m.group(1)) - ord("a") + 1
             tnn = int(tid[2:4])
             if tnn == lnum:
-                score += 25.0
+                score += 60.0
             elif lnum > 1 and tnn > 1:
                 score += max(2.0, 15.0 - abs(tnn - lnum) * 2.0)
+            else:
+                score -= 15.0
         if is_secondary_fast:
             # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
             if tid[2:4] == "50":
@@ -2487,9 +2497,9 @@ def find_nwr_cross_links_for_tps(
                     len(str(c.get("track_id") or "")) == 4
                     and str(c["track_id"])[0] in (want_d1, "3")
                     and str(c["track_id"])[1] == "2"
-                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) - 50.0
                     <= target_m
-                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) + 50.0
                     for c in raw_candidates
                 )
                 if not has_covering_slow:
@@ -2507,7 +2517,7 @@ def find_nwr_cross_links_for_tps(
                                    start_node_id, end_node_id, min_x, max_x, min_y, max_y
                             FROM nwr_track_centrelines
                             WHERE elr <> %s
-                              AND SUBSTRING(track_id, 1, 1) IN (%s, '3')
+                              AND SUBSTRING(track_id, 1, 1) = %s
                               AND SUBSTRING(track_id, 2, 1) = '2'
                               AND LEAST(start_meters, end_meters) <= %s
                               AND GREATEST(start_meters, end_meters) >= %s
