@@ -1505,10 +1505,16 @@ def _parse_station_track_rows(
             secondary_dir = "down"
 
     # If the exact same physical track (matching longname) has both Up and Down rows on the matched node(s),
-    # mark it reversible while preserving secondary_dir as a tiebreaker.
+    # mark it reversible while preserving secondary_dir as a tiebreaker — UNLESS the winning row's description
+    # explicitly names a single directional running line (e.g. Stafford 'Down Slow' / 'Up Slow' on 2200/1200).
     best_ln = str(best.get("longname") or "").strip().upper()
+    best_desc_l = str(best.get("description") or "").strip().lower()
+    is_explicit_single_dir_line = bool(
+        re.search(r"\b(?:up|down)\s+(?:slow|fast|main|relief)\b", best_desc_l)
+        and not re.search(r"\b(?:up\s*(?:&|and)\s*down|down\s*(?:&|and)\s*up|reversible)\b", best_desc_l)
+    )
     dirs_for_best = {d for ln, d in phys_dirs_on_same_nodes if ln == best_ln}
-    if "up" in dirs_for_best and "down" in dirs_for_best:
+    if "up" in dirs_for_best and "down" in dirs_for_best and not is_explicit_single_dir_line:
         best_dir = "reversible"
 
     plat_num = _extract_platform_number(
@@ -2016,8 +2022,14 @@ def score_track_candidate(
             elif d2 == "2":
                 # Reversible through platforms (e.g. Crewe 3212) are coded 32xx; don't penalize them behind bays/engine lines
                 score += 10.0 if (is_rev_hint or platform_num is not None) else -10.0
-            elif d2 in ("6", "8"):
+            elif d2 == "6":
                 score -= 35.0
+            elif d2 == "8":
+                # Major-hub numbered platform tracks coded 38xx (e.g. York 3804/3809-3811, BHM 3801-3812)
+                if platform_num is not None and len(tid) == 4 and tid[2:4].isdigit() and int(tid[2:4]) == platform_num:
+                    score += 5.0
+                else:
+                    score -= 35.0
             elif d2 == "7":
                 score -= 40.0
             elif d2 == "9":
