@@ -116,7 +116,7 @@ In NWR's 4-digit `track_id` (`D C NN`):
 | | Reversible hinted: `3xxx` / `secondary_dir` match / opposite | `+70` / `+30` / `+10` |
 | **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (`0` restricted to bay/station classes `6,8`; `1..99` restricted to `8,9` when hint is a siding, else `1,2,4,5,6,8,9`) | `+120` |
 | | Different non-zero `track_id[2:4]` | `-55` |
-| | Lettered approach lines (`U-A`..`U-F` → `A=1..F=6` vs numbered `01`..`09`, e.g. Euston `A→1101..E→1104`, King's Cross Belle Isle `A→3101..F→3106`) | `+60` exact / `+2..+15` nearest / `-15` mismatch |
+| | Lettered approach lines (`U-A`..`U-F` or SA/description `A`..`F` → `1..6` vs numbered `01`..`09`, e.g. Euston `A→1101..E→1104`, King's Cross `A→3101..F→3106`, Leeds West `L3644 A→3101`) | `+60` exact / `+2..+15` nearest / `-15` mismatch |
 | | `platform_num is None`, secondary/branch fast (`UL`/`DL` Fast, `Suburban`, named branch `D-DE`/`U-UE`) and `xx50` | `+15` |
 | | `platform_num is None`, primary open-line `xx00` (classes `1,2,4`) | `+5` |
 | **Track Class (`C`)** | Engine / Carriage / Reception / Washer / Back Line (`crl`, `ecl`, `cl1`, `w1`, ...) | `8: +55`, `9: +35`, `1/2: -25` |
@@ -173,7 +173,7 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 75 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 78 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
@@ -192,7 +192,7 @@ docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points 
 - `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
 
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **75 / 75** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **78 / 78** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
 - **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).
@@ -248,7 +248,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 75-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 78-case regression suite, and UK-wide audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`

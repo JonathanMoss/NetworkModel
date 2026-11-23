@@ -2096,8 +2096,9 @@ def score_track_candidate(
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
-        # Lettered approach lines (e.g. Euston Camden Bank A->1101..E->1104, King's Cross Belle Isle A->3101..F->3106)
-        letter_m = re.match(r"^(?:u|d|e)-([a-f])(?:~|\b)", nh_l)
+        # Lettered approach lines (e.g. Euston Camden Bank A->1101..E->1104, King's Cross Belle Isle A->3101..F->3106,
+        # Leeds West L3644 'U-DHA | U-A Fast Up | A' -> 3101, L3631 'U-TMP | A' -> 3101)
+        letter_m = re.search(r"(?:^|\|\s*)(?:(?:u|d|e)-)?([a-f])(?:~|\s*\||\s*$|\s+)", nh_l)
         if letter_m and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
             lnum = ord(letter_m.group(1)) - ord("a") + 1
             tnn = int(tid[2:4])

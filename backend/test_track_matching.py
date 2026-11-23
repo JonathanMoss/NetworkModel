@@ -58,6 +58,9 @@ REGRESSION_CASES = [
     ("NS4333 (Norton Brg Dn NBS)", "signal", 48115, "NBS", "2100"),
     # Leeds East & West approaches (DOL2 / HUL4)
     ("LEEDS 13621 (DOL2 not xover)", "signal", 15320, "DOL2", "2100"),
+    ("LEEDS L3644 (DOL2 Line A)", "signal", 15335, "DOL2", "3101"),
+    ("LEEDS L3631 (DOL2 Line A)", "signal", 15410, "DOL2", "3101"),
+    ("LEEDSWJ U-B (DOL2 Line B)", "signal", 50890, "DOL2", "3102"),
     ("LEEDSEJ (HUL4 U-DM -> 2100)", "signal", 15310, "HUL4", "2100"),
     # Liverpool Street (LTN1 + LVS multi-ELR)
     ("LIVST Plat 1", "signal", 28727, "LTN1", "3601"),
