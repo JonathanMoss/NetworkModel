@@ -40,7 +40,7 @@ flowchart TD
     G1 & G2 & G3 --> H["Return best_centreline, corridor_centrelines,\nnode_points, snapped_node, match_info"]
 ```
 
-All core logic lives in `backend/main.py` (`load_elr_polarity_cache`, `_extract_direction_from_tokens`, `_extract_platform_number`, `_parse_station_track_rows`, `resolve_tps_track_identity`, `score_track_candidate`, `find_nwr_cross_links_for_tps`).
+All core logic lives in `backend/main.py` (`load_elr_polarity_cache`, `_extract_direction_from_tokens`, `_extract_platform_number`, `_parse_station_track_rows`, `_resolve_reversible_through_line_dir`, `resolve_tps_track_identity`, `score_track_candidate`, `find_nwr_cross_links_for_tps`).
 
 ---
 
@@ -52,14 +52,16 @@ Given a TPS asset's node(s) `(start_node_id, end_node_id, point_node_id)`, ELR, 
 - `direction_hint`: `"up"`, `"down"`, or `"reversible"`
 - `secondary_dir`: `"up"` or `"down"` tiebreaker when `direction_hint == "reversible"` (used when NWR codes a bi-directionalised main line as `1xxx`/`2xxx` instead of `3xxx`)
 - `track_name_hint`: combined operational label (`name | description | sa_line_code | rop_line_code`)
-- `platform_num`: integer `1..99` extracted from platform, line, bay, or siding numbers (e.g. `D-12 → 12`, `U-L3 / Line 3 → 3`, `Middle Siding 1 → 1`, `U-DL2 → 2`)
+- `platform_num`: integer `1..99` extracted from platform, sub-platform, line, bay, or siding numbers (e.g. `D-12 → 12`, `U-10B~A / 10B → 10`, `Platform 15A → 15`, `U-L3 / Line 3 → 3`, `Middle Siding 1 → 1`, `U-DL2 → 2`)
 - `source`: human-readable audit trail shown in the Inspector UI (e.g. `TPS Track Walk (2 hops: U-UF / U-UF Fast Up)`)
 
 Resolution runs in four cascading steps:
 
 1. **Direct `station_tracks` lookup** (GIN-indexed on `node_ids`):
    - Prefers rows containing both `start_node_id` and `end_node_id` in forward order (`index(start) < index(end)`).
+   - **Sibling `SA`/`ROP` line-code inheritance**: When the winning directed row on a bi-directional platform has no `sa_line_code` or `rop_line_code`, inherits them from any sibling row on the exact same physical track (`longname == best_ln`) — e.g. Reading Plat 15 where `U-15` carries `rop=URL` while `D-15` has `None`, or Plat 12 where `U-12` carries `rop=DRL`. If the track's `SA`/`ROP` code names an explicit directional running line (`URL`, `DRL`, `UML`, `DML`, `UF`, `DF`, `US`, `DS`), that physical line's direction is set as `secondary_dir`.
    - Detects **reversible pairs**: if the same physical track (`longname`) has both an Up and a Down row on the matched node(s) (e.g. `D-12` + `U-12` at Crewe, or `D-MBR` + `U-MBR` at Euston), sets `direction_hint = "reversible"` while keeping `secondary_dir` — **unless** the winning row's description explicitly names a single directional running line (e.g. Stafford `Down Slow` / `Up Slow` on `2200`/`1200`), or uses wrong-direction phrasing like `Down Up Slow` (`DUS` → physical Up Slow).
+   - **Reversible through-platform running-line walk (`_resolve_reversible_through_line_dir`)**: When a bi-directional through platform (non-bay/non-terminal) has no explicit directional SA line code (only bare platform numbers like `3`/`5` at York) and NWR has no 2-digit platform suffix (only `1100`/`2100`), a wrong-direction signal's facing direction (`U-5` on Down Main, `D-3` on Up Main) does not match the physical line. Walking straight-through (`cos_sim >= 0.90` at turnouts, following valency-2 bends) out of the platform onto the adjacent open running line resolves the unanimous physical running-line direction (`U-UM Up Main` → `up`, `D-DM Down Main` / `Down Fast` → `down`) as `secondary_dir`.
    - Recognizes UK rail bi-directional codes (`UD*`, `U&D*`, `D&U*`, `U/D*`, `D/U*`, `RVL`, `BGL`, `REV`, `BI`, `BD`) and physical-line suffixes (`U-DML` = physically Down Main worked in the Up direction).
 2. **Direct `routes` lookup** (GIN-indexed on `node_ids`):
    - Decodes `sa_line_code_id` (`salinecodedesc`) and `rop_line_code_id` (`roplinecodedesc`).
@@ -109,17 +111,18 @@ In NWR's 4-digit `track_id` (`D C NN`):
 | | Opposite direction (`1xxx` vs Down, `2xxx` vs Up) | `-60` |
 | | Reversible hinted: `3xxx` / `secondary_dir` match / opposite | `+70` / `+30` / `+10` |
 | **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (classes `1,2,4,5,6,8,9`) | `+120` |
-| | Different non-zero `track_id[2:4]` | `-75` |
-| | `platform_num is None` and primary open-line `xx00` (classes `1,2,4`) | `+5` |
+| | Different non-zero `track_id[2:4]` | `-55` |
+| | `platform_num is None`, secondary/branch fast (`UL`/`DL` Fast, `Suburban`, named branch `D-DE`/`U-UE`) and `xx50` | `+15` |
+| | `platform_num is None`, primary open-line `xx00` (classes `1,2,4`) | `+5` |
 | **Track Class (`C`)** | Engine / Carriage / Reception / Washer / Back Line (`crl`, `ecl`, `cl1`, `w1`, ...) | `8: +55`, `9: +35`, `1/2: -25` |
-| | Siding / Yard / Depot / Headshunt (`sdg`, `ms1`, `mbr`, ...) | `9: +55`, `8: +35`, `1/2: -25` |
+| | Siding / Yard / Depot / Headshunt (`sdg`, `ms1`, `ms2`, `ms3`, `mbr`, ...) | `9: +55`, `8: +35`, `1/2: -25` |
 | | Terminal / Bay | `6: +60`, `1/2: -15`, `7/8/9: -25` |
-| | Loop (`loop`, `udl`, `dgl`, `ugl`, `bgl`, `rvl`, `d&ul`, ...) | `5: +55`, `3 (goods): +20`, `6/7/8/9: -25` |
+| | Loop (`loop`, `udl`, `dgl`, `ugl`, `bgl`, `rvl`, `d&ul`; `dl`/`ul` only when `fast` is absent) | `5: +55`, `3 (goods): +20`, `6/7/8/9: -25` |
 | | Goods / Freight / Independent (`dg`, `ug`, `dmi`, `mil`, ...) | `3: +55`, `2: +25`, `5: +10`, `1: -20` |
 | | Single (`single`, `sgl`) | `4: +55` (+`15` if `34xx`) |
 | | Dedicated `Platform` (without Fast/Slow/Bay in description) | `5 (loop): +75`, `1/2 (dml/drl/uf/ds): +35/+15`, `8 (exact plat #): +5`, `7/9: -30` |
 | | Slow / Relief / Local (`ds`, `us`, `sl`, `rl`, `l2`, `up 2`, `down 2`) | `2: +50`, `1: -15`, `6/8: -30`, `7/9: -40` |
-| | Fast / Main (`dm`, `um`, `df`, `uf`, `ml`, `fl`, `l1`, `up 1`, `down 1`) | `1: +50`, `2 (rev/plat): +10` else `-10`, `6/8: -35`, `7: -40`, `9: -45` |
+| | Fast / Main (`dm`, `um`, `df`, `uf`, `ml`, `fl`, `l1`, `up 1`, `down 1`) | `1: +50`, `2 (rev/plat): +10` else `-10`, `8 (exact plat #): +5` else `-35`, `6: -35`, `7: -40`, `9: -45` |
 | **Line Speed (`vmax`)** | Only when no class matched: `vmax >= 145 km/h` → `d2 == 1` | `+20` |
 | | Only when no class matched: `0 < vmax <= 80 km/h` → `d2 == 2` | `+15` |
 | **Switch Proximity** | Points only: `valency >= 3` NWR endpoint within `15 m` / `35 m` of `target_m` | `+60` / `+35` |
@@ -164,16 +167,27 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples, and `backend/test_track_matching.py` to verify all 46 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 59 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
+docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30
+docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --station YORK
 docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200
 docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points --limit 1000
 ```
 
+**Automated Anomaly Detectors (`audit_track_matching.py`):**
+- `dir_mismatch`: Up signal on `2xxx` or Down signal on `1xxx`.
+- `plat_num_mismatch` / `plat_num_missed_exact`: Resolved `platform_num` landed on a different non-zero `NN`, or on `xx00` when a covering non-siding exact `NN` candidate exists.
+- `class_mismatch`: TPS Fast/Main vs Slow/Relief/Bay/Siding contradiction against NWR digit 2 (excluding exact platform-number matches and corridors with no siding/bay track).
+- `non_covering_match`: Same-ELR match `> 50 m` outside `[start_meters, end_meters]` when another same-ELR candidate covers `km`.
+- `same_platform_split` (`--mode hubs`): Signals on the **exact same physical TPS `station_track`** landing on different NWR `track_id`s (catches swapped bi-directional platform signals without manual ground truth).
+- `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
+
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **46 / 46** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford (`LEC3`/`LEC4`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston (`LEC1`), Liverpool Street (`LTN1`/`LVS`), York (`ECM4`/`ECM5`/`YMS`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **59 / 59** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford (`LEC3`/`LEC4`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston (`LEC1`), King's Cross (`ECM1`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).
 
@@ -216,7 +230,7 @@ All cross-model plotting runs through `backend/main.py`:
    - Uses regex word boundaries (`\bslow\b`, `\bfast\b`, `\bmain\b`) so place names like `Wilmslow` never misfire.
    - Strict containment (+85) strongly outranks non-overlapping segments (-(40 + 0.15*dist)) so a
      nearby segment can never hijack an asset away from its mileage.
-   - Exact `NN == platform_num` gives +120, explicit wrong `NN` gives -75; `edge_vmax` breaks Fast (>=145 km/h)
+   - Exact `NN == platform_num` gives +120, explicit wrong `NN` gives -55; `edge_vmax` breaks Fast (>=145 km/h)
      vs Slow (<=80 km/h) ties when no class matched; points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m.
 3. Placement & Overrides:
    - Signals interpolate along `best_centreline` at `km_value` (or project spatially for cross-ELR platforms).
@@ -228,8 +242,9 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 46-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 59-case regression suite, and UK-wide audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
+  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points --limit 1000`
 

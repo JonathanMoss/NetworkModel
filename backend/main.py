@@ -1415,26 +1415,27 @@ def _extract_platform_number(
     sa_code: Optional[str],
 ) -> Optional[int]:
     """Extract a 1..99 platform/track/siding sequence number from TPS station_track metadata."""
-    # 1. Pure numeric longname (e.g. '12', '10', '4') or SA code ('12')
+    # 1. Pure numeric or sub-platform longname/SA code (e.g. '12', '10', '10B', '9A', '4C')
     for candidate in (longname, sa_code):
         s = (candidate or "").strip()
-        if s.isdigit():
-            val = int(s)
-            if 1 <= val <= 99:
-                return val
-
-    # 2. Explicit 'Platform 12' / 'Plat 12' / 'Bay 10' / 'Siding 1' / 'Line 3' in description or name
-    for candidate in (description, name):
-        s = (candidate or "").strip()
-        m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})\b", s, flags=re.IGNORECASE)
+        m = re.match(r"^(\d{1,2})[A-D]?$", s, flags=re.IGNORECASE)
         if m:
             val = int(m.group(1))
             if 1 <= val <= 99:
                 return val
 
-    # 3. Directed platform/line/siding track name like 'D-12', 'U-L3', 'D-MS1', 'U-SDG2', 'D-DL2', 'U-CL1'
+    # 2. Explicit 'Platform 12' / 'Platform 15A' / 'Bay 10B' / 'Siding 1' / 'Line 3' in description or name
+    for candidate in (description, name):
+        s = (candidate or "").strip()
+        m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})[A-D]?\b", s, flags=re.IGNORECASE)
+        if m:
+            val = int(m.group(1))
+            if 1 <= val <= 99:
+                return val
+
+    # 3. Directed platform/line/siding track name like 'D-12', 'U-10B~A', 'U-L3', 'D-MS1', 'U-SDG2', 'D-DL2', 'U-CL1'
     name_s = (name or "").strip().upper()
-    m = re.match(r"^(?:D|U|E)-(?:MS|SDG|DL|CL|RCP|S|L|W)?(\d{1,2})[A-Z]?$", name_s)
+    m = re.match(r"^(?:D|U|E)-(?:MS|SDG|DL|CL|RCP|S|L|W)?(\d{1,2})[A-D]?(?:~[A-Z0-9]+)?$", name_s)
     if m:
         val = int(m.group(1))
         if 1 <= val <= 99:
@@ -1508,6 +1509,22 @@ def _parse_station_track_rows(
     # mark it reversible while preserving secondary_dir as a tiebreaker — UNLESS the winning row's description
     # explicitly names a single directional running line (e.g. Stafford 'Down Slow' / 'Up Slow' on 2200/1200).
     best_ln = str(best.get("longname") or "").strip().upper()
+    # Inherit missing SA / ROP line code from sibling directed rows on the exact same physical track
+    # (e.g. Reading Plat 15 where U-15 carries rop='URL' while D-15 has rop=None, or Plat 12 U-12 rop='DRL').
+    if best_ln and (not sa_code or not rop_code or rop_code == "_"):
+        for _, sib_r, sib_sa, sib_rop, _ in scored[1:]:
+            if str(sib_r.get("longname") or "").strip().upper() != best_ln:
+                continue
+            if not sa_code and sib_sa and sib_sa != "_":
+                sa_code = sib_sa
+            if (not rop_code or rop_code == "_") and sib_rop and sib_rop != "_":
+                rop_code = sib_rop
+    # If the track's SA/ROP code names an explicit directional running line (e.g. URL/DRL/UML/DML/UF/DF/US/DS),
+    # use that physical running line's direction as secondary_dir (even on wrong-direction signals).
+    explicit_code_dir = _extract_direction_from_tokens(None, None, sa_code, rop_code)
+    if explicit_code_dir in ("up", "down"):
+        secondary_dir = explicit_code_dir
+
     best_desc_l = str(best.get("description") or "").strip().lower()
     is_explicit_single_dir_line = bool(
         re.search(r"\b(?:up|down)\s+(?:slow|fast|main|relief)\b", best_desc_l)
@@ -2038,17 +2055,35 @@ def score_track_candidate(
                 score -= 60.0
 
     # Platform / Track / Siding sequence number matching (3rd & 4th digits NN of NWR 4-digit track_id)
+    nh_l = (name_hint or "").lower()
+    nh_tokens = set(re.findall(r"[a-z0-9]+", nh_l)) if nh_l else set()
+    is_secondary_fast = bool(nh_l) and (
+        (bool(nh_tokens & {"dl", "ul"}) and bool(re.search(r"\bfast\b", nh_l)))
+        or bool(re.search(r"\bsuburb", nh_l))
+        or bool(nh_tokens & {"dsb", "usb"})
+        or (
+            bool(re.match(r"^(?:d|u)-(?:d|u)[a-z]\b", nh_l))
+            and not bool(nh_tokens & {"dm", "um", "df", "uf", "dn", "un", "ds", "us", "dr", "ur", "dg", "ug", "dl", "ul", "fl", "ml", "sl", "rl", "gl"})
+            and not bool(re.search(r"\b(?:main|fast|slow|relief|goods|freight|loop|single|siding|yard|depot|platform|bay|terminal)\b", nh_l))
+        )
+    )
     if platform_num is not None and 1 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
         tid_nn = int(tid[2:4])
         if tid[1] in ("1", "2", "4", "5", "6", "8", "9"):
             if tid_nn == platform_num:
                 score += 120.0
             elif tid_nn > 0:
-                # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6)
-                score -= 75.0
-    elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4") and tid[2:4] == "00":
-        # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
-        score += 5.0
+                # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6),
+                # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
+                score -= 55.0
+    elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
+        if is_secondary_fast:
+            # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
+            if tid[2:4] == "50":
+                score += 15.0
+        elif tid[2:4] == "00":
+            # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
+            score += 5.0
 
     # Line class matching (2nd digit of NWR Appendix A track_id)
     matched_class = False
@@ -2098,7 +2133,8 @@ def score_track_candidate(
                 score -= 25.0
         elif (
             "loop" in nh
-            or bool(tokens & {"dl", "ul", "udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "bgl", "rvl"})
+            or bool(tokens & {"udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "bgl", "rvl"})
+            or (bool(tokens & {"dl", "ul"}) and not bool(re.search(r"\bfast\b", nh)))
             or bool(re.search(r"\b(?:d&u|u&d|d/u|u/d)(?:g|p)?l\b", nh))
         ):
             matched_class = True

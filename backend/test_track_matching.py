@@ -60,6 +60,14 @@ REGRESSION_CASES = [
     ("YORK Plat 8", "signal", 3235, "ECM5", "3608"),
     ("YORK Y231 Plat 8 (ECM5)", "signal", 3248, "ECM5", "3608"),
     ("YORK Plat 11", "signal", 3251, "ECM4", "3811"),
+    # York South Approach (NOC / ECM4 parallel 1150/2150 Leeds Fast vs 1100/2100 Main)
+    ("YORK Y761 (NOC Dn Leeds)", "signal", 2054, "NOC", "2150"),
+    ("YORK Y763 (NOC Dn Main)", "signal", 2055, "NOC", "2100"),
+    ("YORK Y764 (ECM4 Up Leeds)", "signal", 2053, "ECM4", "1150"),
+    ("YORK Y766 (ECM4 Up Main)", "signal", 2052, "ECM4", "1100"),
+    # Midland Main Line / Erewash (SPC9 parallel 2150 vs 2100)
+    ("SPC9 TC4753 (Dn Erewash)", "signal", 14819, "SPC9", "2150"),
+    ("SPC9 DC4855 (Dn Main)", "signal", 14820, "SPC9", "2100"),
     # Birmingham New Street (RBS1 / RBS2)
     ("BHAMNWS Plat 1", "signal", 37602, "RBS2", "3801"),
     ("BHAMNWS Plat 2", "signal", 37604, "RBS2", "3802"),
@@ -69,9 +77,13 @@ REGRESSION_CASES = [
     ("RDG T1682 (Plat 7 DML)", "signal", 44388, "MLN1", "2100"),
     ("RDG T1684 (Plat 8)", "signal", 43994, "MLN1", "2508"),
     ("RDG T1692 (Plat 12 DRL)", "signal", 43987, "MLN1", "2200"),
+    ("RDG T1717 (Plat 12 Dn)", "signal", 43991, "MLN1", "2200"),
     ("RDG T1695 (Plat 13)", "signal", 43986, "MLN1", "2513"),
     ("RDG T1697 (Plat 14)", "signal", 43980, "MLN1", "1514"),
     ("RDG T1698 (Plat 15 URL)", "signal", 43973, "MLN1", "1200"),
+    ("RDG T1706 (Plat 15 Dn)", "signal", 43974, "MLN1", "1200"),
+    # King's Cross (ECM1 sub-platforms)
+    ("KGX P10 (10B Bay)", "signal", 52223, "ECM1", "3610"),
 ]
 
 
