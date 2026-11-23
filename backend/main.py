@@ -1420,8 +1420,9 @@ def _extract_platform_number(
     longname: Optional[str],
     description: Optional[str],
     sa_code: Optional[str],
+    station_longname: Optional[str] = None,
 ) -> Optional[int]:
-    """Extract a 1..99 platform/track/siding sequence number from TPS station_track metadata."""
+    """Extract a 0..99 platform/track/siding sequence number from TPS station_track metadata."""
     # 1. Pure numeric or sub-platform longname/SA code (e.g. '0', '0F', '0R', '12', '10B', '9A', '4C')
     for candidate in (longname, sa_code):
         s = (candidate or "").strip()
@@ -1436,7 +1437,7 @@ def _extract_platform_number(
         s = (candidate or "").strip()
         m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})[A-FR]?\b", s, flags=re.IGNORECASE)
         if not m:
-            m = re.search(r"\b(?:no\.?\s*)?(\d{1,2})\s*(?:siding|sdg)\b", s, flags=re.IGNORECASE)
+            m = re.search(r"\b(?:n[o0]\.?\s*)?(\d{1,2})\s*(?:siding|sdg)\b", s, flags=re.IGNORECASE)
         if m:
             val = int(m.group(1))
             if 0 <= val <= 99:
@@ -1449,6 +1450,19 @@ def _extract_platform_number(
         val = int(m.group(1))
         if 0 <= val <= 99:
             return val
+
+    # 4. Parent station longname fallback for numbered siding stations (e.g. 'GLASGOW CENTRAL N0.1 SDG' with 'Down Siding')
+    if station_longname:
+        meta_l = f"{name or ''} {description or ''} {sa_code or ''}".lower()
+        if "siding" in meta_l or "sdg" in meta_l:
+            st_s = station_longname.strip()
+            m = re.search(r"\b(?:n[o0]\.?\s*)?(\d{1,2})\s*(?:siding|sdg)\b", st_s, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"\b(?:siding|sdg)\s*[-#]?\s*(?:n[o0]\.?\s*)?(\d{1,2})\b", st_s, flags=re.IGNORECASE)
+            if m:
+                val = int(m.group(1))
+                if 0 <= val <= 99:
+                    return val
 
     return None
 
@@ -1548,6 +1562,7 @@ def _parse_station_track_rows(
         best.get("longname"),
         best.get("description"),
         sa_code,
+        station_longname=best.get("station_longname"),
     )
 
     parts = [p for p in (best.get("name"), best.get("description"), sa_code, rop_code) if p]
@@ -1724,9 +1739,12 @@ def resolve_tps_track_identity(
         # 1. Direct station_tracks lookup (GIN indexed on node_ids)
         cur.execute(
             """
-            SELECT track_id, name, longname, description, rop_line_code, sa_line_code, directed, node_ids
-            FROM station_tracks
-            WHERE node_ids && %s::int[]
+            SELECT st.track_id, st.name, st.longname, st.description,
+                   st.rop_line_code, st.sa_line_code, st.directed, st.node_ids,
+                   stn.longname AS station_longname
+            FROM station_tracks st
+            LEFT JOIN stations stn ON stn.station_id = st.station_id
+            WHERE st.node_ids && %s::int[]
             LIMIT 20
             """,
             (clean_nids,),
@@ -1953,9 +1971,12 @@ def resolve_tps_track_identity(
 
             cur.execute(
                 """
-                SELECT track_id, name, longname, description, rop_line_code, sa_line_code, directed, node_ids
-                FROM station_tracks
-                WHERE node_ids && %s::int[]
+                SELECT st.track_id, st.name, st.longname, st.description,
+                       st.rop_line_code, st.sa_line_code, st.directed, st.node_ids,
+                       stn.longname AS station_longname
+                FROM station_tracks st
+                LEFT JOIN stations stn ON stn.station_id = st.station_id
+                WHERE st.node_ids && %s::int[]
                 LIMIT 20
                 """,
                 (next_nids,),
@@ -2122,6 +2143,7 @@ def score_track_candidate(
             and not bool(re.search(r"\b(?:main|fast|slow|relief|goods|freight|loop|single|siding|yard|depot|platform|bay|terminal)\b", nh_l))
         )
     )
+    exact_line_match = False
     if platform_num is not None and 0 <= platform_num <= 99 and len(tid) == 4 and tid[2:4].isdigit():
         tid_nn = int(tid[2:4])
         if platform_num == 0:
@@ -2141,18 +2163,37 @@ def score_track_candidate(
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
-        # Lettered approach lines (e.g. Euston A->1101..E->1104, King's Cross A->3101..F->3106,
-        # Leeds West L3644 A->3101, Glasgow Central Clyde Bridge A->1101..H->2208)
+        # Lettered or numbered approach lines (e.g. Euston A->1101..E->1104, King's Cross A->3101..F->3106,
+        # Leeds West L3644 A->3101, Glasgow Central Bridge St 1L..6L / Clyde Bridge A..H -> 1101..2208)
+        lnum = None
         letter_m = re.search(r"(?:^|\|\s*)(?:(?:u|d|e)-)?([a-h])(?:~|\s*\||\s*$|\s+)", nh_l)
-        if letter_m and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
+        if letter_m:
             lnum = ord(letter_m.group(1)) - ord("a") + 1
+        else:
+            num_line_m = re.search(
+                r"(?:^|\|\s*)(?:(?:u|d|e)-([1-8])l[a-z]?|l([1-8]))(?:\s*\||\s*$|\s+)",
+                nh_l,
+            )
+            if num_line_m:
+                lnum = int(num_line_m.group(1) or num_line_m.group(2))
+        if lnum is not None and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
             tnn = int(tid[2:4])
-            if tnn == lnum:
-                score += 100.0
+            dh_l = (dir_hint or "").lower()
+            is_opp_dir = (
+                ("up" in dh_l and not is_rev_hint and tid.startswith("2"))
+                or (("down" in dh_l or dh_l == "dn") and not is_rev_hint and tid.startswith("1"))
+            )
+            in_cov_win = target_m is None or (min(c_start, c_end) - 50.0 <= target_m <= max(c_start, c_end) + 50.0)
+            if tnn == lnum and not is_opp_dir:
+                if in_cov_win:
+                    score += 125.0
+                    exact_line_match = True
+                else:
+                    score += 40.0
             elif lnum > 1 and tnn > 1:
-                score += max(1.0, 6.0 - abs(tnn - lnum))
+                score -= 30.0 + min(10.0, abs(tnn - lnum) * 2.0)
             else:
-                score -= 25.0
+                score -= 40.0
         if is_secondary_fast:
             # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
             if tid[2:4] == "50":
@@ -2289,7 +2330,8 @@ def score_track_candidate(
             if d2 == "2":
                 score += 50.0
             elif d2 == "1":
-                score -= 15.0
+                if not exact_line_match:
+                    score -= 15.0
             elif d2 in ("6", "8"):
                 score -= 30.0
             elif d2 in ("7", "9"):
@@ -2302,8 +2344,8 @@ def score_track_candidate(
             if d2 == "1":
                 score += 50.0
             elif d2 == "2":
-                # Reversible through platforms (e.g. Crewe 3212) are coded 32xx; don't penalize them behind bays/engine lines
-                score += 10.0 if (is_rev_hint or platform_num is not None) else -10.0
+                # Reversible through platforms (e.g. Crewe 3212) and exact numbered approach lines (e.g. 4L -> 3204)
+                score += 10.0 if (is_rev_hint or platform_num is not None or exact_line_match) else -10.0
             elif d2 == "6":
                 score -= 35.0
             elif d2 == "8":

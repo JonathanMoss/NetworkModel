@@ -52,7 +52,7 @@ Given a TPS asset's node(s) `(start_node_id, end_node_id, point_node_id)`, ELR, 
 - `direction_hint`: `"up"`, `"down"`, or `"reversible"`
 - `secondary_dir`: `"up"` or `"down"` tiebreaker when `direction_hint == "reversible"` (used when NWR codes a bi-directionalised main line as `1xxx`/`2xxx` instead of `3xxx`)
 - `track_name_hint`: combined operational label (`name | description | sa_line_code | rop_line_code`)
-- `platform_num`: integer `0..99` extracted from platform, Platform 0, sub-platform, line, bay, or siding numbers (e.g. `U-0R~A / 0 → 0`, `D-12 → 12`, `U-10B~A / 10B → 10`, `Platform 15A → 15`, `U-L3 / Line 3 → 3`, `Middle Siding 1 / Up 3 Siding / No3 Siding / 3SDG → 1/3`)
+- `platform_num`: integer `0..99` extracted from platform, Platform 0, sub-platform, line, bay, or siding numbers (e.g. `U-0R~A / 0 → 0`, `D-12 → 12`, `U-10B~A / 10B → 10`, `Platform 15A → 15`, `U-L3 / Line 3 → 3`, `Middle Siding 1 / Up 3 Siding / No3 Siding / 3SDG → 1/3`), with parent `stations.longname` fallback for numbered siding stations whose `station_tracks` only say `Up Siding` / `Down Siding` (e.g. `GLASGOW CENTRAL N0.1 SDG` → `1`)
 - `source`: human-readable audit trail shown in the Inspector UI (e.g. `TPS Track Walk (2 hops: U-UF / U-UF Fast Up)`)
 
 Resolution runs in four cascading steps:
@@ -118,7 +118,7 @@ In NWR's 4-digit `track_id` (`D C NN`):
 | | Reversible hinted: `3xxx` / `secondary_dir` match / opposite | `+70` / `+30` / `+10` |
 | **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (`0` restricted to bay/station classes `6,8`; `1..99` restricted to `8,9` when hint is a siding, else `1,2,4,5,6,8,9`) | `+120` |
 | | Different non-zero `track_id[2:4]` | `-55` |
-| | Lettered approach lines (`U-A`..`U-H` or SA/description `A`..`H` → `1..8` vs numbered `01`..`09`, e.g. Euston `A→1101..E→1104`, King's Cross `A→3101..F→3106`, Leeds West `L3644 A→3101`, Glasgow Central `A→1101..H→2208`) | `+100` exact / `+1..+6` nearest / `-25` mismatch |
+| | Lettered or numbered approach lines (`U-A`..`U-H` / `A`..`H` or `U-1L`..`D-8L` / `L1`..`L8` → `1..8` vs numbered `01`..`09`, e.g. Euston `A→1101..E→1104`, King's Cross `A→3101..F→3106`, Leeds West `L3644 A→3101`, Glasgow Central `1L..6L` & `A..H → 1101..2208`; guarded against opposite direction and non-covering `>50 m` tracks) | `+125` exact (within `±50 m`, `+40` if `>50 m`) / `-(30..40)` mismatch |
 | | `platform_num is None`, secondary/branch fast (`UL`/`DL` Fast, `Suburban`, named branch `D-DE`/`U-UE`) and `xx50` | `+15` |
 | | `platform_num is None`, primary open-line `xx00` (classes `1,2,4`) | `+5` |
 | **Track Class (`C`)** | Engine / Carriage / Reception / Washer / Back Line (`crl`, `ecl`, `cl1`, `w1`, ...) | `8: +55`, `9: +35`, `1/2: -25` |
@@ -175,7 +175,7 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 91 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 101 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
