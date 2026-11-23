@@ -112,6 +112,13 @@ REGRESSION_CASES = [
     ("KGX P10 (10B Bay)", "signal", 52223, "ECM1", "3610"),
     ("KGX Belle Isle Line D", "signal", 62157, "ECM1", "3104"),
     ("KGX YA1073 (ECM1 Dn Slow)", "signal", 67235, "ECM1", "2200"),
+    # Glasgow Central (WCM2 Clyde Bridge Lines A-H & numbered sidings)
+    ("GLC GG5520 (Line A -> 1101)", "signal", 29913, "WCM2", "1101"),
+    ("GLC GG5524 (Line C -> 3103)", "signal", 29904, "WCM2", "3103"),
+    ("GLC GG5523 (Line G -> 1207)", "signal", 59992, "WCM2", "1207"),
+    ("GLC GG5521 (Line H -> 2208)", "signal", 29897, "WCM2", "2208"),
+    ("GLC GG5460 (No3 Sdg -> 3903)", "signal", 42738, "WCM2", "3903"),
+    ("GLC GG5462 (No4 Sdg -> 3904)", "signal", 36693, "WCM2", "3904"),
 ]
 
 

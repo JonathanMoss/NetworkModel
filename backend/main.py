@@ -1431,10 +1431,12 @@ def _extract_platform_number(
             if 0 <= val <= 99:
                 return val
 
-    # 2. Explicit 'Platform 12' / 'Platform 15A' / 'Bay 10B' / 'Siding 1' / 'Line 3' in description or name
-    for candidate in (description, name):
+    # 2. Explicit 'Platform 12' / 'Platform 15A' / 'Bay 10B' / 'Siding 1' / '3 Siding' / 'No3 Siding' / '3SDG'
+    for candidate in (description, name, sa_code):
         s = (candidate or "").strip()
         m = re.search(r"\b(?:platform|plat|bay|siding|sdg|line|p)\s*[-#]?\s*(\d{1,2})[A-FR]?\b", s, flags=re.IGNORECASE)
+        if not m:
+            m = re.search(r"\b(?:no\.?\s*)?(\d{1,2})\s*(?:siding|sdg)\b", s, flags=re.IGNORECASE)
         if m:
             val = int(m.group(1))
             if 0 <= val <= 99:
@@ -2139,18 +2141,18 @@ def score_track_candidate(
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
-        # Lettered approach lines (e.g. Euston Camden Bank A->1101..E->1104, King's Cross Belle Isle A->3101..F->3106,
-        # Leeds West L3644 'U-DHA | U-A Fast Up | A' -> 3101, L3631 'U-TMP | A' -> 3101)
-        letter_m = re.search(r"(?:^|\|\s*)(?:(?:u|d|e)-)?([a-f])(?:~|\s*\||\s*$|\s+)", nh_l)
+        # Lettered approach lines (e.g. Euston A->1101..E->1104, King's Cross A->3101..F->3106,
+        # Leeds West L3644 A->3101, Glasgow Central Clyde Bridge A->1101..H->2208)
+        letter_m = re.search(r"(?:^|\|\s*)(?:(?:u|d|e)-)?([a-h])(?:~|\s*\||\s*$|\s+)", nh_l)
         if letter_m and tid[2:4].isdigit() and 1 <= int(tid[2:4]) <= 9:
             lnum = ord(letter_m.group(1)) - ord("a") + 1
             tnn = int(tid[2:4])
             if tnn == lnum:
-                score += 60.0
+                score += 100.0
             elif lnum > 1 and tnn > 1:
-                score += max(2.0, 15.0 - abs(tnn - lnum) * 2.0)
+                score += max(1.0, 6.0 - abs(tnn - lnum))
             else:
-                score -= 15.0
+                score -= 25.0
         if is_secondary_fast:
             # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
             if tid[2:4] == "50":
