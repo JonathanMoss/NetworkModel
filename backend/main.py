@@ -1962,13 +1962,33 @@ def resolve_tps_track_identity(
             if walk_rows:
                 parsed = _parse_station_track_rows(walk_rows)
                 if parsed["direction_hint"]:
+                    walk_dir = parsed["direction_hint"]
                     sec_dir = parsed.get("secondary_dir") or (
                         infer_direction_from_km_delta(cur, elr, start_km, end_km)
-                        if parsed["direction_hint"] == "reversible"
-                        else None
+                        if walk_dir == "reversible"
+                        else walk_dir
                     )
+                    # If an open-line signal shares its exact TPS edge with an opposing signal (e.g. single-track
+                    # bi-directional chords like Norton Bridge NBS1 3100 NS5692/NS5693 & NS5694/NS5695), mark reversible.
+                    if (
+                        walk_dir in ("up", "down")
+                        and start_node_id is not None
+                        and end_node_id is not None
+                        and start_node_id != end_node_id
+                    ):
+                        cur.execute(
+                            """
+                            SELECT 1 FROM signals
+                            WHERE start_node_id = %s AND end_node_id = %s
+                              AND bumper = false AND name IS NOT NULL AND name <> '' AND name NOT ILIKE 'POINT%%'
+                            LIMIT 1
+                            """,
+                            (end_node_id, start_node_id),
+                        )
+                        if cur.fetchone():
+                            walk_dir = "reversible"
                     return {
-                        "direction_hint": parsed["direction_hint"],
+                        "direction_hint": walk_dir,
                         "secondary_dir": sec_dir,
                         "track_name_hint": parsed["track_name_hint"] or partial_hint,
                         "platform_num": parsed["platform_num"] if parsed["platform_num"] is not None else partial_plat,
@@ -2566,6 +2586,49 @@ def find_nwr_cross_links_for_tps(
                             existing_fids = {c["fid"] for c in raw_candidates}
                             raw_candidates = list(raw_candidates) + [
                                 r for r in flyover_rows if r["fid"] not in existing_fids
+                            ]
+            elif direction_hint == "reversible":
+                # Multi-ELR bi-directional chord fallback (e.g. Norton Bridge NBS1 3100 where TPS tags NBS
+                # on a single-track bi-directional chord with opposing signals NS5692/93 & NS5694/95).
+                has_covering_rev = any(
+                    len(str(c.get("track_id") or "")) == 4
+                    and str(c["track_id"])[0] == "3"
+                    and str(c["track_id"])[1] in ("1", "2", "4")
+                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) - 50.0
+                    <= target_m
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) + 50.0
+                    for c in raw_candidates
+                )
+                if not has_covering_rev:
+                    c0 = raw_candidates[0]
+                    if km_meters is not None and c0.get("coords"):
+                        ref_pt_xy = interpolate_pt_along_coords(
+                            c0["coords"], c0["start_meters"], c0["end_meters"], km_meters
+                        )
+                    if ref_pt_xy:
+                        rx, ry = ref_pt_xy
+                        cur.execute(
+                            """
+                            SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                                   start_meters, end_meters, length_meters, owner, coords,
+                                   start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                            FROM nwr_track_centrelines
+                            WHERE elr <> %s
+                              AND SUBSTRING(track_id, 1, 1) = '3'
+                              AND SUBSTRING(track_id, 2, 1) IN ('1', '4')
+                              AND LEAST(start_meters, end_meters) <= %s
+                              AND GREATEST(start_meters, end_meters) >= %s
+                              AND max_x >= %s - 1200.0 AND min_x <= %s + 1200.0
+                              AND max_y >= %s - 1200.0 AND min_y <= %s + 1200.0
+                            LIMIT 8
+                            """,
+                            (elr, target_m, target_m, rx, rx, ry, ry),
+                        )
+                        rev_chord_rows = cur.fetchall()
+                        if rev_chord_rows:
+                            existing_fids = {c["fid"] for c in raw_candidates}
+                            raw_candidates = list(raw_candidates) + [
+                                r for r in rev_chord_rows if r["fid"] not in existing_fids
                             ]
             else:
                 # Multi-ELR named-branch / flyover fallback (e.g. Norton Bridge U-UNB / D-DNB where TPS
