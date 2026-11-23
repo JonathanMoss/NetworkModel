@@ -2533,6 +2533,103 @@ def find_nwr_cross_links_for_tps(
                             raw_candidates = list(raw_candidates) + [
                                 r for r in flyover_rows if r["fid"] not in existing_fids
                             ]
+            else:
+                # Multi-ELR named-branch / flyover fallback (e.g. Norton Bridge U-UNB / D-DNB where TPS
+                # retains main-line ELR LEC4 while NWR puts the flyover on LEC6 1101 and re-chained NBS 1100/2100).
+                br_m = re.match(r"^(?:d|u)-((?:d|u)[a-z]{2,3})\b", th_l)
+                is_named_branch = bool(br_m) and (
+                    direction_hint in ("up", "down")
+                    and not bool(
+                        th_toks
+                        & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "dg", "ug", "dl", "ul", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url", "dgl", "ugl", "dpl", "upl"}
+                    )
+                    and not bool(
+                        re.search(r"\b(?:main|fast|slow|relief|goods|freight|loop|single|siding|yard|depot|platform|bay|terminal)\b", th_l)
+                    )
+                )
+                if is_named_branch:
+                    want_d1 = "2" if direction_hint == "down" else "1"
+                    c0 = raw_candidates[0]
+                    if km_meters is not None and c0.get("coords"):
+                        ref_pt_xy = interpolate_pt_along_coords(
+                            c0["coords"], c0["start_meters"], c0["end_meters"], km_meters
+                        )
+                    if ref_pt_xy:
+                        rx, ry = ref_pt_xy
+                        # 1) Same-chainage flyover ELR (e.g. LEC6 1101 strictly covering target_m)
+                        cur.execute(
+                            """
+                            SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                                   start_meters, end_meters, length_meters, owner, coords,
+                                   start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                            FROM nwr_track_centrelines
+                            WHERE elr <> %s
+                              AND SUBSTRING(track_id, 1, 1) = %s
+                              AND SUBSTRING(track_id, 2, 1) = '1'
+                              AND LEAST(start_meters, end_meters) <= %s
+                              AND GREATEST(start_meters, end_meters) >= %s
+                              AND max_x >= %s - 1500.0 AND min_x <= %s + 1500.0
+                              AND max_y >= %s - 1500.0 AND min_y <= %s + 1500.0
+                            LIMIT 8
+                            """,
+                            (elr, want_d1, target_m, target_m, rx, rx, ry, ry),
+                        )
+                        branch_rows = cur.fetchall()
+                        if branch_rows:
+                            existing_fids = {c["fid"] for c in raw_candidates}
+                            raw_candidates = list(raw_candidates) + [
+                                {**r, "_flyover_branch": True}
+                                for r in branch_rows
+                                if r["fid"] not in existing_fids
+                            ]
+                        else:
+                            # 2) Re-chained branch ELR (e.g. NBS 1100/2100) — only when unique adjacent ELR
+                            #    has a matching-direction main track within ±1500m (or matches branch station_track ELR)
+                            cur.execute(
+                                """
+                                SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                                       start_meters, end_meters, length_meters, owner, coords,
+                                       start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                                FROM nwr_track_centrelines
+                                WHERE elr <> %s
+                                  AND SUBSTRING(track_id, 1, 1) = %s
+                                  AND SUBSTRING(track_id, 2, 1) = '1'
+                                  AND ABS(((start_meters + end_meters) / 2.0) - %s) > 10000.0
+                                  AND max_x >= %s - 1500.0 AND min_x <= %s + 1500.0
+                                  AND max_y >= %s - 1500.0 AND min_y <= %s + 1500.0
+                                LIMIT 16
+                                """,
+                                (elr, want_d1, target_m, rx, rx, ry, ry),
+                            )
+                            adj_rows = cur.fetchall()
+                            adj_elrs = {r["elr"] for r in adj_rows}
+                            chosen_adj = adj_rows if len(adj_elrs) == 1 else []
+                            if not chosen_adj and adj_rows:
+                                # Disambiguate using station_tracks sharing the exact branch token
+                                br_name = br_m.group(0).upper()
+                                cur.execute(
+                                    """
+                                    SELECT DISTINCT n.km_region_id
+                                    FROM station_tracks st
+                                    JOIN nodes n ON n.node_id = ANY(st.node_ids)
+                                    WHERE UPPER(st.name) = %s AND n.km_region_id IS NOT NULL
+                                    """,
+                                    (br_name,),
+                                )
+                                st_elrs = {
+                                    decode_code("kmregionmasterdesc", row["km_region_id"])
+                                    for row in cur.fetchall()
+                                }
+                                matched_elrs = adj_elrs & st_elrs
+                                if len(matched_elrs) == 1:
+                                    chosen_adj = [r for r in adj_rows if r["elr"] in matched_elrs]
+                            if chosen_adj:
+                                existing_fids = {c["fid"] for c in raw_candidates}
+                                raw_candidates = list(raw_candidates) + [
+                                    {**r, "_cross_elr": True, "_flyover_branch": True}
+                                    for r in chosen_adj
+                                    if r["fid"] not in existing_fids
+                                ]
 
         # For points/turnouts, check which candidate track_ids have an actual valency >= 3 switch endpoint near target_m
         is_pts_asset = (asset_type == "points") or (tps_valency is not None and tps_valency >= 3)
@@ -2586,6 +2683,8 @@ def find_nwr_cross_links_for_tps(
             )
             if switch_track_boost:
                 score += switch_track_boost.get(c["track_id"], 0.0)
+            if c.get("_flyover_branch"):
+                score += 25.0
             candidates.append({
                 **c,
                 "track_id_decoded": decode_track_id(c["track_id"]),

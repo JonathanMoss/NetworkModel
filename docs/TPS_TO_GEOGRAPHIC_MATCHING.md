@@ -97,7 +97,9 @@ In NWR's 4-digit `track_id` (`D C NN`):
 1. `find_nwr_cross_links_for_tps` queries `nwr_track_centrelines` on the primary `elr` within `±400 m` (or `±300 m` of a span), ordered by **strict mileage containment first**, then midpoint distance, with `LIMIT 64`. This ensures long through-platforms at major hubs (Crewe, Euston, Paddington) are never truncated behind short crossovers or bays.
 2. **Multi-ELR Station & Flyover Fallbacks**:
    - **Major Multi-ELR Stations**: TPS often tags all platforms with one ELR while NWR splits platforms across adjacent ELRs (e.g. Liverpool Street Plats 11–17 on `LVS` vs `LTN1`, York Plats 2 & 4 on `YMS` vs `ECM5`, Reading Plats 4–6 on `RDG2` vs `MLN1`). Whenever `platform_num` is known and no centreline on the primary ELR has `track_id[2:4] == f"{platform_num:02d}"`, the backend runs a spatial bounding-box query (`±300 m` around the primary ELR's `(E, N)` anchor) across adjacent ELRs for platform tracks ending in that exact 2-digit number, and projects the spatial anchor onto the matched cross-ELR polyline.
-   - **Multi-ELR Slow/Relief Flyovers & Dive-Unders**: On grade-separated flyovers (e.g. Norton Bridge Down Slow on `LEC6 2200` while TPS tags `SC5609`/`SC5611`/`SC5615` on `LEC4`), when `platform_num is None`, the TPS hint explicitly requests Slow/Relief (`d2 == 2`), and no covering same-direction Slow track exists on the primary ELR, the backend searches spatially (`±1200 m`) across adjacent ELRs for a covering `12xx`/`22xx`/`32xx` track at `target_m`.
+   - **Multi-ELR Slow/Relief & Named-Branch Flyovers**:
+     - On grade-separated Slow/Relief flyovers (e.g. Norton Bridge Down Slow `SC5609`/`SC5611`/`SC5615` on `LEC6 2200` while TPS tags `LEC4`), when `platform_num is None`, the TPS hint requests Slow/Relief (`d2 == 2`), and no covering same-direction Slow track exists within `±50 m` on the primary ELR, the backend searches spatially (`±1200 m`) across adjacent ELRs for a covering `12xx`/`22xx` track at `target_m`.
+     - On named-branch flyovers/chords (e.g. `U-UNB` / `D-DNB` Norton Bridge flyover signals `NS4328`–`NS4333`), the backend first checks for a same-chainage adjacent-ELR flyover (`LEC6 1101`, `+25` bonus), and if none exists, checks for a uniquely adjacent (or `station_tracks`-confirmed) re-chained branch ELR within `±1500 m` (`NBS 1100`/`2100`, spatially projected via `_cross_elr`).
 
 #### Scoring Matrix (`score_track_candidate`)
 *(All keyword checks use regex word boundaries `\b...\b` so place names like `Wilmslow`, `Hounslow`, or `Winslow` never trigger `"slow"`.)*
@@ -171,7 +173,7 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 70 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 75 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
@@ -190,7 +192,7 @@ docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points 
 - `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
 
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **70 / 70** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **75 / 75** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
 - **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).
@@ -246,7 +248,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 70-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 75-case regression suite, and UK-wide audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
   `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`

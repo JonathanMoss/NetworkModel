@@ -48,9 +48,14 @@ REGRESSION_CASES = [
     ("WM488 (Euston Line A UF)", "signal", 14046, "LEC1", "1101"),
     ("WM501 (Euston Line A UF)", "signal", 43068, "LEC1", "1101"),
     ("POINTS 2001B (Euston MBR)", "points", 57088, "LEC1", "3901"),
-    # Norton Bridge Flyover (LEC4 -> LEC6 multi-ELR Down Slow)
+    # Norton Bridge Flyover (LEC4 -> LEC6 multi-ELR Down Slow & Up/Down Norton Bridge flyover)
     ("SC5609 (Norton Brg DS LEC6)", "signal", 48110, "LEC6", "2200"),
     ("SC5611 (Norton Brg DS LEC6)", "signal", 48112, "LEC6", "2200"),
+    ("NS4328 (Norton Brg Up LEC6)", "signal", 48111, "LEC6", "1101"),
+    ("NS4330 (Norton Brg Up NBS)", "signal", 48114, "NBS", "1100"),
+    ("NS4331 (Norton Brg Dn NBS)", "signal", 48113, "NBS", "2100"),
+    ("NS4332 (Norton Brg Up NBS)", "signal", 48116, "NBS", "1100"),
+    ("NS4333 (Norton Brg Dn NBS)", "signal", 48115, "NBS", "2100"),
     # Leeds East & West approaches (DOL2 / HUL4)
     ("LEEDS 13621 (DOL2 not xover)", "signal", 15320, "DOL2", "2100"),
     ("LEEDSEJ (HUL4 U-DM -> 2100)", "signal", 15310, "HUL4", "2100"),
