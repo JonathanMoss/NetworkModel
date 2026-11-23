@@ -32,6 +32,7 @@ REGRESSION_CASES = [
     ("MS4038 (CMP1 Up Wilmslow)", "signal", 7643, "CMP1", "1100"),
     # Stafford (LEC3 / LEC4)
     ("SC9355 (Stafford Plat 1)", "signal", 47152, "LEC3", "1500"),
+    ("LS4310 (Stafford Plat 2 Bay)", "signal", 47173, "LEC3", "1600"),
     ("LS9346 (Stafford Plat 3)", "signal", 47150, "LEC3", "2500"),
     ("LS5588 (Stafford Plat 4)", "signal", 47175, "LEC3", "1200"),
     ("SC9349 (Stafford Plat 4 Dn)", "signal", 47151, "LEC3", "1200"),

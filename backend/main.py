@@ -1980,6 +1980,29 @@ def resolve_tps_track_identity(
                     partial_source = f"TPS Track Walk ({hop} hop{'s' if hop > 1 else ''}: {parsed['label']})"
             frontier = next_frontier[:16]
 
+    # 3b. Dead-end buffer-stop detection: if an unlabelled signal sits directly on a valency-1 dead-end
+    #     node (e.g. Stafford Platform 2 Bay LS4310), classify it as a dead-end bay/siding rather than a main line.
+    if not partial_hint and (start_node_id is not None or end_node_id is not None):
+        ep_nids = [int(n) for n in (start_node_id, end_node_id) if n is not None]
+        cur.execute(
+            """
+            SELECT start_node_id, end_node_id
+            FROM edges
+            WHERE start_node_id = ANY(%s) OR end_node_id = ANY(%s)
+            """,
+            (ep_nids, ep_nids),
+        )
+        ep_nbrs: dict[int, set[int]] = {n: set() for n in ep_nids}
+        for e in cur.fetchall():
+            a, b = e["start_node_id"], e["end_node_id"]
+            if a in ep_nbrs and b is not None and b != a:
+                ep_nbrs[a].add(b)
+            if b in ep_nbrs and a is not None and a != b:
+                ep_nbrs[b].add(a)
+        if any(len(nbrs) == 1 for nbrs in ep_nbrs.values()):
+            partial_hint = "Dead-End Bay"
+            partial_source = "TPS Dead-End Spur"
+
     # 4. Data-driven per-ELR mileage polarity fallback (combines with any directionless route/track hint)
     km_dir = infer_direction_from_km_delta(cur, elr, start_km, end_km)
     if km_dir:
@@ -2154,6 +2177,16 @@ def score_track_candidate(
         elif "crossover" in nh or "xover" in nh:
             matched_class = True
             score += 50.0 if d2 == "7" else -15.0
+        elif "dead-end" in nh:
+            matched_class = True
+            if d2 == "6":
+                score += 60.0
+            elif d2 == "9":
+                score += 55.0
+            elif d2 == "8":
+                score += 35.0
+            elif d2 in ("1", "2", "7"):
+                score -= 25.0
         elif any(w in nh for w in ("bay", "terminal")):
             matched_class = True
             if d2 == "6":
