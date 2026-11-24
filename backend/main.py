@@ -2867,9 +2867,9 @@ def find_nwr_cross_links_for_tps(
                                 for r in branch_rows
                                 if r["fid"] not in existing_fids
                             ]
-                        elif is_named_branch:
-                            # 2) Re-chained branch ELR (e.g. NBS 1100/2100) — only when unique adjacent ELR
-                            #    has a matching-direction main track within ±1500m (or matches branch station_track ELR)
+                        elif is_named_branch and target_m >= 5000.0:
+                            # 2) Re-chained branch ELR (e.g. NBS 1100/2100 starting near 0m) — only jump from a
+                            #    high-chainage trunk ELR onto a zero-based branch ELR, never backwards onto trunk ELR.
                             cur.execute(
                                 """
                                 SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
@@ -2879,6 +2879,7 @@ def find_nwr_cross_links_for_tps(
                                 WHERE elr <> %s
                                   AND SUBSTRING(track_id, 1, 1) = %s
                                   AND SUBSTRING(track_id, 2, 1) = '1'
+                                  AND LEAST(start_meters, end_meters) < 5000.0
                                   AND ABS(((start_meters + end_meters) / 2.0) - %s) > 10000.0
                                   AND max_x >= %s - 1500.0 AND min_x <= %s + 1500.0
                                   AND max_y >= %s - 1500.0 AND min_y <= %s + 1500.0

@@ -161,6 +161,11 @@ REGRESSION_CASES = [
     ("BGK 90 (Up Sub -> 1150)", "signal", 4068, "BGK", "1150"),
     ("BGK 91 (Dn Sub -> 2150)", "signal", 4069, "BGK", "2150"),
     ("ECM1 D22 (Up Fast -> 1100)", "signal", 2, "ECM1", "1100"),
+    # Norton Bridge -> Stone (NBS zero-based branch must not jump back onto trunk LEC4)
+    ("Stone SOT401 (NBS Dn)", "signal", 17281, "NBS", "2100"),
+    ("Stone SOT403 (NBS Dn)", "signal", 17280, "NBS", "2100"),
+    ("Stone SOT405 (NBS Dn)", "signal", 17279, "NBS", "2100"),
+    ("Stone P786B (NBS Dn)", "points", 56328, "NBS", "2100"),
 ]
 
 
