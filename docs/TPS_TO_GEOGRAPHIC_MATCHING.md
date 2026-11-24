@@ -184,6 +184,20 @@ docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --
 docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --station YORK
 docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200
 docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points --limit 1000
+
+# Full-network batched audit snapshot (all ~55k signals + ~14k points, persisted in ./audit_snapshots)
+docker exec nr_schematic_app python3 /app/batch_audit.py \
+    --out /app/audit_snapshots/baseline.jsonl.gz --workers 6 --batch-size 1000
+
+# Re-summarize or export anomalies CSV from any saved snapshot
+docker exec nr_schematic_app python3 /app/batch_audit.py \
+    --summarize /app/audit_snapshots/baseline.jsonl.gz \
+    --csv /app/audit_snapshots/baseline_anomalies.csv
+
+# Before/After diff report to validate code changes & catch UK-wide regressions
+docker exec nr_schematic_app python3 /app/batch_audit.py \
+    --diff /app/audit_snapshots/baseline.jsonl.gz /app/audit_snapshots/after.jsonl.gz \
+    --csv /app/audit_snapshots/diff.csv
 ```
 
 **Automated Anomaly Detectors (`audit_track_matching.py`):**
@@ -195,7 +209,7 @@ docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points 
 - `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
 
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **91 / 91** passing across Stoke (`CMD1`/`CMD2`), Crewe (`LEC5`), Sandbach/Wilmslow (`CMP1`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Glasgow Central & Clyde Bridge (`WCM2`, Lines `A`–`H` & sidings), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **118 / 118** passing across Stoke (`CMD1`/`CMD2`), Crewe & North (`LEC5`/`CMP1`/`LLI`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Warrington Bank Quay & Royal Mail (`CGJ3`), Weaver Junction Flyover (`CGJ1`/`WJL1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Glasgow Central & Approaches (`WCM2`, Lines `1L`–`6L`, `A`–`H` & sidings), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
 - **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).

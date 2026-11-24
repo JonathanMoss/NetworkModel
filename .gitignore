@@ -45,6 +45,7 @@ env/
 # Local Database Volumes, Logs & OS Artifacts
 # ==============================================================================
 pgdata/
+audit_snapshots/
 *.log
 .env
 .env.*
