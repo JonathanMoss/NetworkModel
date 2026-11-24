@@ -166,6 +166,13 @@ REGRESSION_CASES = [
     ("Stone SOT403 (NBS Dn)", "signal", 17280, "NBS", "2100"),
     ("Stone SOT405 (NBS Dn)", "signal", 17279, "NBS", "2100"),
     ("Stone P786B (NBS Dn)", "points", 56328, "NBS", "2100"),
+    # ECML South (ECM1 Slow 2, Huntingdon Bay, Peterborough Slow 2, Newark DUPL, Doncaster)
+    ("ECM1 K403 (Dn Slow 2 -> 2252)", "signal", 568, "ECM1", "2252"),
+    ("ECM1 K453 (Dn Slow 2 -> 2252)", "signal", 52, "ECM1", "2252"),
+    ("ECM1 P1 HNTNGDN (Bay -> 1201)", "signal", 138, "ECM1", "1201"),
+    ("ECM1 P438 (PBRO US2 -> 1252)", "signal", 893, "ECM1", "1252"),
+    ("ECM1 D77 (Newark DUPL -> 3500)", "signal", 469, "ECM1", "3500"),
+    ("ECM1 D278 (Doncaster -> 1801)", "signal", 3853, "ECM1", "1801"),
 ]
 
 

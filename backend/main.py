@@ -2156,6 +2156,11 @@ def score_track_candidate(
         bool(nh_tokens & {"el", "ue", "de", "uel", "del", "dsb", "usb"})
         or bool(re.search(r"\b(?:suburb|electric)\b", nh_l))
     )
+    is_slow_2 = bool(nh_l) and (
+        bool(nh_tokens & {"sl2", "ds2", "us2", "s2"})
+        or bool(re.search(r"\b(?:slow|relief)\s*2\b", nh_l))
+    )
+    is_bay_or_term = bool(nh_l) and any(w in nh_l for w in ("bay", "terminal"))
     is_running_line_hint = bool(nh_l) and not is_siding_hint and (
         is_electric_or_sub
         or is_ul_dl_named_line
@@ -2192,6 +2197,7 @@ def score_track_candidate(
             if tid[1] in allowed_classes:
                 is_opp_running_dir = (
                     tid[1] in ("1", "2")
+                    and not is_bay_or_term
                     and (
                         (secondary_dir == "up" and tid.startswith("2"))
                         or (secondary_dir == "down" and tid.startswith("1"))
@@ -2203,7 +2209,10 @@ def score_track_candidate(
                     # Explicitly numbered for a different platform/siding (01..49; 50..59 are secondary running lines),
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
-        if (is_secondary_fast or is_electric_or_sub) and tid[1] == "1" and 50 <= tid_nn <= 59:
+        if is_slow_2 and tid[1] == "2" and tid_nn in (2, 52):
+            # Secondary Slow 2 lines (e.g. ECM1 Hornsey 1202/2252, Peterborough 1252)
+            score += 25.0
+        elif (is_secondary_fast or is_electric_or_sub) and tid[1] == "1" and 50 <= tid_nn <= 59:
             # Secondary/electric/suburban fast-coded running lines (e.g. LTN1 1152/2152 Electric, 1154/2154 Suburban)
             if tid_nn == 52 and (bool(nh_tokens & {"el", "ue", "de"}) or "electric" in nh_l):
                 score += 22.0
@@ -2211,7 +2220,7 @@ def score_track_candidate(
                 score += 22.0
             else:
                 score += 20.0
-        elif tid_nn == 0 and tid[1] in ("1", "2", "4") and not (is_secondary_fast or is_electric_or_sub):
+        elif tid_nn == 0 and tid[1] in ("1", "2", "4") and not (is_secondary_fast or is_electric_or_sub or is_slow_2):
             # When a platform sits on a primary running line (e.g. LTN1 Main Line 1100/2100 alongside 1152/2152,
             # or ECM1 2200 alongside 2252), prefer xx00 over xx5x secondary running lines
             score += 5.0
@@ -2247,7 +2256,10 @@ def score_track_candidate(
                 score -= 30.0 + min(10.0, abs(tnn - lnum) * 2.0)
             else:
                 score -= 40.0
-        if is_secondary_fast or is_electric_or_sub:
+        if is_slow_2 and tid[1] == "2" and tid[2:4] in ("02", "52"):
+            # Secondary Slow 2 lines (e.g. ECM1 Hornsey 1202/2252, Peterborough 1252)
+            score += 25.0
+        elif is_secondary_fast or is_electric_or_sub:
             # Secondary/parallel running-line pairs (e.g. UL/DL Fast on NOC/ECM4 -> xx50,
             # LTN1 Electric -> 1152/2152, LTN1 Suburban -> 1154/2154, BGK Suburban -> 1150/2150)
             if tid[1] == "1" and tid[2:4].isdigit() and 50 <= int(tid[2:4]) <= 59:
@@ -2258,7 +2270,7 @@ def score_track_candidate(
                     score += 22.0
                 else:
                     score += 20.0
-        elif tid[2:4] == "00":
+        elif tid[2:4] == "00" and not is_slow_2:
             # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
             score += 5.0
         elif tid[2:4] == "01" and tid[1] == "2":
@@ -2324,7 +2336,7 @@ def score_track_candidate(
                 score -= 25.0
         elif (
             "loop" in nh
-            or bool(tokens & {"udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "bgl", "rvl"})
+            or bool(tokens & {"udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "dupl", "dbp", "ubp", "bgl", "rvl"})
             or (bool(tokens & {"dl", "ul"}) and not is_ul_dl_named_line)
             or bool(re.search(r"\b(?:d&u|u&d|d/u|u/d)(?:g|p)?l\b", nh))
         ):
