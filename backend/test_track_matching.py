@@ -216,6 +216,20 @@ REGRESSION_CASES = [
     ("MLN1 T1745 (Reading P12 -> 3500)", "signal", 18473, "MLN1", "3500"),
     ("SCM2 SHUNT (U-3SDG -> 1503)", "signal", 33293, "SCM2", "1503"),
     ("TJC1 S85 (Sheffield Bay -> 2500)", "signal", 16242, "TJC1", "2500"),
+    # Cross-ELR single-track branch bay (Slough Plat 1 -> WIN 3600/3100) & Old Oak Common (WLL9)
+    ("MLN1 T3533 (Slough P1 -> WIN 3600)", "signal", 18485, "WIN", "3600"),
+    ("MLN1 P1 SLOUGH (-> WIN 3600)", "signal", 18491, "WIN", "3600"),
+    ("MLN1 T3538 (Slough -> WIN 3100)", "signal", 18481, "WIN", "3100"),
+    ("MLN1 OLDOXRS (P1 -> WLL9 3801)", "signal", 50046, "WLL9", "3801"),
+    # Cardiff Central East bi-directional 34xx approach continuation (3412=UM, 3413=DM, 3402=UR, 3403=DR)
+    ("SWM2 CF2016 (Cardiff UF -> 3412)", "signal", 48292, "SWM2", "3412"),
+    ("SWM2 CF2018 (Cardiff UM -> 3412)", "signal", 45412, "SWM2", "3412"),
+    ("SWM2 CF2618 (Cardiff DM -> 3413)", "signal", 21693, "SWM2", "3413"),
+    ("SWM2 CF2228 (Cardiff UR -> 3402)", "signal", 48290, "SWM2", "3402"),
+    ("SWM2 CF2616 (Cardiff UR -> 3401)", "signal", 45413, "SWM2", "3401"),
+    ("SWM2 CF2710 (Cardiff DR -> 3403)", "signal", 48289, "SWM2", "3403"),
+    ("SWM2 CF2712 (Cardiff DR -> 3403)", "signal", 49105, "SWM2", "3403"),
+    ("SWM2 CF2231 (Cardiff DR -> 3403)", "signal", 49107, "SWM2", "3403"),
 ]
 
 
