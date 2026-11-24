@@ -129,6 +129,27 @@ REGRESSION_CASES = [
     ("GLC GG5521 (Line H -> 2208)", "signal", 29897, "WCM2", "2208"),
     ("GLC GG5460 (No3 Sdg -> 3903)", "signal", 42738, "WCM2", "3903"),
     ("GLC GG5462 (No4 Sdg -> 3904)", "signal", 36693, "WCM2", "3904"),
+    # Crewe & North approaches (CMP1 Up Manchester Loop, LLI Independent)
+    ("Crewe CE152 (Up Manch Loop)", "signal", 7258, "CMP1", "1500"),
+    ("Crewe North CY55 (Dn Indep)", "signal", 7215, "LLI", "2100"),
+    # York South Approach (ECM4 Up/Down Leeds 1150/2150 vs Goods Loop 3500)
+    ("York Y201 (Dn Leeds -> 2150)", "signal", 2594, "ECM4", "2150"),
+    ("York 613 (Up Leeds -> 1150)", "signal", 2596, "ECM4", "1150"),
+    ("York Y202 (Up Leeds -> 1150)", "signal", 2303, "ECM4", "1150"),
+    ("York Y205 (Dn Leeds -> 2150)", "signal", 2304, "ECM4", "2150"),
+    ("York Y625 (Up Leeds -> 1150)", "signal", 2599, "ECM4", "1150"),
+    # Warrington Bank Quay & Royal Mail (CGJ3 Plat 1, Plat 4, Down Slow, Royal Mail sidings)
+    ("WBQ WN196 (Plat 1 -> 1200)", "signal", 7880, "CGJ3", "1200"),
+    ("WBQ WN191 (Plat 1 -> 1200)", "signal", 7881, "CGJ3", "1200"),
+    ("WBQ WN197 (Plat 4 -> 2202)", "signal", 62002, "CGJ3", "2202"),
+    ("WBQ WN193 (Plat 4 -> 2202)", "signal", 7883, "CGJ3", "2202"),
+    ("WBQ WN198 (Dn Slow -> 2201)", "signal", 62003, "CGJ3", "2201"),
+    ("WBQ WN194 (Dn Slow -> 2201)", "signal", 7885, "CGJ3", "2201"),
+    ("WBQ WN138 (Royal Mail -> 1900)", "signal", 7876, "CGJ3", "1900"),
+    # Weaver Junction Liverpool Flyover (CGJ1 -> WJL1 1100/2100)
+    ("Weaver Jn WD168 (Up Lpool)", "signal", 7777, "WJL1", "1100"),
+    ("Weaver Jn WD171 (Dn Lpool)", "signal", 7778, "WJL1", "2100"),
+    ("Weaver Jn WD170 (WJL1 Up)", "signal", 7525, "WJL1", "1100"),
 ]
 
 

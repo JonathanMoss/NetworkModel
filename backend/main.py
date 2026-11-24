@@ -1566,6 +1566,11 @@ def _parse_station_track_rows(
     )
 
     parts = [p for p in (best.get("name"), best.get("description"), sa_code, rop_code) if p]
+    stn_ln = (best.get("station_longname") or "").strip().lower()
+    if stn_ln and re.search(r"\b(?:siding|sdg|sdgs|depot|yard|t\.?m\.?d\.?|c\.?s\.?|royal\s+mail|freight|works)\b", stn_ln):
+        joined_l = " ".join(parts).lower()
+        if not re.search(r"\b(?:fast|main|slow|relief|loop|siding|sdg|depot|yard|bay|terminal)\b", joined_l):
+            parts.append("Siding")
     hint_str = " | ".join(parts) if parts else None
     short_lbl = " / ".join(p for p in (best.get("name"), best.get("description")) if p) or sa_code or rop_code
     return {
@@ -1696,9 +1701,9 @@ def _resolve_reversible_through_line_dir(
             if re.search(r"\b(?:up\s*(?:&|and)\s*down|down\s*(?:&|and)\s*up|reversible)\b", desc_l):
                 continue
             line_dir = None
-            if re.search(r"\bup\s+(?:main|fast|slow|relief|line)\b", desc_l):
+            if re.search(r"\b(?:up\s+(?:main|fast|slow|relief|line)|(?:main|fast|slow|relief)\s+up)\b", desc_l):
                 line_dir = "up"
-            elif re.search(r"\b(?:down|dn)\s+(?:main|fast|slow|relief|line)\b", desc_l):
+            elif re.search(r"\b(?:(?:down|dn)\s+(?:main|fast|slow|relief|line)|(?:main|fast|slow|relief)\s+(?:down|dn))\b", desc_l):
                 line_dir = "down"
             if line_dir:
                 found_dirs.add(line_dir)
@@ -2133,8 +2138,22 @@ def score_track_candidate(
     is_siding_hint = any(w in nh_l for w in ("siding", "sding", "yard", "depot", "headshunt")) or bool(
         nh_tokens & {"sdg", "ms1", "ms2", "ms3", "mbr"}
     )
+    is_ul_dl_named_line = (
+        bool(nh_l)
+        and bool(nh_tokens & {"dl", "ul"})
+        and "loop" not in nh_l
+        and (
+            bool(re.search(r"\bfast\b", nh_l))
+            or bool(
+                re.search(
+                    r"\b(?:up|down)\s+(?!loop\b|goods\b|freight\b|siding\b|slow\b|relief\b|main\b|line\b)[a-z]{3,}\b",
+                    nh_l,
+                )
+            )
+        )
+    )
     is_secondary_fast = bool(nh_l) and (
-        (bool(nh_tokens & {"dl", "ul"}) and bool(re.search(r"\bfast\b", nh_l)))
+        is_ul_dl_named_line
         or bool(re.search(r"\bsuburb", nh_l))
         or bool(nh_tokens & {"dsb", "usb"})
         or (
@@ -2156,7 +2175,14 @@ def score_track_candidate(
         else:
             allowed_classes = ("8", "9") if is_siding_hint else ("1", "2", "4", "5", "6", "8", "9")
             if tid[1] in allowed_classes:
-                if tid_nn == platform_num:
+                is_opp_running_dir = (
+                    tid[1] in ("1", "2")
+                    and (
+                        (secondary_dir == "up" and tid.startswith("2"))
+                        or (secondary_dir == "down" and tid.startswith("1"))
+                    )
+                )
+                if tid_nn == platform_num and not is_opp_running_dir:
                     score += 120.0
                 elif tid_nn > 0:
                     # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6),
@@ -2200,6 +2226,10 @@ def score_track_candidate(
                 score += 15.0
         elif tid[2:4] == "00":
             # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
+            score += 5.0
+        elif tid[2:4] == "01" and tid[1] == "2":
+            # When a Slow line splits into xx01 (primary Slow) and xx02 (Slow platform loop, e.g. WBQ 2201/2202),
+            # prefer xx01 for unnumbered Slow signals (D-SL)
             score += 5.0
 
     # Line class matching (2nd digit of NWR Appendix A track_id)
@@ -2261,12 +2291,20 @@ def score_track_candidate(
         elif (
             "loop" in nh
             or bool(tokens & {"udl", "dgl", "ugl", "udgl", "dpl", "upl", "udpl", "bgl", "rvl"})
-            or (bool(tokens & {"dl", "ul"}) and not bool(re.search(r"\bfast\b", nh)))
+            or (bool(tokens & {"dl", "ul"}) and not is_ul_dl_named_line)
             or bool(re.search(r"\b(?:d&u|u&d|d/u|u/d)(?:g|p)?l\b", nh))
         ):
             matched_class = True
+            has_slow_word = bool(re.search(r"\b(?:slow|relief)\b", nh))
             if d2 == "5":
                 score += 55.0
+            elif d2 == "2" and has_slow_word:
+                # Platform loop coded as Slow line in NWR (e.g. Warrington Bank Quay Plat 4 D-4 Slow Down | DPL -> 2202)
+                score += 50.0
+                if len(tid) == 4 and tid[2:4] == "02":
+                    score += 5.0
+            elif d2 == "1" and has_slow_word:
+                score -= 15.0
             elif d2 == "3" and ("goods" in nh or "g" in tokens or "gl" in nh):
                 score += 20.0
             elif d2 in ("6", "7", "8", "9"):
@@ -2337,7 +2375,8 @@ def score_track_candidate(
             elif d2 in ("7", "9"):
                 score -= 40.0
         elif (
-            bool(re.search(r"\b(?:fast|main|line 1|up 1|down 1)\b", nh))
+            is_secondary_fast
+            or bool(re.search(r"\b(?:fast|main|line 1|up 1|down 1)\b", nh))
             or bool(tokens & {"dm", "um", "df", "uf", "ml", "fl", "dml", "uml", "dfl", "ufl", "l1", "dfi", "ufi"})
         ):
             matched_class = True
@@ -2634,7 +2673,7 @@ def find_nwr_cross_links_for_tps(
                 has_covering_slow = any(
                     len(str(c.get("track_id") or "")) == 4
                     and str(c["track_id"])[0] in (want_d1, "3")
-                    and str(c["track_id"])[1] == "2"
+                    and str(c["track_id"])[1] in ("2", "3", "5")
                     and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) - 50.0
                     <= target_m
                     <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) + 50.0
@@ -2718,6 +2757,28 @@ def find_nwr_cross_links_for_tps(
                 # Multi-ELR named-branch / flyover fallback (e.g. Norton Bridge U-UNB / D-DNB where TPS
                 # retains main-line ELR LEC4 while NWR puts the flyover on LEC6 1101 and re-chained NBS 1100/2100).
                 br_m = re.match(r"^(?:d|u)-((?:d|u)[a-z]{2,3})\b", th_l)
+                is_ul_dl_branch = (
+                    direction_hint in ("up", "down")
+                    and bool(th_toks & {"dl", "ul"})
+                    and "loop" not in th_l
+                    and (
+                        bool(re.search(r"\bfast\b", th_l))
+                        or bool(
+                            re.search(
+                                r"\b(?:up|down)\s+(?!loop\b|goods\b|freight\b|siding\b|slow\b|relief\b|main\b|line\b)[a-z]{3,}\b",
+                                th_l,
+                            )
+                        )
+                    )
+                    and not any(
+                        len(str(c.get("track_id") or "")) == 4
+                        and str(c["track_id"])[2:4] == "50"
+                        and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) - 50.0
+                        <= target_m
+                        <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) + 50.0
+                        for c in raw_candidates
+                    )
+                )
                 is_named_branch = bool(br_m) and (
                     direction_hint in ("up", "down")
                     and not bool(
@@ -2725,10 +2786,10 @@ def find_nwr_cross_links_for_tps(
                         & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "dg", "ug", "dl", "ul", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url", "dgl", "ugl", "dpl", "upl"}
                     )
                     and not bool(
-                        re.search(r"\b(?:main|fast|slow|relief|goods|freight|loop|single|siding|yard|depot|platform|bay|terminal)\b", th_l)
+                        re.search(r"\b(?:main|fast|slow|relief|goods|freight|indep[a-z]*|loop|single|siding|yard|depot|platform|bay|terminal)\b", th_l)
                     )
                 )
-                if is_named_branch:
+                if is_named_branch or is_ul_dl_branch:
                     want_d1 = "2" if direction_hint == "down" else "1"
                     c0 = raw_candidates[0]
                     if km_meters is not None and c0.get("coords"):
@@ -2737,25 +2798,34 @@ def find_nwr_cross_links_for_tps(
                         )
                     if ref_pt_xy:
                         rx, ry = ref_pt_xy
-                        # 1) Same-chainage flyover ELR (e.g. LEC6 1101 strictly covering target_m)
+                        # 1) Same-chainage flyover ELR (e.g. LEC6 1101 at Norton Bridge, WJL1 1100/2100 at Weaver Jn)
                         cur.execute(
                             """
-                            SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
-                                   start_meters, end_meters, length_meters, owner, coords,
-                                   start_node_id, end_node_id, min_x, max_x, min_y, max_y
-                            FROM nwr_track_centrelines
-                            WHERE elr <> %s
-                              AND SUBSTRING(track_id, 1, 1) = %s
-                              AND SUBSTRING(track_id, 2, 1) = '1'
-                              AND LEAST(start_meters, end_meters) <= %s
-                              AND GREATEST(start_meters, end_meters) >= %s
-                              AND max_x >= %s - 1500.0 AND min_x <= %s + 1500.0
-                              AND max_y >= %s - 1500.0 AND min_y <= %s + 1500.0
+                            SELECT c.fid, c.asset_id, c.elr, c.track_id, c.start_mile_yards, c.end_mile_yards,
+                                   c.start_meters, c.end_meters, c.length_meters, c.owner, c.coords,
+                                   c.start_node_id, c.end_node_id, c.min_x, c.max_x, c.min_y, c.max_y,
+                                   (SELECT MIN(LEAST(c2.start_meters, c2.end_meters))
+                                    FROM nwr_track_centrelines c2 WHERE c2.elr = c.elr) AS elr_min_m
+                            FROM nwr_track_centrelines c
+                            WHERE c.elr <> %s
+                              AND SUBSTRING(c.track_id, 1, 1) = %s
+                              AND SUBSTRING(c.track_id, 2, 1) = '1'
+                              AND LEAST(c.start_meters, c.end_meters) <= %s
+                              AND GREATEST(c.start_meters, c.end_meters) >= %s
+                              AND c.max_x >= %s - 1500.0 AND c.min_x <= %s + 1500.0
+                              AND c.max_y >= %s - 1500.0 AND c.min_y <= %s + 1500.0
                             LIMIT 8
                             """,
                             (elr, want_d1, target_m, target_m, rx, rx, ry, ry),
                         )
                         branch_rows = cur.fetchall()
+                        if is_ul_dl_branch and not is_named_branch:
+                            # Only jump to an adjacent ELR that originates near this junction (diverging branch flyover
+                            # like WJL1 starting at Weaver Jn), never back onto a trunk ELR that started >3km earlier.
+                            branch_rows = [
+                                r for r in branch_rows
+                                if r.get("elr_min_m") is not None and abs(float(r["elr_min_m"]) - target_m) <= 1500.0
+                            ]
                         if branch_rows:
                             existing_fids = {c["fid"] for c in raw_candidates}
                             raw_candidates = list(raw_candidates) + [
@@ -2763,7 +2833,7 @@ def find_nwr_cross_links_for_tps(
                                 for r in branch_rows
                                 if r["fid"] not in existing_fids
                             ]
-                        else:
+                        elif is_named_branch:
                             # 2) Re-chained branch ELR (e.g. NBS 1100/2100) — only when unique adjacent ELR
                             #    has a matching-direction main track within ±1500m (or matches branch station_track ELR)
                             cur.execute(
