@@ -254,8 +254,13 @@ All cross-model plotting runs through `backend/main.py`:
    - Uses regex word boundaries (`\bslow\b`, `\bfast\b`, `\bmain\b`) so place names like `Wilmslow` never misfire.
    - Strict containment (+85) strongly outranks non-overlapping segments (-(40 + 0.15*dist)) so a
      nearby segment can never hijack an asset away from its mileage.
-   - Exact `NN == platform_num` gives +120, explicit wrong `NN` gives -55; `edge_vmax` breaks Fast (>=145 km/h)
-     vs Slow (<=80 km/h) ties when no class matched; points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m.
+   - Exact `NN == platform_num` gives +120, explicit wrong `NN` (01..49; 50..59 are secondary running lines) gives -55;
+     `edge_vmax` breaks Fast (>=145 km/h) vs Slow (<=80 km/h) ties when no class matched, prevents high-speed through-line
+     platforms (>=70 km/h) from matching low-speed `x5xx` platform loops, and allows a covering `x501` loop for low-speed
+     (10..48 km/h) non-Fast platforms (e.g. Luton Plat 1 = `1200` @ 89 km/h, Plat 2 = `3501` @ 32 km/h).
+   - Points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m; `DR`/`UR` tokens map to Slow/Relief (`x2xx`).
+   - Re-chained branch ELR Check 2 requires `target_m >= 5000m` and branch start `< 5000m` so zero-based branches (e.g. `NBS`)
+     never jump backwards onto high-chainage trunk ELRs (`LEC4`).
 3. Placement & Overrides:
    - Signals interpolate along `best_centreline` at `km_value` (or project spatially for cross-ELR platforms).
    - Points snap to `nwr_track_nodes` prioritizing `valency >= 3` switches on the matched `track_id`.
@@ -266,11 +271,10 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 91-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 154-case regression suite, and UK-wide batched audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points --limit 1000`
+  `docker exec nr_schematic_app python3 /app/batch_audit.py --elr <ELRS> --out /app/audit_snapshots/after.jsonl.gz`
+  `docker exec nr_schematic_app python3 /app/batch_audit.py --diff /app/audit_snapshots/baseline_cd3779b.jsonl.gz /app/audit_snapshots/after.jsonl.gz`
 
 ### Debugging Workflow for Any Mis-Plotted Asset
 1. Query the asset's `start_node_id`, `end_node_id`, `km_value`, `elr`, and `station_tracks` in PostgreSQL.

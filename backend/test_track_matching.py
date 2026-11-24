@@ -173,6 +173,23 @@ REGRESSION_CASES = [
     ("ECM1 P438 (PBRO US2 -> 1252)", "signal", 893, "ECM1", "1252"),
     ("ECM1 D77 (Newark DUPL -> 3500)", "signal", 469, "ECM1", "3500"),
     ("ECM1 D278 (Doncaster -> 1801)", "signal", 3853, "ECM1", "1801"),
+    # MML South (SPC1 Luton Plat 1-5 + Points, Cricklewood WH218) & GWML (MLN1 DR/UR Relief)
+    ("SPC1 WH302 (Luton P1 -> 1200)", "signal", 13308, "SPC1", "1200"),
+    ("SPC1 WH465 (Luton P1 -> 1200)", "signal", 13287, "SPC1", "1200"),
+    ("SPC1 WH478 (Luton P2 -> 3501)", "signal", 13309, "SPC1", "3501"),
+    ("SPC1 WH463 (Luton P2 -> 3501)", "signal", 13310, "SPC1", "3501"),
+    ("SPC1 WH476 (Luton P3 -> 2200)", "signal", 13300, "SPC1", "2200"),
+    ("SPC1 WH102 (Luton P4 -> 1100)", "signal", 45440, "SPC1", "1100"),
+    ("SPC1 WH101 (Luton P5 -> 2100)", "signal", 13269, "SPC1", "2100"),
+    ("SPC1 P864B (Luton P3 -> 2200)", "points", 67590, "SPC1", "2200"),
+    ("SPC1 P869 (Luton Jn -> 1200)", "points", 67593, "SPC1", "1200"),
+    ("SPC1 P871 (Luton P1 -> 1200)", "points", 67594, "SPC1", "1200"),
+    ("SPC1 P870B (Luton P2 -> 3501)", "points", 67597, "SPC1", "3501"),
+    ("SPC1 WH218 (Cricklewood -> 1200)", "signal", 13281, "SPC1", "1200"),
+    ("MLN1 EALINGB (P3 DR -> 2200)", "signal", 18019, "MLN1", "2200"),
+    ("MLN1 SN209 (Ealing DR -> 2200)", "signal", 18234, "MLN1", "2200"),
+    ("MLN1 WEALJN (W Ealing UR -> 1200)", "signal", 48263, "MLN1", "1200"),
+    ("MLN1 T576 (Maidenhead -> 1200)", "signal", 18451, "MLN1", "1200"),
 ]
 
 

@@ -2196,16 +2196,28 @@ def score_track_candidate(
                 allowed_classes = ("1", "2", "4", "5", "6", "8", "9")
             if tid[1] in allowed_classes:
                 is_opp_running_dir = (
-                    tid[1] in ("1", "2")
+                    (tid[1] in ("1", "2") or (tid[1] == "5" and not is_rev_hint))
                     and not is_bay_or_term
                     and (
                         (secondary_dir == "up" and tid.startswith("2"))
                         or (secondary_dir == "down" and tid.startswith("1"))
                     )
                 )
-                if tid_nn == platform_num and not is_opp_running_dir:
+                is_fast_through_plat = bool(
+                    tid[1] == "5" and is_running_line_hint and edge_vmax and edge_vmax >= 70
+                )
+                is_first_loop_low_speed = bool(
+                    tid[1] == "5"
+                    and tid_nn == 1
+                    and edge_vmax
+                    and 10 <= edge_vmax <= 48
+                    and not is_opp_running_dir
+                    and not bool(nh_tokens & {"uf", "df", "um", "dm", "ufl", "dfl", "uml", "dml", "fl", "ml"})
+                    and (target_m is None or min(c_start, c_end) - 2.0 <= target_m <= max(c_start, c_end) + 2.0)
+                )
+                if tid_nn == platform_num and not is_opp_running_dir and not is_fast_through_plat:
                     score += 120.0
-                elif 0 < tid_nn < 50:
+                elif 0 < tid_nn < 50 and not is_first_loop_low_speed:
                     # Explicitly numbered for a different platform/siding (01..49; 50..59 are secondary running lines),
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
@@ -2386,12 +2398,38 @@ def score_track_candidate(
             and not bool(re.search(r"\b(?:fast|main|slow|relief|goods|freight|bay|terminal)\b", nh))
         ):
             # Dedicated station platform tracks (e.g. Stafford 'Up Platform' / 'Down Platform', Reading 'Platform 7 | DML',
-            # Birmingham New Street 'U-Platform 1' -> 3801)
+            # Luton 'Up Platform 4 | UF | FL', Birmingham New Street 'U-Platform 1' -> 3801)
             matched_class = True
-            has_fast_tok = bool(tokens & {"uf", "df", "um", "dm", "ufl", "dfl", "uml", "dml"})
-            has_slow_tok = bool(tokens & {"us", "ds", "usl", "dsl", "url", "drl"})
+            has_fast_tok = bool(tokens & {"uf", "df", "um", "dm", "ufl", "dfl", "uml", "dml", "fl", "ml"})
+            has_slow_tok = bool(tokens & {"us", "ds", "usl", "dsl", "url", "drl", "ur", "dr", "sl", "rl"})
+            is_exact_plat_nn = (
+                platform_num is not None
+                and len(tid) == 4
+                and tid[2:4].isdigit()
+                and int(tid[2:4]) == platform_num
+            )
+            is_wrong_plat_nn = (
+                platform_num is not None
+                and len(tid) == 4
+                and tid[2:4].isdigit()
+                and 0 < int(tid[2:4]) < 50
+                and int(tid[2:4]) != platform_num
+            )
             if d2 == "5":
-                score += 75.0
+                if is_running_line_hint and edge_vmax and edge_vmax >= 70:
+                    # High-speed through running-line platforms (>=70 km/h) are never low-speed platform loops
+                    score -= 20.0
+                elif is_wrong_plat_nn and not (
+                    len(tid) == 4
+                    and tid[2:4] == "01"
+                    and edge_vmax
+                    and 10 <= edge_vmax <= 48
+                    and not has_fast_tok
+                    and (target_m is None or min(c_start, c_end) - 2.0 <= target_m <= max(c_start, c_end) + 2.0)
+                ):
+                    score += 15.0
+                else:
+                    score += 75.0
             elif d2 == "1":
                 score += 35.0 if has_fast_tok else 15.0
             elif d2 == "2":
@@ -2400,7 +2438,7 @@ def score_track_candidate(
                 score += 15.0
             elif d2 == "8":
                 # Station platform tracks at major hubs (e.g. Birmingham New St 3801-3812, York 3809-3811)
-                if platform_num is not None and len(tid) == 4 and tid[2:4].isdigit() and int(tid[2:4]) == platform_num:
+                if is_exact_plat_nn:
                     score += 5.0
                 else:
                     score -= 10.0
@@ -2409,6 +2447,7 @@ def score_track_candidate(
         elif (
             bool(re.search(r"\b(?:slow|relief|line 2|up 2|down 2|local)\b", nh))
             or bool(tokens & {"ds", "us", "sl", "rl", "dsl", "usl", "drl", "url", "l2"})
+            or (bool(tokens & {"dr", "ur"}) and not bool(re.search(r"\bfast\b|u&dr|d&ur", nh)))
         ):
             matched_class = True
             if d2 == "2":
