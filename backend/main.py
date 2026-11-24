@@ -2230,6 +2230,10 @@ def score_track_candidate(
                     # For explicit loop hints on x5xx, use a softer penalty (-15) since NWR loop indices (e.g. 3503)
                     # often differ from TPS platform numbers while exact matches still earn +120.
                     score -= 15.0 if (is_loop_hint and tid[1] == "5") else 55.0
+            elif is_siding_hint and tid[1] == "5" and tid_nn == platform_num:
+                # When a numbered siding falls back to numbered x5xx loops (e.g. SCM2 U-3SDG -> 1503 vs 1501/1502),
+                # break ties in favour of the matching sequence number
+                score += 25.0
         if is_slow_2 and tid[1] == "2" and tid_nn in (2, 52):
             # Secondary Slow 2 lines (e.g. ECM1 Hornsey 1202/2252, Peterborough 1252)
             score += 25.0
@@ -2353,7 +2357,10 @@ def score_track_candidate(
                 score += 60.0
             elif d2 in ("1", "2"):
                 score -= 20.0
-            elif d2 in ("7", "8", "9"):
+            elif d2 == "7":
+                # Terminal bay signals must not land on crossovers (e.g. TJC1 S85 -> 3744)
+                score -= 45.0
+            elif d2 in ("8", "9"):
                 score -= 25.0
         elif (
             "loop" in nh
@@ -2453,12 +2460,7 @@ def score_track_candidate(
                 else:
                     score += 75.0
             elif d2 == "1":
-                if has_fast_tok:
-                    score += 35.0
-                elif not has_slow_tok and edge_vmax and edge_vmax >= 145:
-                    score += 30.0
-                else:
-                    score += 15.0
+                score += 35.0 if has_fast_tok else 15.0
             elif d2 == "2":
                 if has_slow_tok or (is_rev_hint and not has_fast_tok):
                     score += 35.0

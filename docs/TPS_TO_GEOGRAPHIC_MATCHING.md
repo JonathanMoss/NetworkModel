@@ -255,11 +255,13 @@ All cross-model plotting runs through `backend/main.py`:
    - Strict containment (+85) strongly outranks non-overlapping segments (-(40 + 0.15*dist)) so a
      nearby segment can never hijack an asset away from its mileage.
    - Exact `NN == platform_num` gives +120, explicit wrong `NN` (01..49; 50..59 are secondary running lines) gives -55;
-     `edge_vmax` breaks Fast (>=145 km/h) vs Slow (<=80 km/h) ties both when no class matched and on dedicated platforms
-     without Fast/Slow tokens (e.g. Loughborough `LR503` -> `SPC5 2200`), prevents high-speed through-line platforms (>=70 km/h)
-     from matching low-speed `x5xx` platform loops, and allows a covering `x501` loop for low-speed (10..48 km/h) non-Fast
-     platforms (e.g. Luton Plat 1 = `1200` @ 89 km/h, Plat 2 = `3501` @ 32 km/h).
-   - Unnumbered open-line reversible Fast/Main signals (e.g. `SPC5 U-FL`) do not boost `d2 == "2"` Slow lines (`3200`).
+     `edge_vmax` breaks Fast (>=145 km/h) vs Slow (<=80 km/h) ties when no class matched, prefers Slow (`d2 == "2"`) on
+     low-speed dedicated platforms (10..80 km/h) without Fast/Slow tokens (e.g. Loughborough `LR503` -> `SPC5 2200`),
+     prevents high-speed through-line platforms (>=70 km/h) from matching low-speed `x5xx` platform loops, and allows a
+     covering `x501` loop for low-speed (10..48 km/h) non-Fast platforms (e.g. Luton Plat 1 = `1200` @ 89 km/h, Plat 2 = `3501` @ 32 km/h).
+   - Unnumbered open-line reversible Fast/Main signals (e.g. `SPC5 U-FL`) do not boost `d2 == "2"` Slow lines (`3200`);
+     Terminal Bay hints penalise crossovers (`d2 == "7"`, -45), and numbered sidings falling back to `x5xx` loops break ties
+     by matching sequence number (+25, e.g. `SCM2 U-3SDG` -> `1503`).
    - Points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m; `DR`/`UR` tokens map to Slow/Relief (`x2xx`).
    - Explicit Goods Loops (`UGL`/`DGL`/`Goods Loop`) prefer dedicated Goods (`x3xx`, +65) over Passenger Loops (`x5xx`, +55) when both exist;
      same-direction Slow lines (`d2 == "2"`) get +5 as a passenger-loop fallback (e.g. Paddock Wood `AD190` -> `XTD 1200`), and `xx00` tiebreaker
@@ -276,7 +278,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 173-case regression suite, and UK-wide batched audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 177-case regression suite, and UK-wide batched audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --elr <ELRS> --out /app/audit_snapshots/after.jsonl.gz`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --diff /app/audit_snapshots/baseline_cd3779b.jsonl.gz /app/audit_snapshots/after.jsonl.gz`

@@ -211,6 +211,11 @@ REGRESSION_CASES = [
     ("SPC8 P344A (Derby D-DL -> 3204)", "points", 68431, "SPC8", "3204"),
     ("SWM2 19 (Main Line -> 1100)", "signal", 21864, "SWM2", "1100"),
     ("SWM2 BRGEND (Dn Main -> 2100)", "signal", 28940, "SWM2", "2100"),
+    # Final UK-wide edge-case guards (Radlett WH261, Reading T1745, SCM2 3SDG, Sheffield TJC1 S85)
+    ("SPC1 WH261 (Radlett P2 -> 2200)", "signal", 13478, "SPC1", "2200"),
+    ("MLN1 T1745 (Reading P12 -> 3500)", "signal", 18473, "MLN1", "3500"),
+    ("SCM2 SHUNT (U-3SDG -> 1503)", "signal", 33293, "SCM2", "1503"),
+    ("TJC1 S85 (Sheffield Bay -> 2500)", "signal", 16242, "TJC1", "2500"),
 ]
 
 
