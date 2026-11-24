@@ -266,6 +266,12 @@ All cross-model plotting runs through `backend/main.py`:
    - Explicit Goods Loops (`UGL`/`DGL`/`Goods Loop`) prefer dedicated Goods (`x3xx`, +65) over Passenger Loops (`x5xx`, +55) when both exist;
      same-direction Slow lines (`d2 == "2"`) get +5 as a passenger-loop fallback (e.g. Paddock Wood `AD190` -> `XTD 1200`), and `xx00` tiebreaker
      includes class `5` so primary loops (`2500`) beat Slow (`2200`) for `DPL`/`UPL` hints (e.g. Eastleigh `E89`).
+   - Cross-ELR single-track branch bay fallback (`_branch_bay`, +65) matches non-mainline platform bays on adjacent ELRs
+     (e.g. Slough Platform 1 `T3533` / `P1: SLOUGH` -> `WIN 3600`, Windsor junction -> `WIN 3100`); `dep`/`arr` are treated as
+     non-siding running hints.
+   - Multi-track `34xx` approach continuation (`_find_34xx_continuation_tracks`, +95) resolves ties among covering `34xx`
+     bi-directional tracks by matching outer endpoints (<=1.5m) to their `11xx`/`21xx`/`12xx`/`22xx` Main/Relief continuations
+     (e.g. Cardiff Central East `3412`=UM, `3413`=DM, `3402`=UR, `3403`=DR).
    - Re-chained branch ELR Check 2 requires `target_m >= 5000m` and branch start `< 5000m` so zero-based branches (e.g. `NBS`)
      never jump backwards onto high-chainage trunk ELRs (`LEC4`).
 3. Placement & Overrides:
@@ -278,7 +284,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 177-case regression suite, and UK-wide batched audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 189-case regression suite, and UK-wide batched audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --elr <ELRS> --out /app/audit_snapshots/after.jsonl.gz`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --diff /app/audit_snapshots/baseline_cd3779b.jsonl.gz /app/audit_snapshots/after.jsonl.gz`

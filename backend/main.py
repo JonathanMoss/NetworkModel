@@ -2165,7 +2165,7 @@ def score_track_candidate(
         is_electric_or_sub
         or is_ul_dl_named_line
         or bool(re.search(r"\b(?:fast|main|slow|relief|goods|freight|loop)\b", nh_l))
-        or bool(nh_tokens & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "ml", "fl", "sl", "rl", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url", "dpl", "upl"})
+        or bool(nh_tokens & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "ml", "fl", "sl", "rl", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url", "dpl", "upl", "dep", "arr"})
     )
     is_secondary_fast = bool(nh_l) and (
         is_ul_dl_named_line
@@ -2545,6 +2545,85 @@ def score_track_candidate(
     return score
 
 
+_CONT_34XX_CACHE: dict[tuple[str, str, int], tuple[set[str], set[str]]] = {}
+
+
+def _find_34xx_continuation_tracks(
+    cur, elr: str, candidate_34_tids: set[str], want_prefix: str, target_m: float
+) -> set[str]:
+    """Find covering 34xx tracks on `elr` whose outer endpoints physically connect to a primary `want_prefix` (1100/2100/1200/1201/2200) track."""
+    bucket = int(target_m // 2000)
+    cache_key = (elr, want_prefix, bucket)
+    if cache_key in _CONT_34XX_CACHE:
+        pure_c, matched_c = _CONT_34XX_CACHE[cache_key]
+        return (pure_c & candidate_34_tids) or (matched_c & candidate_34_tids)
+
+    cur.execute(
+        """
+        SELECT track_id, LEAST(start_meters, end_meters) AS sm, GREATEST(start_meters, end_meters) AS em,
+               coords->0 AS p0, coords->-1 AS p1
+        FROM nwr_track_centrelines
+        WHERE elr = %s
+          AND (
+              track_id LIKE '34%%'
+              OR track_id IN ('1100', '2100', '1200', '1201', '2200', '2201')
+          )
+          AND LEAST(start_meters, end_meters) <= %s + 3000.0
+          AND GREATEST(start_meters, end_meters) >= %s - 3000.0
+        """,
+        (elr, target_m, target_m),
+    )
+    want_pts = []
+    other_class_pts = []
+    want_d2 = want_prefix[1]
+    ends_by_34: dict[str, list[tuple[float, float, list]]] = {}
+    for r in cur.fetchall():
+        tid = str(r["track_id"] or "")
+        p0, p1 = r.get("p0"), r.get("p1")
+        if tid.startswith("34"):
+            ends_by_34.setdefault(tid, []).append((float(r["sm"]), float(r["em"]), [p0, p1]))
+        elif tid.startswith(want_prefix):
+            if p0 and len(p0) >= 2:
+                want_pts.append((float(p0[0]), float(p0[1])))
+            if p1 and len(p1) >= 2:
+                want_pts.append((float(p1[0]), float(p1[1])))
+        elif len(tid) == 4 and tid[1] != want_d2:
+            if p0 and len(p0) >= 2:
+                other_class_pts.append((float(p0[0]), float(p0[1])))
+            if p1 and len(p1) >= 2:
+                other_class_pts.append((float(p1[0]), float(p1[1])))
+
+    matched_34: set[str] = set()
+    pure_34: set[str] = set()
+    if want_pts:
+        for tid34, segs in ends_by_34.items():
+            min_seg = min(segs, key=lambda x: x[0])
+            max_seg = max(segs, key=lambda x: x[1])
+            outer_pts = [
+                (float(p[0]), float(p[1]))
+                for p in (min_seg[2] + max_seg[2])
+                if p and len(p) >= 2
+            ]
+            hits_want = any(
+                (px - tx) ** 2 + (py - ty) ** 2 <= 2.25
+                for px, py in outer_pts
+                for tx, ty in want_pts
+            )
+            if hits_want:
+                matched_34.add(tid34)
+                hits_other = any(
+                    (px - tx) ** 2 + (py - ty) ** 2 <= 2.25
+                    for px, py in outer_pts
+                    for tx, ty in other_class_pts
+                )
+                if not hits_other:
+                    pure_34.add(tid34)
+
+    # Prefer tracks that connect exclusively to the requested class (e.g. 3412->1100 vs 3402->1100+1201)
+    _CONT_34XX_CACHE[cache_key] = (pure_34, matched_34)
+    return (pure_34 & candidate_34_tids) or (matched_34 & candidate_34_tids)
+
+
 def _find_valency2_adjacent_elr(cur, node_ids: list, primary_elr: str, max_hops: int = 10) -> Optional[str]:
     """Walk strictly through valency <= 2 nodes (zero turnouts) to detect if a single-track chord crosses into another ELR."""
     clean = [int(n) for n in (node_ids or []) if n is not None]
@@ -2743,6 +2822,12 @@ def find_nwr_cross_links_for_tps(
                 len(str(c.get("track_id") or "")) == 4
                 and str(c["track_id"])[2:4] == plat_suffix
                 and str(c["track_id"])[1] in ("1", "2", "4", "5", "6", "8")
+                and (
+                    target_m is None
+                    or min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) - 50.0
+                    <= target_m
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) + 50.0
+                )
                 for c in raw_candidates
             )
             if not has_plat_on_elr:
@@ -2782,6 +2867,47 @@ def find_nwr_cross_links_for_tps(
                             for r in cross_elr_rows
                             if r["fid"] not in existing_fids
                         ]
+                    elif (
+                        target_m is not None
+                        and not bool(
+                            set(re.findall(r"[a-z0-9]+", (track_name_hint or "").lower()))
+                            & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "ml", "fl", "sl", "rl", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url"}
+                        )
+                        and not bool(
+                            re.search(
+                                r"\b(?:fast|main|slow|relief|goods|freight|loop|platform)\b",
+                                (track_name_hint or "").lower(),
+                            )
+                        )
+                    ):
+                        # Single-track branch bay/platform fallback (e.g. Slough Plat 1 WIN 3600/3100 where TPS
+                        # retains main-line ELR MLN1 up to the branch junction while NWR codes the bay as WIN 3600).
+                        cur.execute(
+                            """
+                            SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
+                                   start_meters, end_meters, length_meters, owner, coords,
+                                   start_node_id, end_node_id, min_x, max_x, min_y, max_y
+                            FROM nwr_track_centrelines
+                            WHERE elr <> %s
+                              AND SUBSTRING(track_id, 1, 1) = '3'
+                              AND SUBSTRING(track_id, 2, 1) IN ('1', '4', '6')
+                              AND RIGHT(track_id, 2) = '00'
+                              AND LEAST(start_meters, end_meters) <= %s + 20.0
+                              AND GREATEST(start_meters, end_meters) >= %s - 20.0
+                              AND max_x >= %s - 300.0 AND min_x <= %s + 300.0
+                              AND max_y >= %s - 300.0 AND min_y <= %s + 300.0
+                            LIMIT 8
+                            """,
+                            (elr, target_m, target_m, rx, rx, ry, ry),
+                        )
+                        branch_bay_rows = cur.fetchall()
+                        if branch_bay_rows:
+                            existing_fids = {c["fid"] for c in raw_candidates}
+                            raw_candidates = list(raw_candidates) + [
+                                {**r, "_branch_bay": True}
+                                for r in branch_bay_rows
+                                if r["fid"] not in existing_fids
+                            ]
         elif platform_num is None and track_name_hint and raw_candidates and target_m is not None:
             # Multi-ELR flyover/dive-under Slow/Relief fallback (e.g. Norton Bridge Down Slow on LEC6 2200
             # while TPS tags SC5609/SC5611/SC5615 on LEC4 where 2200 is absent across the flyover span).
@@ -3077,6 +3203,52 @@ def find_nwr_cross_links_for_tps(
                         if boost > switch_track_boost.get(tid_c, 0.0):
                             switch_track_boost[tid_c] = boost
 
+        # Resolve ties among multiple covering 34xx bi-directional approach tracks (e.g. Cardiff Central 3402/3403/3412/3413)
+        # by tracing which 34xx track physically continues into the requested 11xx/21xx/12xx/22xx Main/Relief line.
+        cont_34_boost: set[str] = set()
+        if platform_num is None and track_name_hint and target_m is not None:
+            covering_34 = {
+                str(c["track_id"])
+                for c in raw_candidates
+                if c.get("elr") == elr
+                and str(c.get("track_id") or "").startswith("34")
+                and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) <= target_m
+                <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+            }
+            if len(covering_34) >= 2:
+                th_c = track_name_hint.lower()
+                th_ctoks = set(re.findall(r"[a-z0-9]+", th_c))
+                dh_c = (direction_hint or "").lower()
+                want_d1_c = (
+                    "1"
+                    if ("up" in dh_c or (dh_c == "reversible" and secondary_dir == "up"))
+                    else ("2" if ("down" in dh_c or dh_c == "dn" or (dh_c == "reversible" and secondary_dir == "down")) else "")
+                )
+                want_d2_c = (
+                    "2"
+                    if (
+                        bool(re.search(r"\b(?:slow|relief)\b", th_c))
+                        or bool(th_ctoks & {"ds", "us", "dr", "ur", "sl", "rl", "dsl", "usl", "drl", "url"})
+                    )
+                    else (
+                        "1"
+                        if (
+                            bool(re.search(r"\b(?:fast|main)\b", th_c))
+                            or bool(th_ctoks & {"dm", "um", "df", "uf", "ml", "fl", "dml", "uml", "dfl", "ufl"})
+                        )
+                        else ""
+                    )
+                )
+                want_pref = want_d1_c + want_d2_c
+                if len(want_pref) == 2 and not any(
+                    c.get("elr") == elr
+                    and str(c.get("track_id") or "").startswith(want_pref)
+                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) <= target_m
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    for c in raw_candidates
+                ):
+                    cont_34_boost = _find_34xx_continuation_tracks(cur, elr, covering_34, want_pref, target_m)
+
         candidates = []
         for c in raw_candidates:
             # For spatially matched cross-ELR station platforms (e.g. LVS at Liverpool St, YMS at York),
@@ -3102,6 +3274,10 @@ def find_nwr_cross_links_for_tps(
                 score += switch_track_boost.get(c["track_id"], 0.0)
             if c.get("_flyover_branch"):
                 score += 25.0
+            if c.get("_branch_bay"):
+                score += 65.0
+            if cont_34_boost and c.get("elr") == elr and str(c.get("track_id") or "") in cont_34_boost:
+                score += 95.0
             if c.get("_valency2_chord"):
                 score += 75.0
             candidates.append({
