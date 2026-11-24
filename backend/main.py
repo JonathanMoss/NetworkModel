@@ -2203,8 +2203,16 @@ def score_track_candidate(
                         or (secondary_dir == "down" and tid.startswith("1"))
                     )
                 )
+                is_loop_hint = bool(nh_l) and (
+                    "loop" in nh_l
+                    or bool(nh_tokens & {"dpl", "upl", "udpl", "dupl", "dgl", "ugl", "udgl"})
+                )
                 is_fast_through_plat = bool(
-                    tid[1] == "5" and is_running_line_hint and edge_vmax and edge_vmax >= 70
+                    tid[1] == "5"
+                    and is_running_line_hint
+                    and not is_loop_hint
+                    and edge_vmax
+                    and edge_vmax >= 70
                 )
                 is_first_loop_low_speed = bool(
                     tid[1] == "5"
@@ -2218,9 +2226,10 @@ def score_track_candidate(
                 if tid_nn == platform_num and not is_opp_running_dir and not is_fast_through_plat:
                     score += 120.0
                 elif 0 < tid_nn < 50 and not is_first_loop_low_speed:
-                    # Explicitly numbered for a different platform/siding (01..49; 50..59 are secondary running lines),
-                    # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
-                    score -= 55.0
+                    # Explicitly numbered for a different platform/siding (01..49; 50..59 are secondary running lines).
+                    # For explicit loop hints on x5xx, use a softer penalty (-15) since NWR loop indices (e.g. 3503)
+                    # often differ from TPS platform numbers while exact matches still earn +120.
+                    score -= 15.0 if (is_loop_hint and tid[1] == "5") else 55.0
         if is_slow_2 and tid[1] == "2" and tid_nn in (2, 52):
             # Secondary Slow 2 lines (e.g. ECM1 Hornsey 1202/2252, Peterborough 1252)
             score += 25.0
@@ -2232,9 +2241,9 @@ def score_track_candidate(
                 score += 22.0
             else:
                 score += 20.0
-        elif tid_nn == 0 and tid[1] in ("1", "2", "4") and not (is_secondary_fast or is_electric_or_sub or is_slow_2):
-            # When a platform sits on a primary running line (e.g. LTN1 Main Line 1100/2100 alongside 1152/2152,
-            # or ECM1 2200 alongside 2252), prefer xx00 over xx5x secondary running lines
+        elif tid_nn == 0 and tid[1] in ("1", "2", "4", "5") and not (is_secondary_fast or is_electric_or_sub or is_slow_2):
+            # When a platform sits on a primary running line or primary loop (e.g. LTN1 1100/2100 alongside 1152/2152,
+            # ECM1 2200 alongside 2252, BML1 2500 alongside 2200), prefer xx00 over xx5x secondary running lines
             score += 5.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
         # Lettered or numbered approach lines (e.g. Euston A->1101..E->1104, King's Cross A->3101..F->3106,
@@ -2343,7 +2352,7 @@ def score_track_candidate(
             if d2 == "6":
                 score += 60.0
             elif d2 in ("1", "2"):
-                score -= 15.0
+                score -= 20.0
             elif d2 in ("7", "8", "9"):
                 score -= 25.0
         elif (
@@ -2354,15 +2363,28 @@ def score_track_candidate(
         ):
             matched_class = True
             has_slow_word = bool(re.search(r"\b(?:slow|relief)\b", nh))
-            if d2 == "5":
+            is_goods_loop = (
+                bool(tokens & {"dgl", "ugl", "udgl", "bgl"})
+                or "goods" in nh
+                or "freight" in nh
+            )
+            if d2 == "3" and is_goods_loop:
+                # Explicit Goods Loop (UGL/DGL): prefer dedicated Goods line (x3xx) over Passenger Loop (x5xx) when both exist
+                score += 65.0
+            elif d2 == "5":
                 score += 55.0
             elif d2 == "2" and has_slow_word:
                 # Platform loop coded as Slow line in NWR (e.g. Warrington Bank Quay Plat 4 D-4 Slow Down | DPL -> 2202)
                 score += 50.0
                 if len(tid) == 4 and tid[2:4] == "02":
                     score += 5.0
+            elif d2 == "2":
+                # Same-direction Slow line (e.g. Paddock Wood Up Loop -> XTD 1200) is a valid passenger-loop fallback
+                score += 5.0
             elif d2 == "1" and has_slow_word:
                 score -= 15.0
+            elif d2 == "1":
+                score += 10.0 if bool(re.search(r"\b(?:fast|main)\b", nh)) else -20.0
             elif d2 == "3" and ("goods" in nh or "g" in tokens or "gl" in nh):
                 score += 20.0
             elif d2 in ("6", "7", "8", "9"):

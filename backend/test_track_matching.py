@@ -190,6 +190,18 @@ REGRESSION_CASES = [
     ("MLN1 SN209 (Ealing DR -> 2200)", "signal", 18234, "MLN1", "2200"),
     ("MLN1 WEALJN (W Ealing UR -> 1200)", "signal", 48263, "MLN1", "1200"),
     ("MLN1 T576 (Maidenhead -> 1200)", "signal", 18451, "MLN1", "1200"),
+    # SEML (XTD Goods Loops, Paddock Wood Up/Down Loops, Sevenoaks), WCML (LEC1 Rugby UGL), SWML (BML1 Eastleigh)
+    ("XTD HEADCRN (U-UGL -> 1300)", "signal", 23741, "XTD", "1300"),
+    ("XTD P1213 (Headcorn UGL -> 1300)", "points", 69507, "XTD", "1300"),
+    ("XTD P913B (Hither Grn GL -> 1300)", "points", 63678, "XTD", "1300"),
+    ("XTD AD184 (Pdk Wd DPL -> 3503)", "signal", 23319, "XTD", "3503"),
+    ("XTD AD197 (Pdk Wd DPL -> 3503)", "signal", 23320, "XTD", "3503"),
+    ("XTD AD190 (Pdk Wd UPL -> 1200)", "signal", 23322, "XTD", "1200"),
+    ("XTD AD203X (Pdk Wd UPL -> 1200)", "signal", 23323, "XTD", "1200"),
+    ("XTD AD102 (Sevenoaks UL -> 3502)", "signal", 26019, "XTD", "3502"),
+    ("LEC1 RN4182 (Rugby UGL -> 1300)", "signal", 14546, "LEC1", "1300"),
+    ("BML1 E89 (Eastleigh DPL -> 2500)", "signal", 22883, "BML1", "2500"),
+    ("BML1 E339 (U-RVL Fast -> 1100)", "signal", 26318, "BML1", "1100"),
 ]
 
 
