@@ -202,6 +202,15 @@ REGRESSION_CASES = [
     ("LEC1 RN4182 (Rugby UGL -> 1300)", "signal", 14546, "LEC1", "1300"),
     ("BML1 E89 (Eastleigh DPL -> 2500)", "signal", 22883, "BML1", "2500"),
     ("BML1 E339 (U-RVL Fast -> 1100)", "signal", 26318, "BML1", "1100"),
+    # MML North (SPC5 rev Fast, Loughborough Plat 2 vmax), Derby (SPC8), SWML (SWM2)
+    ("SPC5 647 (Rev U-FL -> 1100)", "signal", 12216, "SPC5", "1100"),
+    ("SPC5 LR452 (Rev U-FL -> 1100)", "signal", 16404, "SPC5", "1100"),
+    ("SPC5 LR503 (Loughb P2 -> 2200)", "signal", 16454, "SPC5", "2200"),
+    ("SPC8 DC5099 (Breadsall GL -> 3205)", "signal", 49641, "SPC8", "3205"),
+    ("SPC8 DC5089 (Derby D-DL -> 3204)", "signal", 49633, "SPC8", "3204"),
+    ("SPC8 P344A (Derby D-DL -> 3204)", "points", 68431, "SPC8", "3204"),
+    ("SWM2 19 (Main Line -> 1100)", "signal", 21864, "SWM2", "1100"),
+    ("SWM2 BRGEND (Dn Main -> 2100)", "signal", 28940, "SWM2", "2100"),
 ]
 
 

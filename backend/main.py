@@ -2453,9 +2453,19 @@ def score_track_candidate(
                 else:
                     score += 75.0
             elif d2 == "1":
-                score += 35.0 if has_fast_tok else 15.0
+                if has_fast_tok:
+                    score += 35.0
+                elif not has_slow_tok and edge_vmax and edge_vmax >= 145:
+                    score += 30.0
+                else:
+                    score += 15.0
             elif d2 == "2":
-                score += 35.0 if (has_slow_tok or (is_rev_hint and not has_fast_tok)) else 15.0
+                if has_slow_tok or (is_rev_hint and not has_fast_tok):
+                    score += 35.0
+                elif not has_fast_tok and edge_vmax and 10 <= edge_vmax <= 80:
+                    score += 30.0
+                else:
+                    score += 15.0
             elif d2 in ("4", "6"):
                 score += 15.0
             elif d2 == "8":
@@ -2490,8 +2500,9 @@ def score_track_candidate(
             if d2 == "1":
                 score += 50.0
             elif d2 == "2":
-                # Reversible through platforms (e.g. Crewe 3212) and exact numbered approach lines (e.g. 4L -> 3204)
-                score += 10.0 if (is_rev_hint or platform_num is not None or exact_line_match) else -10.0
+                # Reversible through platforms (e.g. Crewe 3212) and exact numbered approach lines (e.g. 4L -> 3204);
+                # unnumbered open-line Fast/Main signals (e.g. SPC5 U-FL -> 1100 vs 3200) must not boost Slow lines
+                score += 10.0 if (platform_num is not None or exact_line_match) else -10.0
             elif d2 == "6":
                 score -= 35.0
             elif d2 == "8":
