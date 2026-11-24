@@ -2152,6 +2152,16 @@ def score_track_candidate(
             )
         )
     )
+    is_electric_or_sub = bool(nh_l) and (
+        bool(nh_tokens & {"el", "ue", "de", "uel", "del", "dsb", "usb"})
+        or bool(re.search(r"\b(?:suburb|electric)\b", nh_l))
+    )
+    is_running_line_hint = bool(nh_l) and not is_siding_hint and (
+        is_electric_or_sub
+        or is_ul_dl_named_line
+        or bool(re.search(r"\b(?:fast|main|slow|relief|goods|freight|loop)\b", nh_l))
+        or bool(nh_tokens & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "ml", "fl", "sl", "rl", "dml", "uml", "dfl", "ufl", "dsl", "usl", "drl", "url", "dpl", "upl"})
+    )
     is_secondary_fast = bool(nh_l) and (
         is_ul_dl_named_line
         or bool(re.search(r"\bsuburb", nh_l))
@@ -2173,7 +2183,12 @@ def score_track_candidate(
                 else:
                     score -= 55.0
         else:
-            allowed_classes = ("8", "9") if is_siding_hint else ("1", "2", "4", "5", "6", "8", "9")
+            if is_siding_hint:
+                allowed_classes = ("8", "9")
+            elif is_running_line_hint:
+                allowed_classes = ("1", "2", "4", "5", "6", "8")
+            else:
+                allowed_classes = ("1", "2", "4", "5", "6", "8", "9")
             if tid[1] in allowed_classes:
                 is_opp_running_dir = (
                     tid[1] in ("1", "2")
@@ -2184,10 +2199,22 @@ def score_track_candidate(
                 )
                 if tid_nn == platform_num and not is_opp_running_dir:
                     score += 120.0
-                elif tid_nn > 0:
-                    # Explicitly numbered for a different platform/siding (e.g. 3201 = Plat 1 when TPS says Plat 6),
+                elif 0 < tid_nn < 50:
+                    # Explicitly numbered for a different platform/siding (01..49; 50..59 are secondary running lines),
                     # sized so a wrong-class main line (-15) cannot beat a right-class numbered slow line (+50 - 55 = -5).
                     score -= 55.0
+        if (is_secondary_fast or is_electric_or_sub) and tid[1] == "1" and 50 <= tid_nn <= 59:
+            # Secondary/electric/suburban fast-coded running lines (e.g. LTN1 1152/2152 Electric, 1154/2154 Suburban)
+            if tid_nn == 52 and (bool(nh_tokens & {"el", "ue", "de"}) or "electric" in nh_l):
+                score += 22.0
+            elif tid_nn == 54 and (bool(nh_tokens & {"dsb", "usb"}) or "suburb" in nh_l):
+                score += 22.0
+            else:
+                score += 20.0
+        elif tid_nn == 0 and tid[1] in ("1", "2", "4") and not (is_secondary_fast or is_electric_or_sub):
+            # When a platform sits on a primary running line (e.g. LTN1 Main Line 1100/2100 alongside 1152/2152,
+            # or ECM1 2200 alongside 2252), prefer xx00 over xx5x secondary running lines
+            score += 5.0
     elif platform_num is None and len(tid) == 4 and tid[1] in ("1", "2", "4"):
         # Lettered or numbered approach lines (e.g. Euston A->1101..E->1104, King's Cross A->3101..F->3106,
         # Leeds West L3644 A->3101, Glasgow Central Bridge St 1L..6L / Clyde Bridge A..H -> 1101..2208)
@@ -2220,10 +2247,17 @@ def score_track_candidate(
                 score -= 30.0 + min(10.0, abs(tnn - lnum) * 2.0)
             else:
                 score -= 40.0
-        if is_secondary_fast:
-            # Secondary/parallel fast pair (e.g. UL/DL Fast on NOC/ECM4, UE/DE on SPC9, Suburban on BGK) -> xx50
-            if tid[2:4] == "50":
-                score += 15.0
+        if is_secondary_fast or is_electric_or_sub:
+            # Secondary/parallel running-line pairs (e.g. UL/DL Fast on NOC/ECM4 -> xx50,
+            # LTN1 Electric -> 1152/2152, LTN1 Suburban -> 1154/2154, BGK Suburban -> 1150/2150)
+            if tid[1] == "1" and tid[2:4].isdigit() and 50 <= int(tid[2:4]) <= 59:
+                tnn5 = int(tid[2:4])
+                if tnn5 == 52 and (bool(nh_tokens & {"el", "ue", "de"}) or "electric" in nh_l):
+                    score += 22.0
+                elif tnn5 == 54 and (bool(nh_tokens & {"dsb", "usb"}) or "suburb" in nh_l):
+                    score += 22.0
+                else:
+                    score += 20.0
         elif tid[2:4] == "00":
             # Prefer primary open-line track (xx00) over auxiliary numbered tracks (xx50) when no platform number is given
             score += 5.0

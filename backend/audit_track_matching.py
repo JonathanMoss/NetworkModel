@@ -32,10 +32,10 @@ def _check_signal_anomalies(sig, elr, km, ident, res):
     if (dh == "down" and tid.startswith("1")) or (dh == "up" and tid.startswith("2")):
         anomalies.append(("dir_mismatch", base_info))
 
-    # 2. Platform number mismatch (explicit wrong NN, or landed on xx00 when exact NN exists)
+    # 2. Platform number mismatch (explicit wrong NN in 01..49, or landed on xx00 when exact NN exists)
     if pnum is not None and 1 <= pnum <= 99 and len(tid) == 4 and tid[2:4].isdigit():
         tid_nn = int(tid[2:4])
-        if tid_nn > 0 and tid_nn != pnum:
+        if 0 < tid_nn < 50 and tid_nn != pnum:
             anomalies.append(("plat_num_mismatch", base_info + (f"want={pnum:02d}",)))
         elif tid_nn == 0:
             want_suffix = f"{pnum:02d}"

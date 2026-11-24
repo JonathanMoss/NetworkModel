@@ -150,6 +150,17 @@ REGRESSION_CASES = [
     ("Weaver Jn WD168 (Up Lpool)", "signal", 7777, "WJL1", "1100"),
     ("Weaver Jn WD171 (Dn Lpool)", "signal", 7778, "WJL1", "2100"),
     ("Weaver Jn WD170 (WJL1 Up)", "signal", 7525, "WJL1", "1100"),
+    # Great Eastern Main Line (LTN1 Electric 1152/2152, Suburban 1154/2154, Gidea Park) & BGK
+    ("LTN1 203 (Dn Elec -> 2152)", "signal", 4077, "LTN1", "2152"),
+    ("LTN1 202 (Up Elec -> 1152)", "signal", 4079, "LTN1", "1152"),
+    ("LTN1 70 (Up Sub -> 1154)", "signal", 4243, "LTN1", "1154"),
+    ("LTN1 81 (Dn Sub -> 2154)", "signal", 4365, "LTN1", "2154"),
+    ("LTN1 433 (Gidea Dn El -> 2152)", "signal", 4493, "LTN1", "2152"),
+    ("LTN1 435 (Gidea Dn Ml -> 2100)", "signal", 4494, "LTN1", "2100"),
+    ("LTN1 GIDEPKS U-2C (-> 2902)", "signal", 50227, "LTN1", "2902"),
+    ("BGK 90 (Up Sub -> 1150)", "signal", 4068, "BGK", "1150"),
+    ("BGK 91 (Dn Sub -> 2150)", "signal", 4069, "BGK", "2150"),
+    ("ECM1 D22 (Up Fast -> 1100)", "signal", 2, "ECM1", "1100"),
 ]
 
 
