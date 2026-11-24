@@ -117,15 +117,16 @@ In NWR's 4-digit `track_id` (`D C NN`):
 | | Reversible (`3xxx`) when Up/Down hinted | `+25` |
 | | Opposite direction (`1xxx` vs Down, `2xxx` vs Up) | `-60` |
 | | Reversible hinted: `3xxx` / `secondary_dir` match / opposite | `+70` / `+30` / `+10` |
-| **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (`0` restricted to bay/station classes `6,8`; `1..99` restricted to `8,9` when hint is a siding, else `1,2,4,5,6,8,9`; guarded against opposite-direction `1xxx`/`2xxx` running lines so e.g. Warrington Plat 1 stays on `1200`, not `2201`) | `+120` |
-| | Different non-zero `track_id[2:4]` | `-55` |
+| **Sequence `NN`** | Exact `track_id[2:4] == platform_num` (`0` restricted to bay/station classes `6,8`; `1..99` restricted to `8,9` for sidings, `1,2,4,5,6,8` for explicit running lines so e.g. Gidea Park `435`/`433` never jump onto `2902`/`2904` sidings, else `1,2,4,5,6,8,9`; guarded against opposite-direction `1xxx`/`2xxx` running lines) | `+120` |
+| | Different non-zero `track_id[2:4]` in `01..49` (`50..59` are secondary running lines, never platforms) | `-55` |
 | | Lettered or numbered approach lines (`U-A`..`U-H` / `A`..`H` or `U-1L`..`D-8L` / `L1`..`L8` → `1..8` vs numbered `01`..`09`, e.g. Euston `A→1101..E→1104`, King's Cross `A→3101..F→3106`, Leeds West `L3644 A→3101`, Glasgow Central `1L..6L` & `A..H → 1101..2208`; guarded against opposite direction and non-covering `>50 m` tracks) | `+125` exact (within `±50 m`, `+40` if `>50 m`) / `-(30..40)` mismatch |
-| | `platform_num is None`, secondary/branch fast (`UL`/`DL` Fast or named `Up/Down Leeds`, `Suburban`, named branch `D-DE`/`U-UE`) and `xx50` | `+15` (plus Fast/Main `d2 == 1: +50`) |
-| | `platform_num is None`, primary open-line `xx00` (classes `1,2,4`) | `+5` |
+| | Secondary/electric/suburban parallel running lines (`UL`/`DL` Fast or named `Up/Down Leeds`, `EL`/`UE`/`DE`/`UEL`/`DEL`/`Electric`, `USB`/`DSB`/`Suburban`, named branch `D-DE`/`U-UE`) on `xx50`–`xx59` (`LTN1 1152/2152` Electric, `1154/2154` Suburban, `BGK/ECM4/NOC/SPC9 1150/2150`) | `+20` (`+22` exact `52` Electric / `54` Suburban; plus Fast/Main `d2 == 1: +50` for `is_secondary_fast`) |
+| | Secondary Slow 2 lines (`SL2`, `DS2`, `US2`, `S2`, `Up/Down Slow 2`, e.g. `ECM1` Hornsey `1202`/`2252`, Peterborough `1252`) on `x202`/`x252` | `+25` |
+| | Primary open-line `xx00` (classes `1,2,4`) when not secondary/electric/suburban/Slow 2 | `+5` |
 | **Track Class (`C`)** | Engine / Carriage / Reception / Washer / Back Line (`crl`, `ecl`, `cl1`, `w1`, ...) | `8: +55`, `9: +35`, `1/2: -25` |
 | | Siding / Yard / Depot / Headshunt (`sdg`, `ms1`, `ms2`, `ms3`, `mbr`, ...) | `9: +55`, `8: +35`, `1/2: -25` |
 | | Terminal / Bay | `6: +60`, `1/2: -15`, `7/8/9: -25` |
-| | Loop (`loop`, `udl`, `dgl`, `ugl`, `bgl`, `rvl`, `d&ul`; `dl`/`ul` only when not Fast/named line) | `5: +55`, `2 (with Slow/Relief): +50`, `1 (with Slow/Relief): -15`, `3 (goods): +20`, `6/7/8/9: -25` |
+| | Loop (`loop`, `udl`, `dgl`, `ugl`, `bgl`, `rvl`, `dpl`, `upl`, `udpl`, `dupl`, `dbp`, `ubp`, `d&ul`; `dl`/`ul` only when not Fast/named line) | `5: +55`, `2 (with Slow/Relief): +50`, `1 (with Slow/Relief): -15`, `3 (goods): +20`, `6/7/8/9: -25` |
 | | Goods / Freight / Independent (`dg`, `ug`, `dmi`, `mil`, ...) | `3: +55`, `2: +25`, `5: +10`, `1: -20` |
 | | Single (`single`, `sgl`) | `4: +55` (+`15` if `34xx`) |
 | | Dedicated `Platform` (without Fast/Slow/Bay in description) | `5 (loop): +75`, `1/2 (dml/drl/uf/ds): +35/+15`, `8 (exact plat #): +5`, `7/9: -30` |
@@ -176,7 +177,7 @@ Because some real-world locations have genuine dataset-coding disagreements (e.g
 ## 4. Automated Auditing, Regression Testing & Data Upgrades
 
 ### Auditing & Regression Commands
-Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 118 locked-in real-world regression cases:
+Use `backend/audit_track_matching.py` to audit matching quality across stratified UK-wide samples or the busiest multi-platform hubs, and `backend/test_track_matching.py` to verify all 138 locked-in real-world regression cases:
 
 ```bash
 docker exec nr_schematic_app python3 /app/test_track_matching.py
@@ -209,7 +210,7 @@ docker exec nr_schematic_app python3 /app/batch_audit.py \
 - `parallel_collision` (`--mode hubs`): Distinct parallel TPS tracks at the same `(ELR, km ± 10 m)` colliding onto the same NWR `track_id` when another matching-direction track exists (catches `1100`/`1150` and `2100`/`2150` collisions).
 
 **Observed Network-Wide Benchmarks:**
-- **Regression Suite**: **118 / 118** passing across Stoke (`CMD1`/`CMD2`), Crewe & North (`LEC5`/`CMP1`/`LLI`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Warrington Bank Quay & Royal Mail (`CGJ3`), Weaver Junction Flyover (`CGJ1`/`WJL1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & Belle Isle (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`), Glasgow Central & Approaches (`WCM2`, Lines `1L`–`6L`, `A`–`H` & sidings), Liverpool Street (`LTN1`/`LVS`), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
+- **Regression Suite**: **138 / 138** passing across Stoke (`CMD1`/`CMD2`), Crewe & North (`LEC5`/`CMP1`/`LLI`), Stafford & Norton Bridge Flyover (`LEC3`/`LEC4`/`LEC6`/`NBS`/`NBS1`), Warrington Bank Quay & Royal Mail (`CGJ3`), Weaver Junction Flyover (`CGJ1`/`WJL1`), Paddington/Old Oak Common/Didcot (`MLN1`), Euston & Camden Bank (`LEC1`), King's Cross & ECML South (`ECM1`, including Platform 0 `3600`, `10B`, Lines `A`–`F`, Slow 2 `1202`/`2252`/`1252`, Huntingdon Bay `1201`, Newark `3500`, Doncaster), Glasgow Central & Approaches (`WCM2`, Lines `1L`–`6L`, `A`–`H` & sidings), Liverpool Street / Great Eastern (`LTN1`/`LVS`/`BGK`, Electric `1152/2152`, Suburban `1154/2154`, `BGK 1150/2150`, Gidea Park), York & York South Approach (`ECM4`/`ECM5`/`YMS`/`NOC`), Leeds East & West (`DOL2`/`HUL4`, including `L3644`/`L3631` Lines `A`–`F`), Midland Main Line / Erewash (`SPC9`), Birmingham New Street (`RBS1`/`RBS2`), and Reading (`MLN1`).
 - **30-Hub Sweep (1,146 hub signals)**: **0** direction mismatches, **1** class mismatch, **4** missed exact platform numbers; **0 anomalies** at York, Reading, and Ipswich; **1** at Euston, King's Cross, Guildford, and Newcastle; **2** at Birmingham New Street (100 signals).
 - **Signals (1,200 stratified UK signals)**: 95.4% resolved via `TPS Track` / `TPS Track Walk`; `< 1%` main-line ties (`1100/2100`: 2, `1100/1200`: 4, `2100/2200`: 3); total ties halved from 14.4% → 7.2% (mostly unnumbered yard sidings).
 - **Points (1,000 stratified UK points)**: 97.2% resolved via `TPS Track` / `TPS Track Walk` (up from 33.1%); 0% missing direction; 86.1% snapped to a physical `valency >= 3` switch on the matched `track_id` (up from 73.7%); main-line ties dropped 94% (33 → 2).
@@ -253,8 +254,20 @@ All cross-model plotting runs through `backend/main.py`:
    - Uses regex word boundaries (`\bslow\b`, `\bfast\b`, `\bmain\b`) so place names like `Wilmslow` never misfire.
    - Strict containment (+85) strongly outranks non-overlapping segments (-(40 + 0.15*dist)) so a
      nearby segment can never hijack an asset away from its mileage.
-   - Exact `NN == platform_num` gives +120, explicit wrong `NN` gives -55; `edge_vmax` breaks Fast (>=145 km/h)
-     vs Slow (<=80 km/h) ties when no class matched; points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m.
+   - Exact `NN == platform_num` gives +120, explicit wrong `NN` (01..49; 50..59 are secondary running lines) gives -55;
+     `edge_vmax` breaks Fast (>=145 km/h) vs Slow (<=80 km/h) ties when no class matched, prefers Slow (`d2 == "2"`) on
+     low-speed dedicated platforms (10..80 km/h) without Fast/Slow tokens (e.g. Loughborough `LR503` -> `SPC5 2200`),
+     prevents high-speed through-line platforms (>=70 km/h) from matching low-speed `x5xx` platform loops, and allows a
+     covering `x501` loop for low-speed (10..48 km/h) non-Fast platforms (e.g. Luton Plat 1 = `1200` @ 89 km/h, Plat 2 = `3501` @ 32 km/h).
+   - Unnumbered open-line reversible Fast/Main signals (e.g. `SPC5 U-FL`) do not boost `d2 == "2"` Slow lines (`3200`);
+     Terminal Bay hints penalise crossovers (`d2 == "7"`, -45), and numbered sidings falling back to `x5xx` loops break ties
+     by matching sequence number (+25, e.g. `SCM2 U-3SDG` -> `1503`).
+   - Points get +60/+35 for `valency >= 3` NWR switch endpoints within 15/35m; `DR`/`UR` tokens map to Slow/Relief (`x2xx`).
+   - Explicit Goods Loops (`UGL`/`DGL`/`Goods Loop`) prefer dedicated Goods (`x3xx`, +65) over Passenger Loops (`x5xx`, +55) when both exist;
+     same-direction Slow lines (`d2 == "2"`) get +5 as a passenger-loop fallback (e.g. Paddock Wood `AD190` -> `XTD 1200`), and `xx00` tiebreaker
+     includes class `5` so primary loops (`2500`) beat Slow (`2200`) for `DPL`/`UPL` hints (e.g. Eastleigh `E89`).
+   - Re-chained branch ELR Check 2 requires `target_m >= 5000m` and branch start `< 5000m` so zero-based branches (e.g. `NBS`)
+     never jump backwards onto high-chainage trunk ELRs (`LEC4`).
 3. Placement & Overrides:
    - Signals interpolate along `best_centreline` at `km_value` (or project spatially for cross-ELR platforms).
    - Points snap to `nwr_track_nodes` prioritizing `valency >= 3` switches on the matched `track_id`.
@@ -265,11 +278,10 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 91-case regression suite, and UK-wide audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 177-case regression suite, and UK-wide batched audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode hubs --limit 30`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode signals --limit 1200`
-  `docker exec nr_schematic_app python3 /app/audit_track_matching.py --mode points --limit 1000`
+  `docker exec nr_schematic_app python3 /app/batch_audit.py --elr <ELRS> --out /app/audit_snapshots/after.jsonl.gz`
+  `docker exec nr_schematic_app python3 /app/batch_audit.py --diff /app/audit_snapshots/baseline_cd3779b.jsonl.gz /app/audit_snapshots/after.jsonl.gz`
 
 ### Debugging Workflow for Any Mis-Plotted Asset
 1. Query the asset's `start_node_id`, `end_node_id`, `km_value`, `elr`, and `station_tracks` in PostgreSQL.
