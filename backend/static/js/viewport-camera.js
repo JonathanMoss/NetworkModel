@@ -348,9 +348,13 @@ async function switchView(targetView) {
   updateLegend();
   resizeCanvas();
 
-  // If an asset is already selected, re-apply its highlights (respecting minimal vs full
-  // single/double-click state) and center/zoom the newly opened view on it immediately.
-  if (STATE.selectedAsset && typeof applyCrossHighlightsForSelectedAsset === "function") {
+  // If an asset is already selected (and its highlight wasn't explicitly cleared),
+  // re-apply its highlights and center/zoom the newly opened view on it immediately.
+  if (
+    STATE.selectedAsset &&
+    STATE.highlightGroupFilter !== "none" &&
+    typeof applyCrossHighlightsForSelectedAsset === "function"
+  ) {
     applyCrossHighlightsForSelectedAsset(
       STATE.selectedAsset,
       Boolean(STATE.selectedAssetExpandFull),

@@ -1085,6 +1085,26 @@ function applyLazyCardCollapse(container, maxInitial = 12) {
 
 /* Signalling & Interlocking Control Strip & Interactive Envelope Filter */
 window.setSignalHighlightFilter = function (group, opts = {}) {
+  // Restore asset highlight geometry if the user previously clicked "Clear Highlight"
+  const hasActiveHighlight =
+    (STATE.highlight.ways && STATE.highlight.ways.length > 0) ||
+    (STATE.highlight.points && STATE.highlight.points.length > 0) ||
+    (STATE.highlight.segments && STATE.highlight.segments.length > 0);
+  if (!hasActiveHighlight && STATE.selectedAsset && STATE.selectedAsset.highlight) {
+    STATE.highlight = {
+      ways: STATE.selectedAsset.highlight.ways || [],
+      points: STATE.selectedAsset.highlight.points || [],
+      segments: STATE.selectedAsset.highlight.segments || [],
+    };
+    if (
+      STATE.highlight.ways.length ||
+      STATE.highlight.points.length ||
+      STATE.highlight.segments.length
+    ) {
+      document.getElementById("btn-clear-highlight")?.classList.remove("hidden");
+    }
+  }
+
   STATE.highlightGroupFilter = group;
   document.querySelectorAll(".sig-filter-btn, .sig-filter-control").forEach((el) => {
     const g = el.dataset.group;

@@ -160,12 +160,26 @@ document.getElementById("btn-zoom-out").addEventListener("click", () => {
 });
 document.getElementById("btn-clear-highlight").addEventListener("click", () => {
   STATE.highlight = { ways: [], points: [], segments: [] };
-  STATE.selectedAsset = null;
+  STATE.highlightGroupFilter = "none";
   STATE.crossHighlight.tps.active = false;
   STATE.crossHighlight.nwr.active = false;
   document.getElementById("tps-sync-tag")?.classList.add("hidden");
   document.getElementById("nwr-sync-tag")?.classList.add("hidden");
   document.getElementById("btn-clear-highlight").classList.add("hidden");
+
+  // Reset Signalling Envelope filter controls so re-selecting any route triggers onchange
+  document.querySelectorAll(".sig-filter-btn, .sig-filter-control").forEach((el) => {
+    el.classList.remove("active");
+    const sel = el.querySelector(".sig-filter-select");
+    const textSpan = el.querySelector(".sig-filter-text");
+    if (sel && sel.options.length > 0) {
+      sel.selectedIndex = 0;
+    }
+    if (textSpan && textSpan.dataset.default) {
+      textSpan.textContent = textSpan.dataset.default;
+    }
+  });
+
   closeProfileDrawer(true);
   requestRender();
 });
