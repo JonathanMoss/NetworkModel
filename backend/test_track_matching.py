@@ -230,6 +230,12 @@ REGRESSION_CASES = [
     ("SWM2 CF2710 (Cardiff DR -> 3403)", "signal", 48289, "SWM2", "3403"),
     ("SWM2 CF2712 (Cardiff DR -> 3403)", "signal", 49105, "SWM2", "3403"),
     ("SWM2 CF2231 (Cardiff DR -> 3403)", "signal", 49107, "SWM2", "3403"),
+    # Stoke-on-Trent (CMD2 Plat 1/2/3 Bay, SCQ1 cross-ELR guard, bi-dir DM override)
+    ("CMD2 SOT433 (Stoke P1 -> 1100)", "signal", 7749, "CMD2", "1100"),
+    ("CMD2 SOT278 (Stoke P1 -> 1100)", "signal", 7672, "CMD2", "1100"),
+    ("CMD2 SOT277 (Stoke P2 -> 2100)", "signal", 7668, "CMD2", "2100"),
+    ("CMD2 SOT426 (Stoke P2 DM -> 2100)", "signal", 7669, "CMD2", "2100"),
+    ("CMD2 SOT431 (Stoke P3 Bay -> 3600)", "signal", 7674, "CMD2", "3600"),
 ]
 
 
