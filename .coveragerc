@@ -8,6 +8,9 @@ source =
     track_matcher
     main
     routers.network_fusion
+    routers.tps
+    routers.nwr
+    routers.assets
 branch = False
 
 [report]
