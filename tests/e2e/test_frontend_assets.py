@@ -41,7 +41,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
 
     # Fetch every modular CSS and JS asset referenced by base.html
     asset_urls = re.findall(r'(?:href|src)="(/static/[^"]+)"', html)
-    assert len(asset_urls) >= 21
+    assert len(asset_urls) >= 24
 
     for url in asset_urls:
         asset_resp = client.get(url)
@@ -64,4 +64,13 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     rsp_js = client.get("/static/js/route-speed-profile.js").text
     assert "buildRouteSpeedProfileCard" in rsp_js
     assert "renderRouteSpeedStepSvg" in rsp_js
+    env_js = client.get("/static/js/signalling-envelope.js").text
+    assert "setSignalHighlightFilter" in env_js
+    assert "buildSignallingEnvelopeWidget" in env_js
+    rel_js = client.get("/static/js/inspector-related.js").text
+    assert "renderRelatedTab" in rel_js
+    assert "buildNwrCrossLinkWidget" in rel_js
+    tb_js = client.get("/static/js/toolbar-controls.js").text
+    assert "global-search" in tb_js
+    assert "osm-opacity-slider" in tb_js
 
