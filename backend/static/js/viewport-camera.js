@@ -293,7 +293,9 @@ async function switchView(targetView) {
   hoverTooltip.classList.add("hidden");
   STATE.hoverCandidates = [];
   STATE.hoverPreview = null;
-  document.getElementById("btn-clear-highlight").classList.add("hidden");
+  if (!STATE.selectedAsset) {
+    document.getElementById("btn-clear-highlight").classList.add("hidden");
+  }
   document.getElementById("pick-candidates").classList.add("hidden");
   closeProfileDrawer(true);
 
@@ -345,6 +347,17 @@ async function switchView(targetView) {
 
   updateLegend();
   resizeCanvas();
+
+  // If an asset is already selected, re-apply its highlights (respecting minimal vs full
+  // single/double-click state) and center/zoom the newly opened view on it immediately.
+  if (STATE.selectedAsset && typeof applyCrossHighlightsForSelectedAsset === "function") {
+    applyCrossHighlightsForSelectedAsset(
+      STATE.selectedAsset,
+      Boolean(STATE.selectedAssetExpandFull),
+      true
+    );
+  }
+
   scheduleViewportFetch();
   requestRender();
 }
@@ -523,7 +536,10 @@ window.addEventListener("mouseup", (e) => {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       const [wx, wy] = screenToWorld(sx, sy, "tps");
-      handleCanvasClick(wx, wy, sx, sy, "tps");
+      // Single click in Dual View shows minimal marker-only highlight for signals/points;
+      // double click (e.detail >= 2) expands to full TPS routes/overlaps + Geo track section.
+      const expandFull = e.detail >= 2;
+      handleCanvasClick(wx, wy, sx, sy, "tps", { expandFull });
     }
   }
 });

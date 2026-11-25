@@ -16,7 +16,9 @@ async function initApp() {
   loadPersistedLayerStyles();
   loadPersistedOsmSettings();
   loadPersistedLayerToggles();
+  loadPersistedColorModes();
   resizeCanvas();
+  updateColorModeUi();
   updateLegend();
   updateLabelUi();
   updateLayerStyleUi();

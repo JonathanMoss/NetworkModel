@@ -48,3 +48,17 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
         assert asset_resp.status_code == 200, f"Failed to serve {url}"
         assert len(asset_resp.text.strip()) > 0, f"Empty asset body for {url}"
 
+    # Verify minimal Dual-View single-click & full double-click highlight logic is present
+    dl_js = client.get("/static/js/data-loader.js").text
+    assert "shouldUseMinimalDualHighlight" in dl_js
+    assert "applyCrossHighlightsForSelectedAsset" in dl_js
+    assert 'STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all"' in dl_js
+    ov_js = client.get("/static/js/render-overlays.js").text
+    assert 'grpFilter === "minimal"' in ov_js
+    cam_js = client.get("/static/js/viewport-camera.js").text
+    assert "expandFull = e.detail >= 2" in cam_js
+    assert "applyCrossHighlightsForSelectedAsset" in cam_js
+    pers_js = client.get("/static/js/persistence.js").text
+    assert "loadPersistedColorModes" in pers_js
+    assert "savePersistedColorModes" in pers_js
+

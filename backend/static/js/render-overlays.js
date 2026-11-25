@@ -261,7 +261,7 @@ function drawHighlightAndPreviewOverlays(targetCtx = ctx, targetView = null) {
     ctx.save();
     const grpFilter = STATE.highlightGroupFilter || "all";
 
-    if (STATE.highlight.segments && STATE.highlight.segments.length) {
+    if (grpFilter !== "minimal" && STATE.highlight.segments && STATE.highlight.segments.length) {
       ctx.strokeStyle = "#f43f5e";
       ctx.lineWidth = 4.5;
       ctx.shadowColor = "#f43f5e";
@@ -277,6 +277,7 @@ function drawHighlightAndPreviewOverlays(targetCtx = ctx, targetView = null) {
     }
 
     for (const way of STATE.highlight.ways) {
+      if (grpFilter === "minimal") break;
       if (!way.coords || way.coords.length < 2) continue;
       if (grpFilter !== "all") {
         if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
@@ -331,10 +332,13 @@ function drawHighlightAndPreviewOverlays(targetCtx = ctx, targetView = null) {
 
     ctx.setLineDash([]);
     for (const pt of STATE.highlight.points) {
-      if (
+      if (grpFilter === "minimal") {
+        if (pt.group !== "signal" && pt.group !== "points") continue;
+      } else if (
         grpFilter !== "all" &&
         pt.group &&
-        pt.group !== "signal"
+        pt.group !== "signal" &&
+        pt.group !== "points"
       ) {
         if (grpFilter === "all_overlaps" || grpFilter === "overlaps") {
           if (!pt.group || !pt.group.startsWith("overlap")) continue;

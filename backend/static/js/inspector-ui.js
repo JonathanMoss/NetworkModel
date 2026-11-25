@@ -1440,6 +1440,7 @@ document.addEventListener("click", (e) => {
 /* Controls & Tabs Wiring */
 document.getElementById("color-mode").addEventListener("change", (e) => {
   STATE.colorMode = e.target.value;
+  savePersistedColorModes();
   updateLegend();
   scheduleViewportFetch();
   requestRender();
@@ -1447,6 +1448,7 @@ document.getElementById("color-mode").addEventListener("change", (e) => {
 
 document.getElementById("nwr-color-mode").addEventListener("change", (e) => {
   STATE.nwrColorMode = e.target.value;
+  savePersistedColorModes();
   updateLegend();
   requestRender();
 });

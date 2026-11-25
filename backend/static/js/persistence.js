@@ -164,6 +164,52 @@ function updateLayerToggleUi() {
   }
 }
 
+const VALID_TPS_COLOR_MODES = ["electrified", "signalling", "timing", "vmax", "gradient", "uniform"];
+const VALID_NWR_COLOR_MODES = ["track_type", "direction", "ownership", "curvature", "elevation", "uniform"];
+
+/**
+ * Restore persisted TPS and NWR "Colour By" dropdown modes from cookies/localStorage.
+ */
+function loadPersistedColorModes() {
+  const saved = getCookie("nr_color_modes");
+  if (saved && typeof saved === "object") {
+    if (typeof saved.tps === "string" && VALID_TPS_COLOR_MODES.includes(saved.tps)) {
+      STATE.colorMode = saved.tps;
+    }
+    if (typeof saved.nwr === "string" && VALID_NWR_COLOR_MODES.includes(saved.nwr)) {
+      STATE.nwrColorMode = saved.nwr;
+    }
+  }
+}
+
+/**
+ * Persist the active TPS and NWR "Colour By" modes across browser sessions.
+ */
+function savePersistedColorModes() {
+  setCookie(
+    "nr_color_modes",
+    {
+      tps: STATE.colorMode,
+      nwr: STATE.nwrColorMode,
+    },
+    365
+  );
+}
+
+/**
+ * Sync the TPS and NWR "Colour By" <select> elements to match STATE.
+ */
+function updateColorModeUi() {
+  const tpsSel = document.getElementById("color-mode");
+  if (tpsSel && VALID_TPS_COLOR_MODES.includes(STATE.colorMode)) {
+    tpsSel.value = STATE.colorMode;
+  }
+  const nwrSel = document.getElementById("nwr-color-mode");
+  if (nwrSel && VALID_NWR_COLOR_MODES.includes(STATE.nwrColorMode)) {
+    nwrSel.value = STATE.nwrColorMode;
+  }
+}
+
 function hexToRgba(hex, alpha = 1) {
   if (!hex || typeof hex !== "string") return `rgba(56, 189, 248, ${alpha})`;
   if (hex.startsWith("rgba")) return hex;

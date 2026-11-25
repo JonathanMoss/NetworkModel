@@ -117,8 +117,28 @@ async function fetchNwrViewportData() {
 }
 
 
+/**
+ * Determine whether a TPS signal/points selection should render in minimal
+ * Dual-View mode (selected marker only on both TPS and Geo canvases, hiding
+ * TPS routes/blocks/overlaps and the full NWR track centreline).
+ *
+ * Single-clicking a signal/point in Dual View ("split") uses minimal mode;
+ * double-clicking passes `expandFull: true` to show full routes and Geo track.
+ *
+ * @param {string} assetType Canonical asset type returned by the API.
+ * @param {boolean} expandFull Whether the user explicitly requested full detail.
+ * @returns {boolean} True when minimal highlighting should be applied.
+ */
+function shouldUseMinimalDualHighlight(assetType, expandFull = false) {
+  return (
+    STATE.activeView === "split" &&
+    !expandFull &&
+    (assetType === "signal" || assetType === "points")
+  );
+}
+
 /* Click Picking & Asset Inspection */
-async function handleCanvasClick(wx, wy, sx, sy, targetView = null) {
+async function handleCanvasClick(wx, wy, sx, sy, targetView = null, options = {}) {
   const view = targetView || (STATE.activeView === "nwr" ? "nwr" : "tps");
   if (sx === undefined || sy === undefined) {
     const [scx, scy] = worldToScreen(wx, wy, view);
@@ -156,17 +176,242 @@ async function handleCanvasClick(wx, wy, sx, sy, targetView = null) {
 
   if (cands.length === 1) {
     renderPickCandidates([], null);
-    await loadAssetDetails(cands[0].type, cands[0].id, false);
+    await loadAssetDetails(cands[0].type, cands[0].id, false, null, options);
     return;
   }
 
   // Multiple candidates: load primary candidate into inspector and display the clean, aligned, scrollable list
   const primary = cands[0];
   renderPickCandidates(cands, primary);
-  await loadAssetDetails(primary.type, primary.id, false);
+  await loadAssetDetails(primary.type, primary.id, false, null, options);
 }
 
-async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = null) {
+/**
+ * Apply cross-model highlights (TPS <-> NWR) and optionally pan/zoom the
+ * correlated view onto the selected asset.
+ *
+ * Called both when an asset is initially loaded (`loadAssetDetails`) and when
+ * the user switches between TPS, NWR Track Model, and Dual View (`switchView`)
+ * so an already-selected object is immediately highlighted and centered.
+ *
+ * @param {object} data Full asset payload stored in `STATE.selectedAsset`.
+ * @param {boolean} expandFull Whether the asset was double-clicked (full mode).
+ * @param {boolean} shouldCenterTarget Whether to fly/zoom the correlated view.
+ */
+function applyCrossHighlightsForSelectedAsset(data, expandFull = false, shouldCenterTarget = true) {
+  if (!data) return;
+  const isNwrAsset = String(data.asset_type).startsWith("nwr_") || String(data.asset_type).startsWith("nf_");
+  const isSignalOrPoints = data.asset_type === "signal" || data.asset_type === "points";
+  const minimalDualMode = shouldUseMinimalDualHighlight(data.asset_type, expandFull);
+  const minimalGeoMode =
+    !expandFull &&
+    isSignalOrPoints &&
+    (STATE.activeView === "split" || STATE.activeView === "nwr");
+
+  // Keep TPS highlight filter in sync with the active view (minimal on single-click in Dual View).
+  if (!isNwrAsset) {
+    STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all";
+  }
+
+  if (isNwrAsset) {
+    // Real-world track/ELR selected -> highlight & pulse correlated TPS schematic edges/signals
+    const tpsCross = data.related && data.related.tps_cross_links;
+    if (tpsCross) {
+      const ways = [];
+      const pts = [];
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const e of tpsCross.tps_edges || []) {
+        if (e.x0 !== null && e.y0 !== null && e.x1 !== null && e.y1 !== null) {
+          ways.push({
+            label: `Edge #${e.edge_id} (${e.length}m, ${e.vmax}km/h)`,
+            coords: [[e.x0, e.y0], [e.x1, e.y1]],
+            color: "#f43f5e",
+          });
+          minX = Math.min(minX, e.x0, e.x1);
+          maxX = Math.max(maxX, e.x0, e.x1);
+          minY = Math.min(minY, e.y0, e.y1);
+          maxY = Math.max(maxY, e.y0, e.y1);
+        }
+      }
+      for (const s of tpsCross.tps_signals || []) {
+        if (s.x !== null && s.y !== null) {
+          pts.push({
+            x: s.x,
+            y: s.y,
+            label: `🚦 ${s.name || s.master_name}`,
+            color: "#f59e0b",
+          });
+          minX = Math.min(minX, s.x);
+          maxX = Math.max(maxX, s.x);
+          minY = Math.min(minY, s.y);
+          maxY = Math.max(maxY, s.y);
+        }
+      }
+      for (const st of tpsCross.tps_stations || []) {
+        if (st.x !== null && st.y !== null) {
+          pts.push({
+            x: st.x,
+            y: st.y,
+            label: `🚉 ${st.longname || st.abbrev}`,
+            color: "#38bdf8",
+          });
+          minX = Math.min(minX, st.x);
+          maxX = Math.max(maxX, st.x);
+          minY = Math.min(minY, st.y);
+          maxY = Math.max(maxY, st.y);
+        }
+      }
+      if (ways.length || pts.length) {
+        STATE.crossHighlight.tps = {
+          ways,
+          points: pts,
+          pulseStart: performance.now(),
+          pulseDuration: 4500,
+          active: true,
+          title: data.title,
+        };
+        triggerPulseLoop();
+        document.getElementById("tps-sync-tag")?.classList.remove("hidden");
+        if (
+          shouldCenterTarget &&
+          (STATE.activeView === "split" || STATE.activeView === "tps") &&
+          isFinite(minX) &&
+          isFinite(maxX)
+        ) {
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+          const span = Math.max(maxX - minX, maxY - minY, 250);
+          const targetZ = Math.min(1.8, ((canvas?.clientWidth || 600) * 0.7) / span);
+          flyToTps(cx, cy, targetZ);
+        }
+      } else {
+        STATE.crossHighlight.tps.active = false;
+        document.getElementById("tps-sync-tag")?.classList.add("hidden");
+      }
+    }
+    return;
+  }
+
+  // TPS schematic asset selected -> highlight & pulse NWR physical track / discrete marker
+  const nwrCross = data.related && data.related.nwr_cross_links;
+  if (!nwrCross) return;
+
+  const ways = [];
+  const pts = [];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  // In minimal mode (single-click on TPS signal/points), show only the discrete
+  // signal/point marker in Geo view and suppress the full NWR track centreline highlight.
+  if (!minimalGeoMode) {
+    for (const c of nwrCross.centrelines || []) {
+      if (c.coords && c.coords.length >= 2) {
+        const segSuffix = c.clipped ? ` (${c.clipped_length_meters || ''}m Segment)` : "";
+        ways.push({
+          label: `${c.elr} Track ${c.track_id}${segSuffix}`,
+          coords: c.coords,
+          color: "#06b6d4",
+        });
+        for (const pt of c.coords) {
+          minX = Math.min(minX, pt[0]);
+          maxX = Math.max(maxX, pt[0]);
+          minY = Math.min(minY, pt[1]);
+          maxY = Math.max(maxY, pt[1]);
+        }
+      }
+    }
+    if (!ways.length && nwrCross.elr_record && nwrCross.elr_record.parts) {
+      for (const p of nwrCross.elr_record.parts) {
+        if (p.length >= 2) {
+          ways.push({
+            label: `ELR ${nwrCross.elr_record.elr}`,
+            coords: p,
+            color: "#06b6d4",
+          });
+          for (const pt of p) {
+            minX = Math.min(minX, pt[0]);
+            maxX = Math.max(maxX, pt[0]);
+            minY = Math.min(minY, pt[1]);
+            maxY = Math.max(maxY, pt[1]);
+          }
+        }
+      }
+    }
+  }
+
+  // Discrete node & signal beacon points
+  for (const np of nwrCross.node_points || []) {
+    if (np.x !== undefined && np.y !== undefined) {
+      pts.push({
+        x: np.x,
+        y: np.y,
+        label: np.label,
+        color: np.color || "#f59e0b",
+        shape: np.shape,
+        snapped_node: np.snapped_node,
+      });
+      minX = Math.min(minX, np.x);
+      maxX = Math.max(maxX, np.x);
+      minY = Math.min(minY, np.y);
+      maxY = Math.max(maxY, np.y);
+    }
+  }
+  if (!pts.length && nwrCross.node_point) {
+    const np = nwrCross.node_point;
+    pts.push({
+      x: np.x,
+      y: np.y,
+      label: np.label,
+      color: np.color || "#f59e0b",
+      shape: np.shape,
+      snapped_node: np.snapped_node,
+    });
+    minX = Math.min(minX, np.x);
+    maxX = Math.max(maxX, np.x);
+    minY = Math.min(minY, np.y);
+    maxY = Math.max(maxY, np.y);
+  }
+
+  if (ways.length || pts.length) {
+    STATE.crossHighlight.nwr = {
+      ways,
+      points: pts,
+      snappedNode: nwrCross.snapped_node,
+      pulseStart: performance.now(),
+      pulseDuration: 4500,
+      active: true,
+      title: data.title,
+    };
+    triggerPulseLoop();
+    document.getElementById("nwr-sync-tag")?.classList.remove("hidden");
+    if (shouldCenterTarget && (STATE.activeView === "split" || STATE.activeView === "nwr")) {
+      const snap = nwrCross.geo_snap;
+      if (snap && isFinite(snap.x) && isFinite(snap.y)) {
+        flyToNwr(snap.x, snap.y, snap.target_zoom || 0.28, true);
+        const tagEl = document.getElementById("nwr-sync-tag");
+        if (tagEl) {
+          tagEl.textContent = `⚡ Snapped: ${snap.elr || ''} @ ${snap.mileage_str || ''}${snap.is_extrapolated ? ' (Extrapolated)' : ''}`;
+        }
+      } else if (pts.length) {
+        const cx = pts.length === 1 ? pts[0].x : (pts[0].x + pts[1].x) / 2;
+        const cy = pts.length === 1 ? pts[0].y : (pts[0].y + pts[1].y) / 2;
+        const span = pts.length > 1 ? Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) : 250;
+        const targetZ = Math.min(0.28, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.75) / Math.max(span, 250)));
+        flyToNwr(cx, cy, targetZ, true);
+      } else if (isFinite(minX) && isFinite(maxX)) {
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const span = Math.max(maxX - minX, maxY - minY, 350);
+        const targetZ = Math.min(0.25, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.7) / span));
+        flyToNwr(cx, cy, targetZ, true);
+      }
+    }
+  } else {
+    STATE.crossHighlight.nwr.active = false;
+    document.getElementById("nwr-sync-tag")?.classList.add("hidden");
+  }
+}
+
+async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = null, options = {}) {
+  const expandFull = Boolean(options && options.expandFull);
   const isNwrAsset = String(assetType).startsWith("nwr_") || String(assetType).startsWith("nf_");
   const apiPrefix = isNwrAsset ? "/api/nwr/asset" : "/api/asset";
   const querySuffix = (!isNwrAsset && nwrFid !== null && nwrFid !== undefined && nwrFid !== "")
@@ -177,6 +422,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = n
     if (!res.ok) return;
     const data = await res.json();
     STATE.selectedAsset = data;
+    STATE.selectedAssetExpandFull = expandFull;
 
     document.getElementById("insp-badge").textContent = data.asset_type.toUpperCase();
     document.getElementById("insp-title").textContent = data.title;
@@ -206,8 +452,9 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = n
       flyBtn.classList.add("hidden");
     }
 
-    // Set highlight paths on canvas
-    STATE.highlightGroupFilter = "all";
+    // Set highlight paths on canvas (minimal marker-only on single-click in Dual View for signals/points)
+    const minimalDualMode = shouldUseMinimalDualHighlight(data.asset_type, expandFull);
+    STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all";
     STATE.highlight = {
       ways: (data.highlight && data.highlight.ways) || [],
       points: (data.highlight && data.highlight.points) || [],
@@ -224,192 +471,8 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = n
       clearBtn.classList.add("hidden");
     }
 
-    // Synchronized Dual-View Cross-Model Pulsing
-    if (isNwrAsset) {
-      // Real-world track/ELR clicked -> highlight & pulse TPS schematic edges/signals
-      const tpsCross = data.related && data.related.tps_cross_links;
-      if (tpsCross) {
-        const ways = [];
-        const pts = [];
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const e of tpsCross.tps_edges || []) {
-          if (e.x0 !== null && e.y0 !== null && e.x1 !== null && e.y1 !== null) {
-            ways.push({
-              label: `Edge #${e.edge_id} (${e.length}m, ${e.vmax}km/h)`,
-              coords: [[e.x0, e.y0], [e.x1, e.y1]],
-              color: "#f43f5e",
-            });
-            minX = Math.min(minX, e.x0, e.x1);
-            maxX = Math.max(maxX, e.x0, e.x1);
-            minY = Math.min(minY, e.y0, e.y1);
-            maxY = Math.max(maxY, e.y0, e.y1);
-          }
-        }
-        for (const s of tpsCross.tps_signals || []) {
-          if (s.x !== null && s.y !== null) {
-            pts.push({
-              x: s.x,
-              y: s.y,
-              label: `🚦 ${s.name || s.master_name}`,
-              color: "#f59e0b",
-            });
-            minX = Math.min(minX, s.x);
-            maxX = Math.max(maxX, s.x);
-            minY = Math.min(minY, s.y);
-            maxY = Math.max(maxY, s.y);
-          }
-        }
-        for (const st of tpsCross.tps_stations || []) {
-          if (st.x !== null && st.y !== null) {
-            pts.push({
-              x: st.x,
-              y: st.y,
-              label: `🚉 ${st.longname || st.abbrev}`,
-              color: "#38bdf8",
-            });
-            minX = Math.min(minX, st.x);
-            maxX = Math.max(maxX, st.x);
-            minY = Math.min(minY, st.y);
-            maxY = Math.max(maxY, st.y);
-          }
-        }
-        if (ways.length || pts.length) {
-          STATE.crossHighlight.tps = {
-            ways,
-            points: pts,
-            pulseStart: performance.now(),
-            pulseDuration: 4500,
-            active: true,
-            title: data.title,
-          };
-          triggerPulseLoop();
-          document.getElementById("tps-sync-tag")?.classList.remove("hidden");
-          if (STATE.activeView === "split" && isFinite(minX) && isFinite(maxX)) {
-            const cx = (minX + maxX) / 2;
-            const cy = (minY + maxY) / 2;
-            const span = Math.max(maxX - minX, maxY - minY, 250);
-            const targetZ = Math.min(1.8, (canvas.clientWidth * 0.7) / span);
-            flyToTps(cx, cy, targetZ);
-          }
-        } else {
-          STATE.crossHighlight.tps.active = false;
-          document.getElementById("tps-sync-tag")?.classList.add("hidden");
-        }
-      }
-    } else {
-      // TPS schematic asset clicked (signal, block, edge, station, track) -> highlight & pulse NWR physical track
-      const nwrCross = data.related && data.related.nwr_cross_links;
-      if (nwrCross) {
-        const ways = [];
-        const pts = [];
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const c of nwrCross.centrelines || []) {
-          if (c.coords && c.coords.length >= 2) {
-            const segSuffix = c.clipped ? ` (${c.clipped_length_meters || ''}m Segment)` : "";
-            ways.push({
-              label: `${c.elr} Track ${c.track_id}${segSuffix}`,
-              coords: c.coords,
-              color: "#06b6d4",
-            });
-            for (const pt of c.coords) {
-              minX = Math.min(minX, pt[0]);
-              maxX = Math.max(maxX, pt[0]);
-              minY = Math.min(minY, pt[1]);
-              maxY = Math.max(maxY, pt[1]);
-            }
-          }
-        }
-        if (!ways.length && nwrCross.elr_record && nwrCross.elr_record.parts) {
-          for (const p of nwrCross.elr_record.parts) {
-            if (p.length >= 2) {
-              ways.push({
-                label: `ELR ${nwrCross.elr_record.elr}`,
-                coords: p,
-                color: "#06b6d4",
-              });
-              for (const pt of p) {
-                minX = Math.min(minX, pt[0]);
-                maxX = Math.max(maxX, pt[0]);
-                minY = Math.min(minY, pt[1]);
-                maxY = Math.max(maxY, pt[1]);
-              }
-            }
-          }
-        }
-
-        // Discrete node & signal beacon points
-        for (const np of nwrCross.node_points || []) {
-          if (np.x !== undefined && np.y !== undefined) {
-            pts.push({
-              x: np.x,
-              y: np.y,
-              label: np.label,
-              color: np.color || "#f59e0b",
-              shape: np.shape,
-              snapped_node: np.snapped_node,
-            });
-            minX = Math.min(minX, np.x);
-            maxX = Math.max(maxX, np.x);
-            minY = Math.min(minY, np.y);
-            maxY = Math.max(maxY, np.y);
-          }
-        }
-        if (!pts.length && nwrCross.node_point) {
-          const np = nwrCross.node_point;
-          pts.push({
-            x: np.x,
-            y: np.y,
-            label: np.label,
-            color: np.color || "#f59e0b",
-            shape: np.shape,
-            snapped_node: np.snapped_node,
-          });
-          minX = Math.min(minX, np.x);
-          maxX = Math.max(maxX, np.x);
-          minY = Math.min(minY, np.y);
-          maxY = Math.max(maxY, np.y);
-        }
-
-        if (ways.length || pts.length) {
-          STATE.crossHighlight.nwr = {
-            ways,
-            points: pts,
-            snappedNode: nwrCross.snapped_node,
-            pulseStart: performance.now(),
-            pulseDuration: 4500,
-            active: true,
-            title: data.title,
-          };
-          triggerPulseLoop();
-          document.getElementById("nwr-sync-tag")?.classList.remove("hidden");
-          if (STATE.activeView === "split") {
-            const snap = nwrCross.geo_snap;
-            if (snap && isFinite(snap.x) && isFinite(snap.y)) {
-              flyToNwr(snap.x, snap.y, snap.target_zoom || 0.28, true);
-              const tagEl = document.getElementById("nwr-sync-tag");
-              if (tagEl) {
-                tagEl.textContent = `⚡ Snapped: ${snap.elr || ''} @ ${snap.mileage_str || ''}${snap.is_extrapolated ? ' (Extrapolated)' : ''}`;
-              }
-            } else if (pts.length) {
-              const cx = pts.length === 1 ? pts[0].x : (pts[0].x + pts[1].x) / 2;
-              const cy = pts.length === 1 ? pts[0].y : (pts[0].y + pts[1].y) / 2;
-              const span = pts.length > 1 ? Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) : 250;
-              const targetZ = Math.min(0.28, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.75) / Math.max(span, 250)));
-              flyToNwr(cx, cy, targetZ, true);
-            } else if (isFinite(minX) && isFinite(maxX)) {
-              const cx = (minX + maxX) / 2;
-              const cy = (minY + maxY) / 2;
-              const span = Math.max(maxX - minX, maxY - minY, 350);
-              const targetZ = Math.min(0.25, Math.max(0.04, ((nwrCanvas?.clientWidth || 600) * 0.7) / span));
-              flyToNwr(cx, cy, targetZ, true);
-            }
-          }
-        } else {
-          STATE.crossHighlight.nwr.active = false;
-          document.getElementById("nwr-sync-tag")?.classList.add("hidden");
-        }
-      }
-    }
+    // Synchronized Dual-View / Cross-View Highlighting & Camera Snap
+    applyCrossHighlightsForSelectedAsset(data, expandFull, true);
     requestRender();
 
     // Lazy-render Inspector tabs: only build DOM for the currently visible tab
