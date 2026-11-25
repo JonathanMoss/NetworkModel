@@ -138,15 +138,36 @@ def test_resolve_node_path_details():
         {"node_id": 3, "netx": 50.0, "nety": 60.0, "km_value": 2000, "km_region_id": 1},
     ]
     edges_rows = [
-        {"pk": 10, "edge_id": 101, "start_node_id": 1, "end_node_id": 2, "length": 500, "vmax": 160, "electrified": 1, "gradient": 0.0},
-        {"pk": 11, "edge_id": 102, "start_node_id": 2, "end_node_id": 3, "length": 400, "vmax": 120, "electrified": 1, "gradient": 0.0},
-        {"pk": 12, "edge_id": 103, "start_node_id": 2, "end_node_id": 99, "length": 200, "vmax": 80, "electrified": 0, "gradient": 0.0},
+        {"pk": 10, "edge_id": 101, "start_node_id": 1, "end_node_id": 2, "length": 500, "vmax": 160, "electrified": 1, "gradient": 0.0, "velocity_profiles": [{"profileid": 16, "vmax": 200}]},
+        {"pk": 11, "edge_id": 102, "start_node_id": 2, "end_node_id": 3, "length": 400, "vmax": 120, "electrified": 1, "gradient": 0.0, "velocity_profiles": []},
+        {"pk": 12, "edge_id": 103, "start_node_id": 2, "end_node_id": 99, "length": 200, "vmax": 80, "electrified": 0, "gradient": 0.0, "velocity_profiles": []},
     ]
     cur = FakeCursor(responses=[nodes_rows, edges_rows])
-    details = geometry.resolve_node_path_details(cur, [1, 2, 3])
+    details = geometry.resolve_node_path_details(
+        cur, [1, 2, 3], decode_fn=lambda _cat, pid: "MU" if pid == 16 else None
+    )
     assert details["coords"] == [[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]]
     assert details["length_meters"] == 900
     assert details["min_vmax"] == 120
     assert details["max_vmax"] == 160
     assert len(details["turnout_nodes"]) == 1
     assert details["turnout_nodes"][0]["node_id"] == 2
+    assert len(details["speed_profile"]) == 2
+    assert details["speed_profile"][0]["start_m"] == 0
+    assert details["speed_profile"][0]["end_m"] == 500
+    assert details["speed_profile"][0]["differential_speeds"][0]["profile_name"] == "MU"
+    assert details["speed_profile"][1]["vmax_kmh"] == 120
+
+    # Verify consecutive edges with identical speed merge into a single step
+    cur_merge = FakeCursor(
+        responses=[
+            nodes_rows,
+            [
+                {"pk": 10, "edge_id": 101, "start_node_id": 1, "end_node_id": 2, "length": 300, "vmax": 160, "electrified": 1, "gradient": 0.0, "velocity_profiles": []},
+                {"pk": 11, "edge_id": 102, "start_node_id": 2, "end_node_id": 3, "length": 200, "vmax": 160, "electrified": 1, "gradient": 0.0, "velocity_profiles": []},
+            ],
+        ]
+    )
+    merged = geometry.resolve_node_path_details(cur_merge, [1, 2, 3])
+    assert len(merged["speed_profile"]) == 1
+    assert merged["speed_profile"][0]["length_m"] == 500

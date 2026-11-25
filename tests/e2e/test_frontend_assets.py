@@ -61,4 +61,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     pers_js = client.get("/static/js/persistence.js").text
     assert "loadPersistedColorModes" in pers_js
     assert "savePersistedColorModes" in pers_js
+    rsp_js = client.get("/static/js/route-speed-profile.js").text
+    assert "buildRouteSpeedProfileCard" in rsp_js
+    assert "renderRouteSpeedStepSvg" in rsp_js
 

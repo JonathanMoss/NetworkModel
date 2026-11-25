@@ -704,7 +704,7 @@ def _get_signal_or_points_asset(
             if not is_approach and not is_outgoing:
                 continue
 
-            p_info = resolve_node_path_details(cur, nids)
+            p_info = resolve_node_path_details(cur, nids, decode_fn=decode_code)
             b_coords = p_info["coords"] or b["coords"] or []
             b_len = p_info["length_meters"]
 
@@ -795,6 +795,7 @@ def _get_signal_or_points_asset(
                     "moving_block": b["moving_block"],
                     "min_vmax": p_info["min_vmax"],
                     "max_vmax": p_info["max_vmax"],
+                    "speed_profile": p_info.get("speed_profile", []),
                     "node_count": len(nids),
                     "turnout_count": len(p_info["turnout_nodes"]),
                     "sighting_point": sight_pt,
@@ -868,6 +869,7 @@ def _get_signal_or_points_asset(
                     "moving_block": b["moving_block"],
                     "min_vmax": p_info["min_vmax"],
                     "max_vmax": p_info["max_vmax"],
+                    "speed_profile": p_info.get("speed_profile", []),
                     "node_count": len(nids),
                     "turnout_count": len(p_info["turnout_nodes"]),
                     "turnout_nodes": p_info["turnout_nodes"],
@@ -1367,7 +1369,7 @@ def _get_block_asset(
         raise HTTPException(status_code=404, detail="Block not found")
 
     nids = blk["node_ids"] or []
-    p_info = resolve_node_path_details(cur, nids)
+    p_info = resolve_node_path_details(cur, nids, decode_fn=decode_code)
     b_coords = p_info["coords"] or blk["coords"] or []
     b_len = p_info["length_meters"]
 
@@ -1608,6 +1610,9 @@ def _get_block_asset(
         "decoded": decoded,
         "related": {
             "length_meters": b_len,
+            "min_vmax": p_info["min_vmax"],
+            "max_vmax": p_info["max_vmax"],
+            "speed_profile": p_info.get("speed_profile", []),
             "entry_signals": entry_sigs,
             "exit_signals": exit_sigs,
             "exit_overlaps": exit_overlaps,
@@ -1721,6 +1726,8 @@ def _get_route_asset(
         saved_fid=saved_override_fid,
     )
 
+    rt_path = resolve_node_path_details(cur, rt.get("node_ids") or [], decode_fn=decode_code)
+
     return {
         "asset_type": "route",
         "id": rt["pk"],
@@ -1731,6 +1738,10 @@ def _get_route_asset(
         "bbox": [rt["min_x"], rt["min_y"], rt["max_x"], rt["max_y"]],
         "decoded": decoded,
         "related": {
+            "length_meters": rt_path["length_meters"],
+            "min_vmax": rt_path["min_vmax"],
+            "max_vmax": rt_path["max_vmax"],
+            "speed_profile": rt_path.get("speed_profile", []),
             "node_ids": rt["node_ids"],
             "station_id": rt["station_id"],
             "nwr_cross_links": nwr_cross_links,

@@ -377,16 +377,29 @@ def parse_traction_curves(
     }
 
 
-def resolve_node_path_details(cur, node_ids: list) -> dict[str, Any]:
-    """Resolve ordered schematic coordinates, edge lengths, speeds, and turnouts for a node path.
+def resolve_node_path_details(
+    cur,
+    node_ids: list,
+    decode_fn: Optional[Callable[[str, Any], Optional[str]]] = None,
+) -> dict[str, Any]:
+    """Resolve ordered schematic coordinates, edge lengths, speeds, speed profile, and turnouts.
+
+    Walks each consecutive directed edge along ``node_ids`` to compute:
+      - Schematic coordinates and metric lengths
+      - Minimum (governing) and maximum permissible base speeds (``min_vmax`` / ``max_vmax``)
+      - Merged step-by-step ``speed_profile`` segments (including any differential
+        ``velocity_profiles`` per train class)
+      - Switch/turnout junctions (valency >= 3) along the path
 
     Args:
         cur: An active PostgreSQL cursor returning dict rows.
         node_ids: Ordered sequence of TPS ``node_id`` integers.
+        decode_fn: Optional lookup decoder ``(category, code_id) -> Optional[str]``
+            for resolving differential velocity profile labels.
 
     Returns:
         Dict containing ``coords``, ``length_meters``, ``min_vmax``, ``max_vmax``,
-        ``edge_lengths``, ``turnout_nodes``, and ``node_map``.
+        ``edge_lengths``, ``speed_profile``, ``turnout_nodes``, and ``node_map``.
     """
     clean_ids = [int(n) for n in (node_ids or []) if n is not None]
     if not clean_ids:
@@ -396,6 +409,7 @@ def resolve_node_path_details(cur, node_ids: list) -> dict[str, Any]:
             "min_vmax": None,
             "max_vmax": None,
             "edge_lengths": [],
+            "speed_profile": [],
             "turnout_nodes": [],
             "node_map": {},
         }
@@ -408,7 +422,8 @@ def resolve_node_path_details(cur, node_ids: list) -> dict[str, Any]:
 
     cur.execute(
         """
-        SELECT pk, edge_id, start_node_id, end_node_id, length, vmax, electrified, gradient
+        SELECT pk, edge_id, start_node_id, end_node_id, length, vmax, electrified, gradient,
+               velocity_profiles
         FROM edges
         WHERE (start_node_id = ANY(%s) OR end_node_id = ANY(%s))
           AND edge_id > 0
@@ -431,17 +446,63 @@ def resolve_node_path_details(cur, node_ids: list) -> dict[str, Any]:
     total_len = 0
     edge_lengths = []
     vmax_vals = []
+    speed_profile: list[dict[str, Any]] = []
     for i in range(len(clean_ids) - 1):
         u, v = clean_ids[i], clean_ids[i + 1]
         er = edge_lookup.get((u, v))
         if er:
             el = int(er["length"] or 0)
+            seg_start = total_len
             total_len += el
             edge_lengths.append(el)
-            if er["vmax"] and er["vmax"] > 0:
-                vmax_vals.append(int(er["vmax"]))
+            vmax_kmh = int(er["vmax"] or 0)
+            if vmax_kmh > 0:
+                vmax_vals.append(vmax_kmh)
+
+            # Decode any differential velocity profiles (e.g. MU, HST, EPS) on this edge.
+            diff_list = []
+            for vp in er.get("velocity_profiles") or []:
+                vp_vmax = int(vp.get("vmax") or 0)
+                if vp_vmax <= 0:
+                    continue
+                pid = vp.get("profileid")
+                pname = (
+                    decode_fn("veloprofiledesc", pid)
+                    if decode_fn is not None
+                    else None
+                ) or f"Profile {pid}"
+                diff_list.append({
+                    "profile_id": pid,
+                    "profile_name": pname,
+                    "vmax_kmh": vp_vmax,
+                    "vmax_mph": round(vp_vmax * 0.621371, 1),
+                })
+            diff_key = tuple((d["profile_id"], d["vmax_kmh"]) for d in diff_list)
+
+            # Merge consecutive edges with identical base + differential speeds into one step.
+            if (
+                speed_profile
+                and speed_profile[-1]["vmax_kmh"] == vmax_kmh
+                and speed_profile[-1]["_diff_key"] == diff_key
+            ):
+                speed_profile[-1]["end_m"] = total_len
+                speed_profile[-1]["length_m"] += el
+            else:
+                speed_profile.append({
+                    "start_m": seg_start,
+                    "end_m": total_len,
+                    "length_m": el,
+                    "vmax_kmh": vmax_kmh,
+                    "vmax_mph": round(vmax_kmh * 0.621371, 1) if vmax_kmh > 0 else 0.0,
+                    "differential_speeds": diff_list,
+                    "_diff_key": diff_key,
+                })
         else:
             edge_lengths.append(0)
+
+    # Strip internal merge key before returning JSON-serializable steps.
+    for step in speed_profile:
+        step.pop("_diff_key", None)
 
     # Identify switch/turnout junctions (valency >= 3) along the path.
     turnout_nodes = []
@@ -463,6 +524,7 @@ def resolve_node_path_details(cur, node_ids: list) -> dict[str, Any]:
         "min_vmax": min(vmax_vals) if vmax_vals else None,
         "max_vmax": max(vmax_vals) if vmax_vals else None,
         "edge_lengths": edge_lengths,
+        "speed_profile": speed_profile,
         "turnout_nodes": turnout_nodes,
         "node_map": nmap,
     }
