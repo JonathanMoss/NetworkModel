@@ -196,12 +196,13 @@ def test_asset_signal_and_points_200_and_404(client, monkeypatch):
     monkeypatch.setattr(
         assets_router,
         "resolve_node_path_details",
-        lambda _cur, nids: {
+        lambda _cur, nids, **_kw: {
             "coords": [[0.0, 0.0], [100.0, 0.0]],
             "length_meters": 200,
             "min_vmax": 100,
             "max_vmax": 160,
             "edge_lengths": [200.0],
+            "speed_profile": [{"start_m": 0, "end_m": 200, "length_m": 200, "vmax_kmh": 160, "vmax_mph": 99.4, "differential_speeds": []}],
             "turnout_nodes": [{"node_id": 30, "x": 50.0, "y": 0.0, "degree": 3}],
             "node_map": {20: {"netx": 0.0, "nety": 0.0}, 30: {"netx": 50.0, "nety": 0.0}, 40: {"netx": 100.0, "nety": 0.0}},
         },
@@ -285,12 +286,13 @@ def test_asset_track_block_route_and_attributesection(client, monkeypatch):
     monkeypatch.setattr(
         assets_router,
         "resolve_node_path_details",
-        lambda _cur, nids: {
+        lambda _cur, nids, **_kw: {
             "coords": [[0.0, 0.0], [100.0, 0.0]],
             "length_meters": 250,
             "min_vmax": 100,
             "max_vmax": 160,
             "edge_lengths": [250.0],
+            "speed_profile": [{"start_m": 0, "end_m": 250, "length_m": 250, "vmax_kmh": 160, "vmax_mph": 99.4, "differential_speeds": []}],
             "turnout_nodes": [{"node_id": 20, "x": 50.0, "y": 0.0, "degree": 3}],
             "node_map": {},
         },

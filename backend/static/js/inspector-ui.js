@@ -18,10 +18,14 @@ function renderActiveInspectorTab() {
 
   if (activeTabId === "tab-decoded") {
     const sigEnvelopeHtml = buildSignallingEnvelopeWidget(data);
+    const routeSpeedHtml = typeof buildRouteSpeedProfileCard === "function"
+      ? buildRouteSpeedProfileCard(data)
+      : "";
     const tractionPhysicsHtml = buildTractionPhysicsWidget(data);
     const decodedEntries = Object.entries(data.decoded || {});
     document.getElementById("tab-decoded").innerHTML = `
       ${sigEnvelopeHtml}
+      ${routeSpeedHtml}
       ${tractionPhysicsHtml}
       <table class="prop-table">
         <tbody>
@@ -1080,7 +1084,7 @@ function applyLazyCardCollapse(container, maxInitial = 12) {
 }
 
 /* Signalling & Interlocking Control Strip & Interactive Envelope Filter */
-window.setSignalHighlightFilter = function (group) {
+window.setSignalHighlightFilter = function (group, opts = {}) {
   STATE.highlightGroupFilter = group;
   document.querySelectorAll(".sig-filter-btn, .sig-filter-control").forEach((el) => {
     const g = el.dataset.group;
@@ -1140,6 +1144,16 @@ window.setSignalHighlightFilter = function (group) {
         textSpan.textContent = textSpan.dataset.default || "Overlaps";
       }
     }
+  }
+
+  // Sync the Route Speed Profile card when a specific approach/outgoing route is chosen
+  // from the Signalling Envelope strip (skip when triggered from the Speed Profile card).
+  if (
+    !opts.fromSpeedProfile &&
+    (group.startsWith("outgoing:") || group.startsWith("approach:")) &&
+    typeof window.selectRouteSpeedProfile === "function"
+  ) {
+    window.selectRouteSpeedProfile(group, false);
   }
 
   requestRender();
