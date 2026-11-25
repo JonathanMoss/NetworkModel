@@ -272,6 +272,11 @@ All cross-model plotting runs through `backend/main.py`:
    - Multi-track `34xx` approach continuation (`_find_34xx_continuation_tracks`, +95) resolves ties among covering `34xx`
      bi-directional tracks by matching outer endpoints (<=1.5m) to their `11xx`/`21xx`/`12xx`/`22xx` Main/Relief continuations
      (e.g. Cardiff Central East `3412`=UM, `3413`=DM, `3402`=UR, `3403`=DR).
+   - Bay platforms (`d2 == "6"`) are penalised on non-Bay Dedicated Platforms (`-25`) and Loop hints (`-60`) so through-platform
+     signals (e.g. Stoke-on-Trent `SOT433` P1 `1100`, `SOT277` P2 `2100`) are never pulled into adjacent bays (`3600`); when the
+     primary ELR already strictly covers a matching running line, cross-ELR platform fallback is restricted to station platform
+     classes `('5', '6', '8')` (blocking open-line branch hijacks like `SCQ1 3101/3102`); bi-directional station tracks whose
+     SA line code (`secondary_dir`, e.g. `DM`) contradicts the travel prefix (`U-2`) resolve as `reversible` with `secondary_dir`.
    - Re-chained branch ELR Check 2 requires `target_m >= 5000m` and branch start `< 5000m` so zero-based branches (e.g. `NBS`)
      never jump backwards onto high-chainage trunk ELRs (`LEC4`).
 3. Placement & Overrides:
@@ -284,7 +289,7 @@ All cross-model plotting runs through `backend/main.py`:
 - NEVER hardcode `start_km < end_km => down`; always use `infer_direction_from_km_delta`.
 - NEVER allow a non-overlapping centreline to outscore a strictly covering centreline.
 - NEVER short-circuit `resolve_tps_track_identity` when `direction_hint` is `None`.
-- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 189-case regression suite, and UK-wide batched audits:
+- Always run `./run_tests.sh` (Pylint must stay 10.00/10), the 194-case regression suite, and UK-wide batched audits:
   `docker exec nr_schematic_app python3 /app/test_track_matching.py`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --elr <ELRS> --out /app/audit_snapshots/after.jsonl.gz`
   `docker exec nr_schematic_app python3 /app/batch_audit.py --diff /app/audit_snapshots/baseline_cd3779b.jsonl.gz /app/audit_snapshots/after.jsonl.gz`

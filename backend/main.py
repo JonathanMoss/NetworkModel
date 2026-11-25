@@ -1554,7 +1554,11 @@ def _parse_station_track_rows(
         and not re.search(r"\b(?:up\s*(?:&|and)\s*down|down\s*(?:&|and)\s*up|reversible)\b", best_desc_l)
     )
     dirs_for_best = {d for ln, d in phys_dirs_on_same_nodes if ln == best_ln}
-    if "up" in dirs_for_best and "down" in dirs_for_best and not is_explicit_single_dir_line:
+    if (
+        "up" in dirs_for_best
+        and "down" in dirs_for_best
+        and (not is_explicit_single_dir_line or (secondary_dir in ("up", "down") and secondary_dir != best_dir))
+    ):
         best_dir = "reversible"
 
     plat_num = _extract_platform_number(
@@ -2394,7 +2398,10 @@ def score_track_candidate(
                 score += 10.0 if bool(re.search(r"\b(?:fast|main)\b", nh)) else -20.0
             elif d2 == "3" and ("goods" in nh or "g" in tokens or "gl" in nh):
                 score += 20.0
-            elif d2 in ("6", "7", "8", "9"):
+            elif d2 == "6":
+                # A terminal bay (x6xx) must never outscore a through running line for an explicit Loop hint (e.g. SOT433 UPL)
+                score -= 60.0
+            elif d2 in ("7", "8", "9"):
                 score -= 25.0
             else:
                 score -= 10.0
@@ -2468,8 +2475,11 @@ def score_track_candidate(
                     score += 30.0
                 else:
                     score += 15.0
-            elif d2 in ("4", "6"):
+            elif d2 == "4":
                 score += 15.0
+            elif d2 == "6":
+                # Do not pull a non-Bay through platform (e.g. SOT277 Down Platform 2 | DM) into a Bay track (3600)
+                score -= 25.0
             elif d2 == "8":
                 # Station platform tracks at major hubs (e.g. Birmingham New St 3801-3812, York 3809-3811)
                 if is_exact_plat_nn:
@@ -2830,6 +2840,23 @@ def find_nwr_cross_links_for_tps(
                 )
                 for c in raw_candidates
             )
+            th_plat_l = (track_name_hint or "").lower()
+            th_plat_toks = set(re.findall(r"[a-z0-9]+", th_plat_l)) if th_plat_l else set()
+            has_primary_running_cover = bool(
+                target_m is not None
+                and (
+                    bool(re.search(r"\b(?:fast|main|slow|relief|loop)\b", th_plat_l))
+                    or bool(th_plat_toks & {"dm", "um", "df", "uf", "ds", "us", "dr", "ur", "upl", "dpl", "ml", "fl", "sl", "rl"})
+                )
+                and any(
+                    len(str(c.get("track_id") or "")) == 4
+                    and str(c["track_id"])[1] in ("1", "2")
+                    and str(c["track_id"])[2:4] == "00"
+                    and min(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0) <= target_m
+                    <= max(c.get("start_meters") or 0.0, c.get("end_meters") or 0.0)
+                    for c in raw_candidates
+                )
+            )
             if not has_plat_on_elr:
                 # Get spatial anchor (E, N) from primary ELR's first candidate
                 c0 = raw_candidates[0]
@@ -2844,6 +2871,10 @@ def find_nwr_cross_links_for_tps(
                     )
                 if ref_pt_xy:
                     rx, ry = ref_pt_xy
+                    # When the primary ELR already strictly covers a running line matching the hint (e.g. CMD2 1100/2100
+                    # at Stoke-on-Trent), only allow dedicated cross-ELR station platform classes (5/6/8, e.g. YMS 3804),
+                    # never open-line branch tracks (1/2/4, e.g. SCQ1 3101/3102).
+                    cross_classes = ("5", "6", "8") if has_primary_running_cover else ("1", "2", "4", "5", "6", "8")
                     cur.execute(
                         """
                         SELECT fid, asset_id, elr, track_id, start_mile_yards, end_mile_yards,
@@ -2852,12 +2883,12 @@ def find_nwr_cross_links_for_tps(
                         FROM nwr_track_centrelines
                         WHERE elr <> %s
                           AND RIGHT(track_id, 2) = %s
-                          AND SUBSTRING(track_id, 2, 1) IN ('1', '2', '4', '5', '6', '8')
+                          AND SUBSTRING(track_id, 2, 1) = ANY(%s)
                           AND max_x >= %s - 300.0 AND min_x <= %s + 300.0
                           AND max_y >= %s - 300.0 AND min_y <= %s + 300.0
                         LIMIT 16
                         """,
-                        (elr, plat_suffix, rx, rx, ry, ry),
+                        (elr, plat_suffix, list(cross_classes), rx, rx, ry, ry),
                     )
                     cross_elr_rows = cur.fetchall()
                     if cross_elr_rows:
