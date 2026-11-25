@@ -5,15 +5,23 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install project dependencies and pylint
+# Install project dependencies, Pylint, and Pytest / BDD / Coverage / HTTPX
 COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt pylint==3.3.4
+RUN pip install --no-cache-dir \
+    -r /app/requirements.txt \
+    pylint==3.3.4 \
+    pytest==8.3.4 \
+    pytest-cov==6.0.0 \
+    pytest-bdd==8.1.0 \
+    httpx==0.28.1
 
-# Copy backend Python code and pylint configuration
+# Copy backend code, tests, and tool configurations
 COPY backend/ /app/backend/
+COPY tests/ /app/tests/
 COPY .pylintrc /app/.pylintrc
+COPY pytest.ini /app/pytest.ini
+COPY .coveragerc /app/.coveragerc
 
 ENV PYTHONPATH=/app/backend:/app
 
 CMD ["pylint", "--rcfile=/app/.pylintrc", "backend"]
-
