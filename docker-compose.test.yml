@@ -12,5 +12,29 @@ services:
       - PYTHONPATH=/app/backend:/app
     volumes:
       - ./backend:/app/backend:ro
+      - ./tests:/app/tests:ro
       - ./.pylintrc:/app/.pylintrc:ro
     command: ["pylint", "--rcfile=/app/.pylintrc", "backend"]
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: nr_testing_pytest
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONPATH=/app/backend:/app
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./tests:/app/tests:ro
+      - ./pytest.ini:/app/pytest.ini:ro
+      - ./.coveragerc:/app/.coveragerc:ro
+    command:
+      - "pytest"
+      - "-v"
+      - "--cov"
+      - "--cov-config=/app/.coveragerc"
+      - "--cov-report=term-missing"
+      - "--cov-fail-under=90"
+      - "tests"

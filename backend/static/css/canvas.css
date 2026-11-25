@@ -1,0 +1,348 @@
+/* ==========================================================================
+   Interactive Canvas Area, Dual-View Split System, Badges & Tooltips
+   ========================================================================== */
+
+/* Canvas Area & Dual-View Split System */
+.canvas-wrap {
+  flex: 1;
+  position: relative;
+  background: radial-gradient(circle at center, #0c1424 0%, #060911 100%);
+  overflow: hidden;
+}
+
+.dual-view-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.dual-pane {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at center, #0c1424 0%, #060911 100%);
+}
+
+.dual-pane canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+.dual-pane canvas.has-target {
+  cursor: pointer;
+}
+
+.dual-pane canvas:active {
+  cursor: grabbing;
+}
+
+/* Single View vs Split View Visibility & Sizing */
+.canvas-wrap.view-mode-tps .dual-pane-tps {
+  flex: 1 1 100%;
+  width: 100%;
+  display: block;
+}
+.canvas-wrap.view-mode-tps .dual-pane-nwr,
+.canvas-wrap.view-mode-tps .split-divider {
+  display: none !important;
+}
+
+.canvas-wrap.view-mode-nwr .dual-pane-nwr {
+  flex: 1 1 100%;
+  width: 100%;
+  display: block;
+}
+.canvas-wrap.view-mode-nwr .dual-pane-tps,
+.canvas-wrap.view-mode-nwr .split-divider {
+  display: none !important;
+}
+
+.canvas-wrap.view-mode-split .dual-pane-tps {
+  display: block;
+  flex: 0 0 calc(var(--split-ratio, 50%) - 4px);
+  width: calc(var(--split-ratio, 50%) - 4px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.canvas-wrap.view-mode-split .dual-pane-nwr {
+  display: block;
+  flex: 1 1 auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.canvas-wrap.view-mode-split .split-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  background: #0b1322;
+  border-left: 1px solid rgba(56, 189, 248, 0.25);
+  border-right: 1px solid rgba(56, 189, 248, 0.25);
+  cursor: col-resize;
+  user-select: none;
+  z-index: 20;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.canvas-wrap.view-mode-split .split-divider:hover,
+.canvas-wrap.view-mode-split .split-divider.dragging {
+  background: #0284c7;
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+}
+
+.divider-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 38px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.divider-icon {
+  font-size: 0.75rem;
+  color: #fff;
+  opacity: 0.7;
+}
+
+/* Floating Pane Header Badges in Split View */
+.pane-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 15;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-main);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.canvas-wrap.view-mode-split .pane-badge {
+  display: flex;
+}
+
+.badge-icon {
+  font-size: 0.9rem;
+}
+
+.badge-title {
+  letter-spacing: 0.02em;
+}
+
+.badge-sync-tag {
+  background: rgba(6, 182, 212, 0.2);
+  color: #22d3ee;
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  animation: pulse-sync-tag 1.6s infinite ease-in-out;
+}
+
+@keyframes pulse-sync-tag {
+  0% { opacity: 0.5; }
+  50% { opacity: 1; box-shadow: 0 0 8px rgba(34, 211, 238, 0.6); }
+  100% { opacity: 0.5; }
+}
+
+.pane-fit-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-main);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.15s ease;
+}
+
+.pane-fit-btn:hover {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+#view-btn-split.active {
+  background: linear-gradient(135deg, #0284c7, #8b5cf6);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+}
+
+.pane-toggle-btn {
+  position: absolute;
+  bottom: 14px;
+  z-index: 25;
+  height: 30px;
+  padding: 0 11px;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border-light);
+  color: var(--text-main);
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pane-toggle-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pane-toggle-left {
+  left: 14px;
+}
+
+.pane-toggle-right {
+  right: 14px;
+}
+
+.zoom-controls {
+  position: absolute;
+  top: 50px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zoom-controls button {
+  min-width: 34px;
+  height: 34px;
+  padding: 0 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid var(--border-light);
+  color: var(--text-main);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.zoom-controls button:hover {
+  background: var(--bg-card);
+  border-color: var(--accent);
+}
+
+#btn-clear-highlight {
+  font-size: 0.75rem;
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.hover-tooltip {
+  display: none !important;
+}
+
+.hover-menu-header {
+  font-size: 0.69rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.hover-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  border: 1px solid transparent;
+}
+
+.hover-menu-item:hover,
+.hover-menu-item.active {
+  background: var(--bg-card);
+  border-color: var(--accent);
+}
+
+.hover-type-badge {
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.hover-type-station { background: rgba(248, 250, 252, 0.15); color: #f8fafc; }
+.hover-type-signal { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.hover-type-track { background: rgba(129, 140, 248, 0.2); color: #a5b4fc; }
+.hover-type-edge { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
+.hover-type-node { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.hover-type-block { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; }
+.hover-type-route { background: rgba(249, 115, 22, 0.2); color: #fb923c; }
+.hover-type-attributesection { background: rgba(244, 63, 94, 0.2); color: #fb7185; }
+.hover-type-graphictext { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+.hover-type-annotation { background: rgba(236, 72, 153, 0.2); color: #f472b6; }
+.hover-type-polyarea { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+.hover-type-nwr_centreline { background: rgba(56, 189, 248, 0.22); color: #38bdf8; }
+.hover-type-nwr_node { background: rgba(16, 185, 129, 0.22); color: #34d399; }
+.hover-type-nwr_elr { background: rgba(168, 85, 247, 0.22); color: #c084fc; }
+.hover-type-nwr_waymark { background: rgba(245, 158, 11, 0.22); color: #fbbf24; }
+
+.os-copyright {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.hover-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.hover-item-title {
+  font-weight: 600;
+  color: var(--text-main);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hover-item-sub {
+  color: var(--text-muted);
+  font-size: 0.71rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+

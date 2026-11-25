@@ -40,7 +40,16 @@ flowchart TD
     G1 & G2 & G3 --> H["Return best_centreline, corridor_centrelines,\nnode_points, snapped_node, match_info"]
 ```
 
-All core logic lives in `backend/main.py` (`load_elr_polarity_cache`, `_extract_direction_from_tokens`, `_extract_platform_number`, `_parse_station_track_rows`, `_resolve_reversible_through_line_dir`, `resolve_tps_track_identity`, `score_track_candidate`, `find_nwr_cross_links_for_tps`).
+Core matching and API logic is modularized into single-concern modules under `backend/` (re-exported by `backend/main.py` for script compatibility):
+- `backend/config.py`: DB connection, environment paths, lookup-code cache, and persistent track-override helpers.
+- `backend/geometry.py`: Mileage formatting, asset-name normalization, polyline interpolation/slicing, and traction-curve parsing.
+- `backend/timing_catalog.py`: Cached timing-load, traction-unit, coach, velocity-profile, and station-bank catalog.
+- `backend/track_identity.py`: 4-stage TPS direction, platform-number, and per-ELR mileage-polarity resolution (`load_elr_polarity_cache`, `_extract_direction_from_tokens`, `_extract_platform_number`, `_parse_station_track_rows`, `_resolve_reversible_through_line_dir`, `resolve_tps_track_identity`).
+- `backend/track_scoring.py`: NWR Appendix A candidate scoring engine (`extract_hint_flags`, `score_mileage_coverage`, `score_direction_alignment`, `score_platform_and_line_seq`, `score_line_class`, `score_fallback_tiebreakers`, `score_track_candidate`).
+- `backend/track_matcher.py`: TPS-to-NWR and NWR-to-TPS cross-linking, cross-ELR hub/flyover/chord fallbacks, `34xx` continuation tracing, physical switch snapping, and Network Fusion corridor summaries (`find_nwr_cross_links_for_tps`, `find_tps_cross_links`, `find_network_fusion_for_elr`).
+- `backend/routers/`: FastAPI `APIRouter` modules (`tps.py`, `nwr.py`, `network_fusion.py`, `assets.py`).
+
+Quality & test gates (`./run_tests.sh`): Pylint (`10.00/10`), Pytest unit/BDD/E2E suite (`tests/unit/`, `tests/bdd/features/*.feature`, `tests/e2e/`) with `>= 90%` coverage, plus the 194-case live-DB regression suite (`backend/test_track_matching.py`).
 
 ---
 

@@ -1,0 +1,76 @@
+  <!-- Top Header / Command Bar -->
+  <header class="topbar">
+    <div class="topbar-main-row">
+      <div class="brand">
+        <div class="brand-badge">NR • MODEL</div>
+        <div class="brand-titles">
+          <h1>UK Rail Network Explorer</h1>
+          <span id="dataset-subtitle" class="subtitle">INFRA FREEZE 261028 • NWR_TrackModel 20261026</span>
+        </div>
+      </div>
+
+      <!-- Primary View Switcher -->
+      <div class="view-switcher" id="view-switcher">
+        <button id="view-btn-tps" class="view-btn active" title="TPS Signalling &amp; Timetable Schematic (XML_p.xml)">
+          TPS Schematic View
+        </button>
+        <button id="view-btn-nwr" class="view-btn" title="Network Rail Geospatial Track Model (OSGB36 Shapefiles)">
+          NWR Track Model View
+        </button>
+        <button id="view-btn-split" class="view-btn" title="Synchronized Dual-View: TPS Schematic &amp; NWR Geospatial Corridor Side-by-Side">
+          <span class="view-split-icon">⧉</span> Dual View (Sync)
+        </button>
+      </div>
+
+      <!-- Colour Mode & Actions -->
+      <div class="toolbar-controls">
+        <label class="control-group" id="tps-color-control">
+          <span>Colour By</span>
+          <select id="color-mode">
+            <option value="electrified">Electrification (OHLE / 3rd Rail vs Diesel)</option>
+            <option value="signalling">Signalling &amp; Interlocking System (Aspects / Overlaps)</option>
+            <option value="timing">Timing Points (Mandatory TIPLOC) &amp; Differential Speeds</option>
+            <option value="vmax">Line Speed Profile (Vmax km/h)</option>
+            <option value="gradient">Gradient Profile (Rising / Level / Falling)</option>
+            <option value="uniform">Layer Colour / Classic Schematic</option>
+          </select>
+        </label>
+
+        <label class="control-group hidden" id="nwr-color-control">
+          <span>Colour By</span>
+          <select id="nwr-color-mode">
+            <option value="track_type">Track ID Type (Main Fast / Slow / Loop / Goods / Siding)</option>
+            <option value="direction">Track Direction (Up / Down / Bi-Directional)</option>
+            <option value="ownership">Ownership (Network Rail vs Third Party)</option>
+            <option value="curvature">Curvature Radius (Tight ≤400m / Med ≤1200m / Straight)</option>
+            <option value="elevation">Elevation Profile (Lowland → High Upland)</option>
+            <option value="uniform">Layer Colour (Uniform)</option>
+          </select>
+        </label>
+
+        <button id="btn-fit-uk" class="btn btn-secondary" title="Fit entire UK rail network">
+          Fit Network
+        </button>
+        <button id="btn-timing-loads" class="btn btn-accent" title="Explore 853 Timing Loads, 196 Traction Units &amp; Tractive Effort Curves, Differential Speed Profiles, and 1,364 Station Bank Corridors">
+          Timing Loads &amp; Train Classes
+        </button>
+        <button id="btn-catalog" class="btn btn-primary" title="Browse all 126 tables in PostgreSQL">
+          Database Catalog (126 Tables)
+        </button>
+      </div>
+    </div>
+
+    <!-- Dedicated Full-Width Search Row -->
+    <div class="topbar-search-row">
+      <span class="search-row-label">Universal Search</span>
+      <div class="search-container">
+        <input
+          id="global-search"
+          type="text"
+          placeholder="Search Station (Name, CRS, TIPLOC, STANOX), Signal, Timing Load (390, 800, 450, 66, HST), Timetable Corridor (MD710, Marylebone), Node ID, Block, Route, or ELR..."
+          autocomplete="off"
+        />
+        <div id="search-results" class="search-dropdown hidden"></div>
+      </div>
+    </div>
+  </header>

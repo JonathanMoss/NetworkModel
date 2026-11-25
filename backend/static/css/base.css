@@ -1,0 +1,118 @@
+/* ==========================================================================
+   Base Design Tokens, Reset & Ingestion Overlay
+   ========================================================================== */
+
+:root {
+  --bg-dark: #070b14;
+  --bg-panel: #0f172a;
+  --bg-card: #1e293b;
+  --bg-hover: #334155;
+  --border: #1e293b;
+  --border-light: #334155;
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-strong: #0284c7;
+  --amber: #f59e0b;
+  --emerald: #10b981;
+  --rose: #f43f5e;
+  --purple: #a855f7;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  background: var(--bg-dark);
+  color: var(--text-main);
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Ingestion Overlay */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 11, 20, 0.92);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ingest-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 540px;
+  width: 90%;
+  text-align: center;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
+}
+
+.ingest-spinner {
+  width: 44px;
+  height: 44px;
+  border: 4px solid var(--bg-card);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  margin: 0 auto 16px;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.ingest-card h2 {
+  font-size: 1.25rem;
+  margin-bottom: 8px;
+}
+
+#ingest-phase {
+  color: var(--accent);
+  font-size: 0.92rem;
+  margin-bottom: 16px;
+}
+
+.progress-bar-wrap {
+  background: var(--bg-card);
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.progress-bar-fill {
+  background: linear-gradient(90deg, #0284c7, #38bdf8);
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.ingest-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.ingest-note {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+

@@ -1,0 +1,246 @@
+      <!-- TPS Schematic Layers -->
+      <div class="panel-section" id="tps-layers-panel">
+        <div class="layers-section-header">
+          <h3>TPS Schematic Layers</h3>
+          <div class="layers-header-actions">
+            <button type="button" class="btn-reset-all-styles" id="btn-reset-tps-styles" title="Reset all TPS line styles to defaults">Reset Styles</button>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-edges" checked />
+            <span class="dot" id="swatch-dot-edges" style="background:#38bdf8"></span>
+            <span>Track Edges</span>
+            <small id="cnt-edges">377.3k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="edges">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Line Colour (overridden in dynamic Colour-By modes)">
+              <span class="color-picker-swatch" id="swatch-edges" style="background:#38bdf8"></span>
+              <input type="color" class="layer-color-input" data-layer="edges" value="#38bdf8" />
+            </label>
+            <div class="width-stepper" data-layer="edges" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="edges" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="edges">1.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="edges" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="edges" title="Reset to default style">↺</button>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-tracks" checked />
+            <span class="dot" id="swatch-dot-tracks" style="background:#818cf8"></span>
+            <span>Station Platforms / Ways</span>
+            <small id="cnt-tracks">41.4k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="tracks">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Platform Colour">
+              <span class="color-picker-swatch" id="swatch-tracks" style="background:#818cf8"></span>
+              <input type="color" class="layer-color-input" data-layer="tracks" value="#818cf8" />
+            </label>
+            <div class="width-stepper" data-layer="tracks" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="tracks" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="tracks">3.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="tracks" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="tracks" title="Reset to default style">↺</button>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-vectors" checked />
+            <span class="dot" id="swatch-dot-vectors" style="background:#64748b"></span>
+            <span>CAD Schematic Vectors</span>
+            <small id="cnt-vectors">396.5k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="vectors">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom CAD Vector Colour">
+              <span class="color-picker-swatch" id="swatch-vectors" style="background:#64748b"></span>
+              <input type="color" class="layer-color-input" data-layer="vectors" value="#64748b" />
+            </label>
+            <div class="width-stepper" data-layer="vectors" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="vectors" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="vectors">1.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="vectors" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="vectors" title="Reset to default style">↺</button>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-texts" checked />
+            <span class="dot" style="background:#cbd5e1"></span>
+            <span>CAD Track Labels</span>
+            <small id="cnt-texts">23.6k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="texts">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="texts">−</button>
+              <span class="lbl-scale-readout" data-readout="texts">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="texts">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="texts" title="CAD Track Labels orientation">
+              <option value="native">CAD Angle</option>
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-stations" checked />
+            <span class="dot" style="background:#f8fafc"></span>
+            <span>Stations &amp; Timing Points</span>
+            <small id="cnt-stations">18.1k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="stations">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="stations">−</button>
+              <span class="lbl-scale-readout" data-readout="stations">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="stations">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="stations" title="Station &amp; Timing Point label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-signals" checked />
+            <span class="dot" style="background:#f59e0b"></span>
+            <span>Signals &amp; Buffer Stops</span>
+            <small id="cnt-signals">72.2k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="signals">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="signals">−</button>
+              <span class="lbl-scale-readout" data-readout="signals">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="signals">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="signals" title="Signal &amp; Buffer Stop label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-blocks" />
+            <span class="dot" id="swatch-dot-blocks" style="background:#10b981"></span>
+            <span>Signalling Block Sections</span>
+            <small id="cnt-blocks">66.9k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="blocks">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Block Section Colour">
+              <span class="color-picker-swatch" id="swatch-blocks" style="background:#10b981"></span>
+              <input type="color" class="layer-color-input" data-layer="blocks" value="#10b981" />
+            </label>
+            <div class="width-stepper" data-layer="blocks" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="blocks" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="blocks">2.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="blocks" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="blocks" title="Reset to default style">↺</button>
+          </div>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="blocks">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="blocks">−</button>
+              <span class="lbl-scale-readout" data-readout="blocks">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="blocks">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="blocks" title="Signalling Block label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-nodes" />
+            <span class="dot" style="background:#10b981"></span>
+            <span>Microscopic Track Nodes</span>
+            <small id="cnt-nodes">179.7k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nodes">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nodes">−</button>
+              <span class="lbl-scale-readout" data-readout="nodes">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nodes">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nodes" title="Track Node label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="layer-polys" checked />
+            <span class="dot" id="swatch-dot-polys" style="background:#a855f7"></span>
+            <span>Poly Regions &amp; Notes</span>
+            <small id="cnt-polys">1.38k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="polys">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Region Boundary Colour">
+              <span class="color-picker-swatch" id="swatch-polys" style="background:#a855f7"></span>
+              <input type="color" class="layer-color-input" data-layer="polys" value="#a855f7" />
+            </label>
+            <div class="width-stepper" data-layer="polys" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="polys" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="polys">1.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="polys" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="polys" title="Reset to default style">↺</button>
+          </div>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="polys">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="polys">−</button>
+              <span class="lbl-scale-readout" data-readout="polys">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="polys">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="polys" title="Operational Notes label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+      </div>

@@ -1,0 +1,23 @@
+[run]
+source =
+    config
+    geometry
+    timing_catalog
+    track_identity
+    track_scoring
+    track_matcher
+    main
+    template_renderer
+    routers.network_fusion
+    routers.tps
+    routers.nwr
+    routers.assets
+branch = False
+
+[report]
+show_missing = True
+skip_empty = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError

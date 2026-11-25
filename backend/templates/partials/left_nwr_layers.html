@@ -1,0 +1,193 @@
+      <!-- NWR Track Model Geospatial Layers -->
+      <div class="panel-section hidden" id="nwr-layers-panel">
+        <div class="layers-section-header">
+          <h3>NWR Track Model Layers (OSGB36)</h3>
+          <div class="layers-header-actions">
+            <button type="button" class="btn-reset-all-styles" id="btn-reset-nwr-styles" title="Reset all NWR line styles to defaults">Reset Styles</button>
+          </div>
+        </div>
+
+        <!-- OpenStreetMap Basemap Tile Layer -->
+        <div class="layer-card" id="layer-card-osm">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-osm" checked />
+            <span class="dot" style="background:#22c55e"></span>
+            <span>OpenStreetMap (OSM) Basemap</span>
+            <small>Tiles</small>
+          </label>
+          <div class="layer-osm-bar">
+            <span class="style-badge">Opacity</span>
+            <input type="range" id="osm-opacity-slider" min="0" max="100" value="30" class="osm-opacity-slider" title="OSM Basemap Opacity" />
+            <span class="opacity-readout" id="osm-opacity-readout">30%</span>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-centrelines" checked />
+            <span class="dot" id="swatch-dot-nwr-centrelines" style="background:#38bdf8"></span>
+            <span>Track Centre Lines</span>
+            <small>49.7k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="nwr_centrelines">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Centreline Colour (overridden in dynamic Colour-By modes)">
+              <span class="color-picker-swatch" id="swatch-nwr-centrelines" style="background:#38bdf8"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_centrelines" value="#38bdf8" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_centrelines" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_centrelines" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_centrelines">1.8px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_centrelines" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_centrelines" title="Reset to default style">↺</button>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-elrs" checked />
+            <span class="dot" id="swatch-dot-nwr-elrs" style="background:#a855f7"></span>
+            <span>ELR Reference Lines</span>
+            <small>1.60k</small>
+          </label>
+          <div class="layer-style-bar" data-layer="nwr_elrs">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom ELR Reference Line Colour">
+              <span class="color-picker-swatch" id="swatch-nwr-elrs" style="background:#a855f7"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_elrs" value="#a855f7" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_elrs" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_elrs" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_elrs">2.0px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_elrs" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_elrs" title="Reset to default style">↺</button>
+          </div>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_elrs">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_elrs">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_elrs">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_elrs">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_elrs" title="ELR Corridor label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-nodes" checked />
+            <span class="dot" style="background:#10b981"></span>
+            <span>Track Nodes (Valency 1–4)</span>
+            <small>38.7k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_nodes">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_nodes">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_nodes">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_nodes">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_nodes" title="NWR Track Node label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-waymarks" checked />
+            <span class="dot" style="background:#f59e0b"></span>
+            <span>Milepost Waymarks</span>
+            <small>42.9k</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nwr_waymarks">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nwr_waymarks">−</button>
+              <span class="lbl-scale-readout" data-readout="nwr_waymarks">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nwr_waymarks">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nwr_waymarks" title="Milepost Waymark label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Network Fusion (GeoFurlong / Alan Morrison) Layers -->
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-curvature" checked />
+            <span class="dot" id="swatch-dot-nwr-curvature" style="background:#f43f5e"></span>
+            <span>Track Curvature &amp; Cant</span>
+            <small>On Track Click</small>
+          </label>
+          <div class="layer-style-bar" data-layer="nwr_curvature">
+            <span class="style-badge">Line</span>
+            <label class="color-picker-label" title="Custom Curvature Line Colour">
+              <span class="color-picker-swatch" id="swatch-nwr-curvature" style="background:#f43f5e"></span>
+              <input type="color" class="layer-color-input" data-layer="nwr_curvature" value="#f43f5e" />
+            </label>
+            <div class="width-stepper" data-layer="nwr_curvature" title="Line Width">
+              <button type="button" class="width-step-btn" data-dir="-0.5" data-layer="nwr_curvature" title="Decrease line width">−</button>
+              <span class="width-readout" data-readout="nwr_curvature">2.5px</span>
+              <button type="button" class="width-step-btn" data-dir="0.5" data-layer="nwr_curvature" title="Increase line width">+</button>
+            </div>
+            <button type="button" class="btn-reset-layer-style" data-layer="nwr_curvature" title="Reset to default style">↺</button>
+          </div>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nf_curvature">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nf_curvature">−</button>
+              <span class="lbl-scale-readout" data-readout="nf_curvature">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nf_curvature">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nf_curvature" title="Curvature label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="layer-card">
+          <label class="layer-toggle">
+            <input type="checkbox" id="nwr-layer-nf-points" />
+            <span class="dot" style="background:#06b6d4"></span>
+            <span>Tenth-Mile Points (Elev/Climate)</span>
+            <small>On Track Click</small>
+          </label>
+          <div class="layer-label-bar">
+            <span class="lbl-badge">Abc</span>
+            <div class="label-stepper" data-layer="nf_points">
+              <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="nf_points">−</button>
+              <span class="lbl-scale-readout" data-readout="nf_points">100%</span>
+              <button type="button" class="lbl-step-btn" data-dir="1" data-layer="nf_points">+</button>
+            </div>
+            <select class="lbl-orient-select" data-layer="nf_points" title="NF Point label orientation">
+              <option value="0">0° Horiz</option>
+              <option value="-45">-45° Slant</option>
+              <option value="-30">-30° Slant</option>
+              <option value="-90">-90° Vert</option>
+              <option value="45">45° Down</option>
+            </select>
+          </div>
+        </div>
+      </div>
