@@ -618,3 +618,20 @@
   color: #d8b4fe;
   border: 1px solid rgba(168, 85, 247, 0.35);
 }
+
+.rsp-highlight-btn {
+  margin-left: auto;
+  background: rgba(56, 189, 248, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rsp-highlight-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  color: #f8fafc;
+}

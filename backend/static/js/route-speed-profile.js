@@ -292,7 +292,7 @@ function buildRouteSpeedProfileCard(data, selectedKey = null) {
   const selectorHtml =
     routes.length > 1
       ? `
-        <select class="rsp-route-select" id="rsp-route-select" onchange="selectRouteSpeedProfile(this.value)" title="Choose a route to inspect its speed profile">
+        <select class="rsp-route-select" id="rsp-route-select" onchange="selectRouteSpeedProfile(this.value, true)" title="Choose a route to inspect its speed profile and highlight only this route on the map">
           ${routes
             .map(
               (r) =>
@@ -303,11 +303,18 @@ function buildRouteSpeedProfileCard(data, selectedKey = null) {
       `
       : `<div class="rsp-route-single">${escapeHtml(activeRoute.label)}</div>`;
 
+  const canHighlightRoute =
+    activeRoute.key.startsWith("outgoing:") || activeRoute.key.startsWith("approach:");
+  const highlightBtnHtml = canHighlightRoute
+    ? `<button type="button" class="rsp-highlight-btn" onclick="selectRouteSpeedProfile(document.getElementById('rsp-route-select')?.value || '${escapeHtml(activeRoute.key)}', true)" title="Highlight only this route on the TPS map">Highlight Route</button>`
+    : "";
+
   return `
     <div class="rsp-card" id="route-speed-profile-card">
       <div class="rsp-card-header">
         <span class="rsp-badge">SPEED PROFILE</span>
         <span class="rsp-card-title">Route Speed Profile</span>
+        ${highlightBtnHtml}
       </div>
       ${selectorHtml}
       <div id="rsp-card-body">
@@ -320,9 +327,15 @@ function buildRouteSpeedProfileCard(data, selectedKey = null) {
 /**
  * Switch the active route displayed inside the Inspector's Route Speed Profile card.
  *
+ * When `syncHighlight` is true (user-initiated from this card), clears all other
+ * TPS highlights and highlights only the selected route, keeps the Signalling
+ * Envelope filter strip above in sync, and keeps only the signal/point marker
+ * (removing any extra track centreline highlight) in Geo view.
+ *
  * @param {string} routeKey Route key (e.g. `"outgoing:120"` or `"approach:110"`).
+ * @param {boolean} syncHighlight Whether to isolate this route on the canvas & envelope bar.
  */
-window.selectRouteSpeedProfile = function (routeKey) {
+window.selectRouteSpeedProfile = function (routeKey, syncHighlight = true) {
   if (!STATE.selectedAsset) return;
   const routes = extractRoutesForSpeedProfile(STATE.selectedAsset);
   const match = routes.find((r) => r.key === routeKey);
@@ -335,6 +348,22 @@ window.selectRouteSpeedProfile = function (routeKey) {
   const selEl = document.getElementById("rsp-route-select");
   if (selEl && selEl.value !== routeKey) {
     selEl.value = routeKey;
+  }
+
+  if (
+    syncHighlight &&
+    (routeKey.startsWith("outgoing:") || routeKey.startsWith("approach:"))
+  ) {
+    // Keep the selected signal/point marker in Geo view and clear any extra Geo track highlight.
+    if (STATE.crossHighlight && STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
+      STATE.crossHighlight.nwr.ways = [];
+    }
+    if (typeof window.setSignalHighlightFilter === "function") {
+      window.setSignalHighlightFilter(routeKey, { fromSpeedProfile: true });
+    } else {
+      STATE.highlightGroupFilter = routeKey;
+      requestRender();
+    }
   }
 };
 
