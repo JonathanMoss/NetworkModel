@@ -1,0 +1,18 @@
+  <!-- Ingestion Overlay (shown only while initial PostgreSQL load is running) -->
+  <div id="ingest-overlay" class="overlay hidden">
+    <div class="ingest-card">
+      <div class="ingest-spinner"></div>
+      <h2>Building Lossless PostgreSQL Network Model</h2>
+      <p id="ingest-phase">Initializing database schema...</p>
+      <div class="progress-bar-wrap">
+        <div id="ingest-progress-bar" class="progress-bar-fill" style="width: 2%"></div>
+      </div>
+      <div class="ingest-stats">
+        <span id="ingest-count">0 elements</span>
+        <span id="ingest-pct">0%</span>
+      </div>
+      <p class="ingest-note">
+        Streaming 624 MB <code>XML_p.xml</code> + <code>NWR_TrackModel</code> shapefiles into PostgreSQL 16 without discarding a single attribute or child node.
+      </p>
+    </div>
+  </div>

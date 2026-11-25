@@ -1,0 +1,235 @@
+/* ==========================================================================
+   Top Command Bar, View Switcher, Toolbar Controls & Universal Search
+   ========================================================================== */
+
+/* Topbar */
+.topbar {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+  flex-shrink: 0;
+}
+
+.topbar-main-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.topbar-search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px 8px;
+  border-top: 1px solid var(--border);
+  background: rgba(10, 15, 29, 0.6);
+}
+
+.search-row-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.brand-badge {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  border-radius: 6px;
+  letter-spacing: 0.05em;
+}
+
+.brand-titles h1 {
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.brand-titles .subtitle {
+  font-size: 0.73rem;
+  color: var(--text-muted);
+  display: block;
+}
+
+/* Primary View Switcher */
+.view-switcher {
+  display: flex;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.view-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.view-btn:hover {
+  color: var(--text-main);
+}
+
+.view-btn.active {
+  background: var(--accent-strong);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
+}
+
+/* Search */
+.search-container {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  max-width: none;
+}
+
+#global-search {
+  width: 100%;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-light);
+  color: var(--text-main);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  outline: none;
+}
+
+#global-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
+  z-index: 100;
+}
+
+.search-item {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.search-item:hover {
+  background: var(--bg-card);
+}
+
+.search-item-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.search-item-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.search-type-pill {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Toolbar Controls */
+.toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.control-group select {
+  background: var(--bg-dark);
+  color: var(--text-main);
+  border: 1px solid var(--border-light);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.btn {
+  border: none;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 0.76rem;
+}
+
+.btn-primary {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #0369a1;
+}
+
+.btn-secondary {
+  background: var(--bg-card);
+  color: var(--text-main);
+  border: 1px solid var(--border-light);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-hover);
+}
+

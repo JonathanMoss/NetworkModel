@@ -1,0 +1,30 @@
+  <!-- Full Lossless Database Catalog Modal -->
+  <div id="catalog-modal" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div>
+          <h2>Lossless PostgreSQL Database Catalog (122 TPS XML Tables + 4 NWR TrackModel Shapefiles)</h2>
+          <p>Every element, attribute, and geometry from <code>XML_p.xml</code> and <code>NWR_TrackModel20261026</code> stored in PostgreSQL</p>
+        </div>
+        <button id="btn-close-catalog" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="catalog-sidebar">
+          <input id="catalog-tag-filter" type="text" placeholder="Filter 126 tables..." />
+          <div id="catalog-tag-list" class="catalog-tag-list"></div>
+        </div>
+        <div class="catalog-main">
+          <div class="catalog-toolbar">
+            <strong id="catalog-current-tag">Select a table</strong>
+            <input id="catalog-row-search" type="text" placeholder="Search inside this table (ID, ELR, name, JSON)..." />
+            <div class="catalog-pager">
+              <button id="catalog-prev" class="btn btn-sm btn-secondary">&larr; Prev</button>
+              <span id="catalog-page-info">0–50</span>
+              <button id="catalog-next" class="btn btn-sm btn-secondary">Next &rarr;</button>
+            </div>
+          </div>
+          <div id="catalog-rows-container" class="catalog-rows-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>

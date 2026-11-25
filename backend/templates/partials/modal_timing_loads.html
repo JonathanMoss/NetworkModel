@@ -1,0 +1,27 @@
+  <!-- Timing Loads, Train Classes & Timing Corridors Explorer Modal -->
+  <div id="timing-modal" class="modal-backdrop hidden">
+    <div class="modal-window timing-modal-window">
+      <div class="modal-header">
+        <div>
+          <h2>TPS Timing Loads, Train Classes, Velocity Profiles &amp; Timetable Corridors</h2>
+          <p>Explore 853 <code>&lt;modeltrain&gt;</code> Timing Loads, 196 <code>&lt;tractionunit&gt;</code> Tractive Effort &amp; Davis Resistance Curves, 16 Differential Speed Profiles, and 1,364 <code>&lt;stationbank&gt;</code> Timing Corridors</p>
+        </div>
+        <button id="btn-close-timing" class="btn-close">&times;</button>
+      </div>
+      <div class="timing-modal-toolbar">
+        <div class="timing-tab-group">
+          <button class="timing-tab-btn active" data-ttab="model_trains">Timing Loads (<span id="tcnt-trains">852</span>)</button>
+          <button class="timing-tab-btn" data-ttab="traction_units">Traction Units &amp; Curves (<span id="tcnt-units">196</span>)</button>
+          <button class="timing-tab-btn" data-ttab="profiles_coaches">Velocity Profiles &amp; Coaches (<span id="tcnt-profiles">15 / 41</span>)</button>
+          <button class="timing-tab-btn" data-ttab="station_banks">Timetable Corridors &amp; TIPLOC Roles (<span id="tcnt-banks">1,364</span>)</button>
+        </div>
+        <input id="timing-filter-input" type="text" placeholder="Filter by class, timing load code (e.g. 390, 800, 450, 66, HST), corridor (Marylebone, MD710)..." />
+        <div class="catalog-pager" id="timing-pager">
+          <button id="timing-prev" class="btn btn-sm btn-secondary">&larr; Prev</button>
+          <span id="timing-page-info">1–40</span>
+          <button id="timing-next" class="btn btn-sm btn-secondary">Next &rarr;</button>
+        </div>
+      </div>
+      <div id="timing-modal-content" class="timing-modal-content"></div>
+    </div>
+  </div>

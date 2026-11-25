@@ -1,0 +1,40 @@
+    <!-- Right Properties & Topology Inspector Drawer -->
+    <aside id="inspector-drawer" class="inspector-drawer">
+      <div class="inspector-header">
+        <div>
+          <span id="insp-badge" class="asset-badge">READY</span>
+          <h2 id="insp-title">Select Any Asset to Inspect</h2>
+          <p id="insp-subtitle">Hover and click any track, station, node, signal, ELR, or waymark to inspect its decoded properties, cross-model links, and raw data.</p>
+        </div>
+        <button id="btn-fly-asset" class="btn btn-sm btn-secondary hidden" title="Center view on this asset">
+          Center
+        </button>
+      </div>
+
+      <!-- Nearby Candidates Picker (when multiple assets overlap at click point) -->
+      <div id="pick-candidates" class="pick-candidates hidden"></div>
+
+      <!-- Inspector Tabs -->
+      <div class="inspector-tabs">
+        <button class="tab-btn active" data-tab="tab-decoded">Properties</button>
+        <button class="tab-btn" data-tab="tab-related">Topology &amp; Cross-Links</button>
+        <button class="tab-btn" data-tab="tab-raw">Raw Data (JSONB)</button>
+      </div>
+
+      <!-- Tab Contents -->
+      <div class="inspector-body">
+        <div id="tab-decoded" class="tab-pane active">
+          <div class="empty-state">
+            <p>Use the top switcher to explore either view:</p>
+            <ul>
+              <li><strong>TPS Schematic View</strong> — Signalling schematic (`netx, nety`), stations, platforms, signals, blocks, routes, velocity profiles (`XML_p.xml`).</li>
+              <li><strong>NWR Track Model View</strong> — British National Grid (`OSGB36 Easting/Northing`), 49.7k Track Centre Lines (`ASSET_ID 9001...`), 38.7k Track Nodes (`9002...`), 1.6k ELRs (`9003...`), and 42.9k Milepost Waymarks (`9004...`) with automatic cross-model relational links to TPS.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div id="tab-related" class="tab-pane"></div>
+
+        <div id="tab-raw" class="tab-pane"></div>
+      </div>
+    </aside>

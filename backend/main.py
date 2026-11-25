@@ -25,7 +25,7 @@ import os
 import threading
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, ORJSONResponse
+from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import (
@@ -57,6 +57,7 @@ from routers.assets import api_get_asset, router as assets_router
 from routers.network_fusion import router as network_fusion_router
 from routers.nwr import router as nwr_router
 from routers.tps import router as tps_router
+from template_renderer import render_template
 from timing_catalog import get_timing_catalog
 from track_identity import (
     _extract_direction_from_tokens,
@@ -160,7 +161,7 @@ os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
-@app.get("/")
-def index() -> FileResponse:
-    """Serve the single-page HTML5 Canvas Network Rail Explorer frontend."""
-    return FileResponse(os.path.join(static_dir, "index.html"))
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    """Serve the composed modular HTML5 Canvas Network Rail Explorer frontend."""
+    return HTMLResponse(content=render_template("base.html"))

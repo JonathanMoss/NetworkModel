@@ -7,6 +7,7 @@ source =
     track_scoring
     track_matcher
     main
+    template_renderer
     routers.network_fusion
     routers.tps
     routers.nwr

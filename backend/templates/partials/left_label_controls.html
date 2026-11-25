@@ -1,0 +1,27 @@
+      <!-- Label Size & Orientation Master Controls -->
+      <div class="panel-section label-master-card" id="label-controls-master">
+        <div class="label-master-header">
+          <h3>Label Size &amp; Orientation</h3>
+          <button type="button" id="btn-reset-labels" class="btn-reset-all" title="Reset all labels to 100% size and default angles">↺ Reset</button>
+        </div>
+        <div class="master-control-row">
+          <span class="control-label">All Sizes:</span>
+          <div class="label-stepper master-stepper" data-layer="all">
+            <button type="button" class="lbl-step-btn" data-dir="-1" data-layer="all" title="Decrease all label sizes">−</button>
+            <span class="lbl-scale-readout" data-readout="all">100%</span>
+            <button type="button" class="lbl-step-btn" data-dir="1" data-layer="all" title="Increase all label sizes">+</button>
+          </div>
+          <input type="range" id="master-label-slider" class="lbl-slider" min="50" max="300" step="10" value="100" title="Master label size slider (50%–300%)" />
+        </div>
+        <div class="master-control-row" style="margin-top:6px">
+          <span class="control-label">All Angles:</span>
+          <select id="master-label-orient" class="lbl-orient-select" title="Set uniform orientation for all labels">
+            <option value="">(Custom / Per-Layer)</option>
+            <option value="0">Horizontal (0°)</option>
+            <option value="-45">Slanted Up (-45°)</option>
+            <option value="-30">Gentle Slant (-30°)</option>
+            <option value="-90">Vertical (-90°)</option>
+            <option value="45">Slanted Down (45°)</option>
+          </select>
+        </div>
+      </div>

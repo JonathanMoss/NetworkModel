@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Network Rail TPS &amp; NWR Track Model Explorer</title>
+  <link rel="stylesheet" href="/static/css/base.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/topbar.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/left-panel.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/canvas.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/inspector.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/modals.css?v=20261125" />
+  <link rel="stylesheet" href="/static/css/profile-drawer.css?v=20261125" />
+</head>
+<body>
+{% include "partials/ingest_overlay.html" %}
+
+{% include "partials/header_topbar.html" %}
+
+  <!-- Main Workspace -->
+  <div class="workspace">
+{% include "partials/left_panel.html" %}
+
+{% include "partials/workspace_canvas.html" %}
+
+{% include "partials/inspector_drawer.html" %}
+  </div>
+
+{% include "partials/modal_catalog.html" %}
+
+{% include "partials/modal_timing_loads.html" %}
+
+  <!-- Modular Frontend Scripts (ordered by dependency layer) -->
+  <script src="/static/js/state.js?v=20261125"></script>
+  <script src="/static/js/persistence.js?v=20261125"></script>
+  <script src="/static/js/geo-projection.js?v=20261125"></script>
+  <script src="/static/js/viewport-camera.js?v=20261125"></script>
+  <script src="/static/js/colors-legend.js?v=20261125"></script>
+  <script src="/static/js/render-tps.js?v=20261125"></script>
+  <script src="/static/js/render-nwr.js?v=20261125"></script>
+  <script src="/static/js/render-overlays.js?v=20261125"></script>
+  <script src="/static/js/hit-testing.js?v=20261125"></script>
+  <script src="/static/js/data-loader.js?v=20261125"></script>
+  <script src="/static/js/profile-drawer.js?v=20261125"></script>
+  <script src="/static/js/inspector-ui.js?v=20261125"></script>
+  <script src="/static/js/modals-timing.js?v=20261125"></script>
+  <script src="/static/js/main.js?v=20261125"></script>
+</body>
+</html>
