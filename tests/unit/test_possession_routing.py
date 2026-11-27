@@ -166,3 +166,45 @@ def test_nwr_straight_path_strictly_prefers_matched_track_id_over_shorter_parall
     assert [w["track_id"] for w in ways] == ["1100", "1100"]
     assert [w["fid"] for w in ways] == [11, 12]
 
+
+def test_find_tps_and_nwr_internal_crossovers():
+    """Includes crossovers completely between blocked lines and excludes open-line connections."""
+    # TPS: Up line (y=0: 1->2->3) and Down line (y=12: 4->5->6) are BOTH blocked.
+    # Crossover 2->99->5 (2 hops via degree-2 node 99) connects two blocked lines -> INCLUDED!
+    # Crossover 3->7 (node 7 is on an open line at y=24) -> EXCLUDED!
+    blocked_tps = [
+        {"coords": [[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]]},
+        {"coords": [[0.0, 12.0], [50.0, 12.0], [100.0, 12.0]]},
+    ]
+    tps_edges = [
+        {"start_node_id": 1, "end_node_id": 2, "x0": 0.0, "y0": 0.0, "x1": 50.0, "y1": 0.0, "length": 50},
+        {"start_node_id": 2, "end_node_id": 3, "x0": 50.0, "y0": 0.0, "x1": 100.0, "y1": 0.0, "length": 50},
+        {"start_node_id": 4, "end_node_id": 5, "x0": 0.0, "y0": 12.0, "x1": 50.0, "y1": 12.0, "length": 50},
+        {"start_node_id": 5, "end_node_id": 6, "x0": 50.0, "y0": 12.0, "x1": 100.0, "y1": 12.0, "length": 50},
+        # Internal crossover 2 -> 99 -> 5
+        {"start_node_id": 2, "end_node_id": 99, "x0": 50.0, "y0": 0.0, "x1": 55.0, "y1": 6.0, "length": 15},
+        {"start_node_id": 99, "end_node_id": 5, "x0": 55.0, "y0": 6.0, "x1": 50.0, "y1": 12.0, "length": 15},
+        # External crossover to open line (node 7 at y=24)
+        {"start_node_id": 3, "end_node_id": 7, "x0": 100.0, "y0": 0.0, "x1": 120.0, "y1": 24.0, "length": 30},
+    ]
+    tps_xovers = pr.find_tps_internal_crossovers(FakeCursor(responses=[tps_edges]), blocked_tps)
+    assert len(tps_xovers) == 1
+    assert tps_xovers[0]["is_crossover"] is True
+    assert tps_xovers[0]["coords"] == [[50.0, 0.0], [55.0, 6.0], [50.0, 12.0]]
+
+    # NWR: Blocked Up (fid=1, y=0) and Down (fid=2, y=4).
+    # Internal crossover fid=10 (3700) connects y=0 to y=4 -> INCLUDED!
+    # External crossover fid=11 (3700) connects y=4 to open line y=12 -> EXCLUDED!
+    blocked_nwr = [
+        {"fid": 1, "line_name": "Up", "coords": [[259000.0, 665500.0], [259200.0, 665500.0]]},
+        {"fid": 2, "line_name": "Down", "coords": [[259000.0, 665504.0], [259200.0, 665504.0]]},
+    ]
+    nwr_candidates = [
+        {"fid": 1, "elr": "EGM1", "track_id": "1100", "length_meters": 200.0, "coords": [[259000.0, 665500.0], [259200.0, 665500.0]]},
+        {"fid": 10, "elr": "EGM1", "track_id": "3700", "length_meters": 60.0, "coords": [[259050.0, 665500.0], [259110.0, 665504.0]]},
+        {"fid": 11, "elr": "EGM1", "track_id": "3700", "length_meters": 60.0, "coords": [[259050.0, 665504.0], [259110.0, 665512.0]]},
+    ]
+    nwr_xovers = pr.find_nwr_internal_crossovers(FakeCursor(responses=[nwr_candidates]), blocked_nwr)
+    assert [w["fid"] for w in nwr_xovers] == [10]
+    assert nwr_xovers[0]["is_crossover"] is True
+

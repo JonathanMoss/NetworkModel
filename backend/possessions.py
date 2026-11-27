@@ -15,7 +15,12 @@ from typing import Any, Optional
 
 from config import decode_code, get_saved_track_override
 from geometry import meters_to_miles_chains, slice_polyline
-from possession_routing import find_nwr_straight_path, find_tps_straight_path
+from possession_routing import (
+    find_nwr_internal_crossovers,
+    find_nwr_straight_path,
+    find_tps_internal_crossovers,
+    find_tps_straight_path,
+)
 from routers.asset_handlers.geo import get_asset_geo_point
 
 QUALIFIER_PREFIXES: dict[str, str] = {
@@ -458,6 +463,12 @@ def resolve_possession_geometries(
         tps_markers.extend(tm)
         nwr_ways.extend(nw)
         nwr_markers.extend(nm)
+
+    # Automatically include internal points/crossovers completely within the possession
+    if tps_ways:
+        tps_ways.extend(find_tps_internal_crossovers(cur, tps_ways))
+    if nwr_ways:
+        nwr_ways.extend(find_nwr_internal_crossovers(cur, nwr_ways))
 
     tps_geom = {"ways": tps_ways, "markers": tps_markers, "bbox": _compute_bbox(tps_ways, tps_markers)}
     nwr_geom = {"ways": nwr_ways, "markers": nwr_markers, "bbox": _compute_bbox(nwr_ways, nwr_markers)}

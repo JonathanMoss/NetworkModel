@@ -546,3 +546,218 @@ def find_nwr_straight_path(
             )
     return ways
 
+
+def _point_on_any_way(
+    pt: list[float],
+    way_boxes: list[tuple[float, float, float, float, list[list[float]], Optional[str]]],
+    tol: float = 2.5,
+) -> tuple[bool, Optional[str]]:
+    """Return ``(True, line_name)`` if OSGB36 point ``pt`` lies within ``tol`` metres of a blocked way."""
+    px, py = float(pt[0]), float(pt[1])
+    tol2 = tol * tol
+    for min_x, min_y, max_x, max_y, coords, lname in way_boxes:
+        if px < min_x - tol or px > max_x + tol or py < min_y - tol or py > max_y + tol:
+            continue
+        d2, _along, _idx, _proj = _project_point_on_polyline(coords, px, py)
+        if d2 <= tol2:
+            return True, lname
+    return False, None
+
+
+def find_tps_internal_crossovers(
+    cur: Any,
+    blocked_ways: list[dict[str, Any]],
+    max_len_m: float = 250.0,
+    max_hops: int = 8,
+) -> list[dict[str, Any]]:
+    """Find TPS crossover/connecting tracks whose ends BOTH lie on blocked lines.
+
+    Walks only unblocked direct edges or short degree-2 chains (so it never
+    touches an open line) between two nodes already covered by ``blocked_ways``.
+    """
+    if not blocked_ways:
+        return []
+
+    blocked_xy: set[tuple[float, float]] = set()
+    blocked_edges: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+
+    for way in blocked_ways:
+        pts = way.get("coords") or []
+        for pt in pts:
+            if len(pt) < 2:
+                continue
+            rx, ry = round(float(pt[0]), 1), round(float(pt[1]), 1)
+            blocked_xy.add((rx, ry))
+            min_x, max_x = min(min_x, rx), max(max_x, rx)
+            min_y, max_y = min(min_y, ry), max(max_y, ry)
+        for i in range(len(pts) - 1):
+            k0 = (round(float(pts[i][0]), 1), round(float(pts[i][1]), 1))
+            k1 = (round(float(pts[i + 1][0]), 1), round(float(pts[i + 1][1]), 1))
+            blocked_edges.add((k0, k1) if k0 <= k1 else (k1, k0))
+
+    if len(blocked_xy) < 2 or min_x == float("inf"):
+        return []
+
+    pad = 40.0
+    cur.execute(
+        """
+        SELECT start_node_id, end_node_id, x0, y0, x1, y1, length
+        FROM edges
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    adj: dict[int, dict[int, tuple[float, list[float], list[float]]]] = {}
+    blocked_nodes: set[int] = set()
+    for r in rows:
+        a, b = r.get("start_node_id"), r.get("end_node_id")
+        if a is None or b is None or r.get("x0") is None or r.get("x1") is None:
+            continue
+        ia, ib = int(a), int(b)
+        p0 = [float(r["x0"]), float(r["y0"])]
+        p1 = [float(r["x1"]), float(r["y1"])]
+        elen = float(r.get("length") or 0.0)
+        if elen <= 0.0:
+            elen = max(math.hypot(p1[0] - p0[0], p1[1] - p0[1]), 1.0)
+        adj.setdefault(ia, {})[ib] = (elen, p0, p1)
+        adj.setdefault(ib, {})[ia] = (elen, p1, p0)
+        if (round(p0[0], 1), round(p0[1], 1)) in blocked_xy:
+            blocked_nodes.add(ia)
+        if (round(p1[0], 1), round(p1[1], 1)) in blocked_xy:
+            blocked_nodes.add(ib)
+
+    if len(blocked_nodes) < 2:
+        return []
+
+    xover_ways: list[dict[str, Any]] = []
+    seen_chains: set[tuple[int, int]] = set()
+
+    for start_nid in sorted(blocked_nodes):
+        for nxt_nid, (first_len, p0, p1) in adj.get(start_nid, {}).items():
+            k0 = (round(p0[0], 1), round(p0[1], 1))
+            k1 = (round(p1[0], 1), round(p1[1], 1))
+            ekey = (k0, k1) if k0 <= k1 else (k1, k0)
+            if ekey in blocked_edges:
+                continue
+
+            # Walk unblocked direct edge or degree-2 chain until hitting another blocked node
+            coords = [p0, p1]
+            total_len = first_len
+            prev_nid = start_nid
+            curr_nid = nxt_nid
+            reached = curr_nid in blocked_nodes and curr_nid != start_nid
+            hops = 1
+
+            while not reached and hops < max_hops and total_len <= max_len_m:
+                nbs = adj.get(curr_nid, {})
+                if len(nbs) != 2:
+                    break
+                next_candidates = [nb for nb in nbs if nb != prev_nid]
+                if not next_candidates:
+                    break
+                step_nid = next_candidates[0]
+                step_len, _sp0, sp1 = nbs[step_nid]
+                total_len += step_len
+                coords.append(sp1)
+                prev_nid, curr_nid = curr_nid, step_nid
+                hops += 1
+                if curr_nid in blocked_nodes:
+                    reached = curr_nid != start_nid
+                    break
+
+            if reached and total_len <= max_len_m:
+                ckey = (start_nid, curr_nid) if start_nid <= curr_nid else (curr_nid, start_nid)
+                if ckey not in seen_chains:
+                    seen_chains.add(ckey)
+                    xover_ways.append({"coords": coords, "is_crossover": True})
+
+    return xover_ways
+
+
+def find_nwr_internal_crossovers(
+    cur: Any,
+    blocked_nwr_ways: list[dict[str, Any]],
+    max_len_m: float = 350.0,
+) -> list[dict[str, Any]]:
+    """Find NWR geographic crossovers whose ends BOTH lie on blocked possession ways."""
+    if not blocked_nwr_ways:
+        return []
+
+    blocked_fids: set[int] = set()
+    way_boxes: list[tuple[float, float, float, float, list[list[float]], Optional[str]]] = []
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+
+    for w in blocked_nwr_ways:
+        if w.get("fid") is not None:
+            blocked_fids.add(int(w["fid"]))
+        cs = w.get("coords") or []
+        if len(cs) < 2:
+            continue
+        xs = [float(p[0]) for p in cs]
+        ys = [float(p[1]) for p in cs]
+        w_min_x, w_max_x = min(xs), max(xs)
+        w_min_y, w_max_y = min(ys), max(ys)
+        way_boxes.append((w_min_x, w_min_y, w_max_x, w_max_y, cs, w.get("line_name")))
+        min_x, max_x = min(min_x, w_min_x), max(max_x, w_max_x)
+        min_y, max_y = min(min_y, w_min_y), max(max_y, w_max_y)
+
+    if not way_boxes or min_x == float("inf"):
+        return []
+
+    pad = 80.0
+    cur.execute(
+        """
+        SELECT fid, elr, track_id, start_node_id, end_node_id, length_meters, coords
+        FROM nwr_track_centrelines
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+          AND COALESCE(length_meters, 0) <= %s
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad, max_len_m),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    xover_ways: list[dict[str, Any]] = []
+    for r in rows:
+        fid = int(r["fid"])
+        if fid in blocked_fids:
+            continue
+        cs = r.get("coords") or []
+        if len(cs) < 2:
+            continue
+        is_xover_tid = _is_nwr_crossover(r.get("track_id"))
+        seg_len = float(r.get("length_meters") or 0.0)
+        if not is_xover_tid and seg_len > 150.0:
+            continue
+
+        on_start, lname_start = _point_on_any_way(cs[0], way_boxes)
+        if not on_start:
+            continue
+        on_end, lname_end = _point_on_any_way(cs[-1], way_boxes)
+        if not on_end:
+            continue
+
+        # Non-crossover short connecting segments must bridge two different blocked lines
+        if not is_xover_tid and lname_start == lname_end:
+            continue
+
+        xover_ways.append(
+            {
+                "fid": fid,
+                "elr": r.get("elr"),
+                "track_id": r.get("track_id"),
+                "coords": cs,
+                "is_crossover": True,
+            }
+        )
+
+    return xover_ways
+

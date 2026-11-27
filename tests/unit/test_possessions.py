@@ -75,9 +75,10 @@ def test_resolve_possession_signal_points_and_worksites(monkeypatch):
     assert len(nwr_g["markers"]) == 2
     assert nwr_g["bbox"] is not None
     # Verify exact matched track_id ('1100') was passed to filter NWR centrelines
-    nwr_query_sql, nwr_query_params = cur.executed[-1]
-    assert "track_id = ANY" in nwr_query_sql
-    assert nwr_query_params[1] == ["1100"]
+    assert any(
+        "track_id = ANY" in sql and params and params[1] == ["1100"]
+        for sql, params in cur.executed
+    )
 
 
 def test_resolve_multi_line_possession_with_freeform_names(monkeypatch):
