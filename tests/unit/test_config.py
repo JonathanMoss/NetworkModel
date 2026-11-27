@@ -80,14 +80,43 @@ def test_load_lookup_cache_and_decode_code(monkeypatch):
     assert config.decode_code("signaltype", None) is None
 
 
-def test_get_conn_delegates_to_psycopg(monkeypatch):
-    """get_conn passes DATABASE_URL to psycopg.connect."""
+def test_get_conn_uses_pool_and_closes_cleanly(monkeypatch):
+    """get_conn acquires a pooled connection when psycopg_pool is available."""
+    created = {}
+
+    class FakePool:
+        def __init__(self, conninfo, min_size, max_size, open=True):
+            created["conninfo"] = conninfo
+            created["min_size"] = min_size
+            created["max_size"] = max_size
+            created["open"] = open
+            self.closed = False
+
+        def connection(self):
+            return "pooled-conn"
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(config, "ConnectionPool", FakePool)
+    assert config.get_conn() == "pooled-conn"
+    assert created["conninfo"] == config.DATABASE_URL
+    pool_ref = config.DB_POOL
+    assert pool_ref is not None
+    config.close_pool()
+    assert pool_ref.closed is True
+    assert config.DB_POOL is None
+
+
+def test_get_conn_falls_back_to_psycopg_when_pool_unavailable(monkeypatch):
+    """get_conn passes DATABASE_URL to psycopg.connect when ConnectionPool is None."""
     captured = {}
 
     def fake_connect(dsn):
         captured["dsn"] = dsn
         return "conn-obj"
 
+    monkeypatch.setattr(config, "ConnectionPool", None)
     monkeypatch.setattr(config.psycopg, "connect", fake_connect)
     assert config.get_conn() == "conn-obj"
     assert captured["dsn"] == config.DATABASE_URL

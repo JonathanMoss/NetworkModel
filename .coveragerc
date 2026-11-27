@@ -12,6 +12,7 @@ source =
     routers.tps
     routers.nwr
     routers.assets
+    routers.asset_handlers
 branch = False
 
 [report]

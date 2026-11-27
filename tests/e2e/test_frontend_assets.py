@@ -41,7 +41,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
 
     # Fetch every modular CSS and JS asset referenced by base.html
     asset_urls = re.findall(r'(?:href|src)="(/static/[^"]+)"', html)
-    assert len(asset_urls) >= 24
+    assert len(asset_urls) >= 26
 
     for url in asset_urls:
         asset_resp = client.get(url)
@@ -71,7 +71,13 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     assert "buildSignallingEnvelopeWidget" in env_js
     rel_js = client.get("/static/js/inspector-related.js").text
     assert "renderRelatedTab" in rel_js
-    assert "buildNwrCrossLinkWidget" in rel_js
+    assert "buildSignalRelatedSections" in rel_js
+    rel_nwr_js = client.get("/static/js/inspector-related-nwr.js").text
+    assert "buildNwrCrossLinkWidget" in rel_nwr_js
+    assert "buildNwrRelatedSections" in rel_nwr_js
+    rel_tps_js = client.get("/static/js/inspector-related-tps.js").text
+    assert "buildStationRelatedSections" in rel_tps_js
+    assert "buildTractionRelatedSections" in rel_tps_js
     tb_js = client.get("/static/js/toolbar-controls.js").text
     assert "global-search" in tb_js
     assert "osm-opacity-slider" in tb_js
