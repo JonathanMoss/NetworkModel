@@ -38,6 +38,7 @@ const STATE = {
     blocks: false,
     nodes: false,
     polys: true,
+    possessions: true,
   },
   nwrLayers: {
     osm: true,
@@ -47,6 +48,7 @@ const STATE = {
     waymarks: true,
     curvature: true,
     nf_points: false,
+    possessions: true,
   },
   osmOpacity: 30,
 
@@ -135,6 +137,9 @@ const STATE = {
   lastHoverAnchor: { sx: 0, sy: 0 },
 
   selectedAsset: null,
+  possessions: [],
+  activePossessionId: null,
+  possessionPickTarget: null,
   highlightGroupFilter: "all",
   highlight: {
     ways: [],

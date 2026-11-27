@@ -1,0 +1,150 @@
+  <!-- Engineers' Possessions (PICOP / T3) Slide-Over Drawer -->
+  <aside id="possessions-drawer" class="poss-drawer hidden" aria-label="Engineers Possessions Manager">
+    <div class="poss-drawer-header">
+      <div>
+        <span class="poss-badge">PICOP • T3</span>
+        <h3>Engineers' Possessions</h3>
+      </div>
+      <div class="poss-header-btns">
+        <button type="button" id="btn-new-possession" class="btn btn-sm btn-primary">+ New</button>
+        <button type="button" id="btn-close-possessions" class="btn btn-sm btn-secondary" title="Close Possessions Drawer">&times;</button>
+      </div>
+    </div>
+
+    <div id="poss-pick-banner" class="poss-pick-banner hidden">
+      <span id="poss-pick-banner-text">Click a signal, points, or track on the map...</span>
+      <button type="button" id="btn-cancel-poss-pick" class="btn btn-xs btn-secondary">Cancel</button>
+    </div>
+
+    <!-- Create / Edit Possession Form -->
+    <form id="poss-form" class="poss-form hidden">
+      <input type="hidden" id="poss-edit-id" value="" />
+      <div class="poss-form-title" id="poss-form-title">New Engineers' Possession</div>
+
+      <div class="poss-grid-2">
+        <label>
+          <span>WON / PPS Ref</span>
+          <input type="text" id="poss-won-ref" placeholder="e.g. WON Wk34 / PPS-4021" />
+        </label>
+        <label>
+          <span>Status</span>
+          <select id="poss-status">
+            <option value="Planned">Planned</option>
+            <option value="Active">Active / Granted</option>
+            <option value="Handed Back">Handed Back</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </label>
+      </div>
+
+      <label>
+        <span>Possession Title *</span>
+        <input type="text" id="poss-title" required placeholder="e.g. Slough – Maidenhead Up & Down Main Renewal" />
+      </label>
+
+      <div class="poss-grid-2">
+        <label>
+          <span>PICOP Name</span>
+          <input type="text" id="poss-picop-name" placeholder="Person in Charge" />
+        </label>
+        <label>
+          <span>OLE / Traction Isolation</span>
+          <select id="poss-ole">
+            <option value="N/A">Not Electrified / N/A</option>
+            <option value="Live">Live (No Isolation)</option>
+            <option value="Isolated">Isolated</option>
+            <option value="Earthed">Isolated &amp; Earthed</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="poss-grid-2">
+        <label>
+          <span>Start Date/Time</span>
+          <input type="text" id="poss-start-dt" placeholder="Sat 23:30" />
+        </label>
+        <label>
+          <span>End Date/Time</span>
+          <input type="text" id="poss-end-dt" placeholder="Sun 06:00" />
+        </label>
+      </div>
+
+      <div class="poss-grid-2">
+        <label>
+          <span>Map Colour</span>
+          <input type="color" id="poss-color" value="#f59e0b" />
+        </label>
+        <label>
+          <span>Summary Lines (Auto / Optional)</span>
+          <input type="text" id="poss-lines-blocked" placeholder="Auto-filled from lines below" />
+        </label>
+      </div>
+
+      <!-- Multi-Line Blocked Lines Section -->
+      <div class="poss-lines-header">
+        <span>Blocked Lines &amp; Limits</span>
+        <button type="button" id="btn-add-poss-line" class="btn btn-xs btn-primary">+ Add Line</button>
+      </div>
+      <div id="poss-lines-container" class="poss-lines-container"></div>
+
+      <label>
+        <span>Operational Notes</span>
+        <textarea id="poss-notes" rows="2" placeholder="Protection arrangements, detonator points, adjacent line open..."></textarea>
+      </label>
+
+      <div class="poss-form-actions">
+        <button type="submit" class="btn btn-sm btn-primary">Save Possession</button>
+        <button type="button" id="btn-cancel-poss-form" class="btn btn-sm btn-secondary">Cancel</button>
+      </div>
+    </form>
+
+    <!-- Add Inner Worksite (ES Zone) Form -->
+    <form id="poss-ws-form" class="poss-form hidden">
+      <input type="hidden" id="poss-ws-parent-id" value="" />
+      <div class="poss-form-title">Add Inner Worksite (ES Zone)</div>
+      <div class="poss-grid-2">
+        <label>
+          <span>Worksite Title *</span>
+          <input type="text" id="poss-ws-title" required placeholder="e.g. WS-1 Ballast Tamping" />
+        </label>
+        <label>
+          <span>ES Name</span>
+          <input type="text" id="poss-ws-es" placeholder="Engineering Supervisor" />
+        </label>
+      </div>
+      <div class="poss-grid-2">
+        <div class="poss-ws-pick">
+          <input type="text" id="poss-ws-start-label" placeholder="WMB Start" />
+          <button type="button" class="btn btn-xs btn-accent" onclick="startPossessionMapPick('ws_start')">🎯</button>
+          <input type="hidden" id="poss-ws-start-type" value="" />
+          <input type="hidden" id="poss-ws-start-id" value="" />
+        </div>
+        <div class="poss-ws-pick">
+          <input type="text" id="poss-ws-end-label" placeholder="WMB End" />
+          <button type="button" class="btn btn-xs btn-accent" onclick="startPossessionMapPick('ws_end')">🎯</button>
+          <input type="hidden" id="poss-ws-end-type" value="" />
+          <input type="hidden" id="poss-ws-end-id" value="" />
+        </div>
+      </div>
+      <div class="poss-grid-2">
+        <label>
+          <span>Or Start Metres</span>
+          <input type="number" id="poss-ws-start-m" placeholder="Optional" />
+        </label>
+        <label>
+          <span>Or End Metres</span>
+          <input type="number" id="poss-ws-end-m" placeholder="Optional" />
+        </label>
+      </div>
+      <div class="poss-form-actions">
+        <button type="submit" class="btn btn-sm btn-primary">Add Worksite</button>
+        <button type="button" id="btn-cancel-ws-form" class="btn btn-sm btn-secondary">Cancel</button>
+      </div>
+    </form>
+
+    <!-- Saved Possessions List -->
+    <div id="poss-list" class="poss-list">
+      <p class="empty-state">No engineers' possessions recorded yet. Click <strong>+ New</strong> to map one.</p>
+    </div>
+  </aside>
+

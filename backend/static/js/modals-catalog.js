@@ -126,11 +126,11 @@ if (btnResetLabels) {
 document.getElementById("btn-fit-uk").addEventListener("click", fitUKNetwork);
 document.getElementById("btn-zoom-in").addEventListener("click", () => {
   if (STATE.activeView === "nwr") {
-    STATE.nwrCam.zoom = Math.min(5.0, STATE.nwrCam.zoom * 1.45);
+    STATE.nwrCam.zoom = Math.min(20.0, STATE.nwrCam.zoom * 1.45);
     STATE.zoom = STATE.nwrCam.zoom;
   } else if (STATE.activeView === "split") {
     if (STATE.dragTarget === "nwr") {
-      STATE.nwrCam.zoom = Math.min(5.0, STATE.nwrCam.zoom * 1.45);
+      STATE.nwrCam.zoom = Math.min(20.0, STATE.nwrCam.zoom * 1.45);
     } else {
       STATE.tpsCam.zoom = Math.min(25.0, STATE.tpsCam.zoom * 1.45);
     }

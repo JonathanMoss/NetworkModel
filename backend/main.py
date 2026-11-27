@@ -63,6 +63,7 @@ from routers import tps as tps_module
 from routers.assets import api_get_asset, router as assets_router
 from routers.network_fusion import router as network_fusion_router
 from routers.nwr import api_nwr_overview, router as nwr_router
+from routers.possessions import router as possessions_router
 from routers.tps import api_overview, router as tps_router
 from template_renderer import render_template
 import timing_catalog as timing_catalog_module
@@ -211,6 +212,7 @@ app.include_router(tps_router)
 app.include_router(nwr_router)
 app.include_router(network_fusion_router)
 app.include_router(assets_router)
+app.include_router(possessions_router)
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)

@@ -111,7 +111,7 @@ function savePersistedOsmSettings() {
   );
 }
 
-const TPS_LAYER_KEYS = ["edges", "tracks", "vectors", "texts", "stations", "signals", "blocks", "nodes", "polys"];
+const TPS_LAYER_KEYS = ["edges", "tracks", "vectors", "texts", "stations", "signals", "blocks", "nodes", "polys", "possessions"];
 const NWR_LAYER_MAP = [
   ["osm", "nwr-layer-osm"],
   ["centrelines", "nwr-layer-centrelines"],
@@ -120,6 +120,7 @@ const NWR_LAYER_MAP = [
   ["waymarks", "nwr-layer-waymarks"],
   ["curvature", "nwr-layer-curvature"],
   ["nf_points", "nwr-layer-nf-points"],
+  ["possessions", "nwr-layer-possessions"],
 ];
 
 function loadPersistedLayerToggles() {

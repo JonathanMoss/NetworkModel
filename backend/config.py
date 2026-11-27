@@ -37,6 +37,7 @@ DB_POOL_MAX_SIZE: int = int(os.environ.get("DB_POOL_MAX_SIZE", "12"))
 LOOKUP_CACHE: Optional[dict[str, dict[str, dict[str, Any]]]] = None
 OVERRIDES_TABLE_READY: bool = False
 PERF_INDEXES_READY: bool = False
+POSSESSIONS_TABLES_READY: bool = False
 DB_POOL: Optional[Any] = None
 _DB_POOL_LOCK = threading.Lock()
 
@@ -56,10 +57,11 @@ def reset_caches() -> None:
     Intended for isolated unit tests so test cases never leak cached lookup
     tables, schema-readiness flags, or pooled connections across runs.
     """
-    global LOOKUP_CACHE, OVERRIDES_TABLE_READY, PERF_INDEXES_READY
+    global LOOKUP_CACHE, OVERRIDES_TABLE_READY, PERF_INDEXES_READY, POSSESSIONS_TABLES_READY
     LOOKUP_CACHE = None
     OVERRIDES_TABLE_READY = False
     PERF_INDEXES_READY = False
+    POSSESSIONS_TABLES_READY = False
     close_pool()
 
 
@@ -142,6 +144,78 @@ def ensure_performance_indexes() -> None:
                 cur.execute(ddl)
         conn.commit()
     PERF_INDEXES_READY = True
+
+
+def ensure_possessions_tables(cur) -> None:
+    """Lazily create ``engineers_possessions`` and ``possession_worksites`` tables."""
+    global POSSESSIONS_TABLES_READY
+    if POSSESSIONS_TABLES_READY:
+        return
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS engineers_possessions (
+            id BIGSERIAL PRIMARY KEY,
+            won_ref TEXT,
+            title TEXT NOT NULL,
+            picop_name TEXT,
+            picop_contact TEXT,
+            start_dt TEXT,
+            end_dt TEXT,
+            lines_blocked TEXT,
+            ole_isolation TEXT NOT NULL DEFAULT 'N/A',
+            status TEXT NOT NULL DEFAULT 'Planned',
+            notes TEXT,
+            color TEXT NOT NULL DEFAULT '#f59e0b',
+            limit_mode TEXT NOT NULL DEFAULT 'signal_points',
+            start_asset_type TEXT,
+            start_asset_id BIGINT,
+            start_label TEXT,
+            start_qualifier TEXT NOT NULL DEFAULT 'at',
+            end_asset_type TEXT,
+            end_asset_id BIGINT,
+            end_label TEXT,
+            end_qualifier TEXT NOT NULL DEFAULT 'at',
+            elr TEXT,
+            start_meters INTEGER,
+            end_meters INTEGER,
+            track_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+            tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+            nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    cur.execute(
+        "ALTER TABLE engineers_possessions ADD COLUMN IF NOT EXISTS lines JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS possession_worksites (
+            id BIGSERIAL PRIMARY KEY,
+            possession_id BIGINT NOT NULL REFERENCES engineers_possessions(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            es_name TEXT,
+            wmb_start_label TEXT,
+            wmb_end_label TEXT,
+            start_asset_type TEXT,
+            start_asset_id BIGINT,
+            end_asset_type TEXT,
+            end_asset_id BIGINT,
+            start_meters INTEGER,
+            end_meters INTEGER,
+            notes TEXT,
+            tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+            nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_possession_worksites_pid ON possession_worksites (possession_id)"
+    )
+    POSSESSIONS_TABLES_READY = True
 
 
 def get_saved_track_override(cur, asset_type: str, asset_id: int) -> Optional[int]:

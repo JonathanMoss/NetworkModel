@@ -1,0 +1,392 @@
+/* Engineers' Possessions (PICOP / T3) Manager Drawer & Badges */
+.btn-warning {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fde68a;
+  border: 1px solid rgba(245, 158, 11, 0.5);
+}
+.btn-warning:hover {
+  background: rgba(245, 158, 11, 0.3);
+  color: #ffffff;
+}
+
+.poss-drawer {
+  position: fixed;
+  top: 96px;
+  right: 14px;
+  bottom: 18px;
+  width: 400px;
+  max-width: calc(100vw - 28px);
+  background: rgba(15, 23, 42, 0.97);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.65);
+  display: flex;
+  flex-direction: column;
+  z-index: 65;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+.poss-drawer.hidden {
+  display: none;
+}
+
+.poss-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(30, 41, 59, 0.85);
+}
+.poss-drawer-header h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: #f8fafc;
+}
+.poss-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+.poss-header-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.poss-pick-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(245, 158, 11, 0.2);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.55);
+  color: #fef3c7;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.poss-pick-banner.hidden {
+  display: none;
+}
+
+.poss-form {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  max-height: 62%;
+  background: rgba(15, 23, 42, 0.9);
+}
+.poss-form.hidden {
+  display: none;
+}
+.poss-form-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fbbf24;
+}
+.poss-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+.poss-form input[type="text"],
+.poss-form input[type="number"],
+.poss-form select,
+.poss-form textarea {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 5px;
+  color: #f8fafc;
+  padding: 5px 7px;
+  font-size: 11.5px;
+}
+.poss-form input[type="color"] {
+  height: 28px;
+  width: 100%;
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.poss-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.poss-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 2px;
+}
+.poss-mode-btn {
+  padding: 5px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.7);
+  color: #94a3b8;
+  cursor: pointer;
+}
+.poss-mode-btn.active {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: #f59e0b;
+  color: #fef3c7;
+}
+
+.poss-limit-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.poss-limit-section.hidden {
+  display: none;
+}
+.poss-endpoint-box {
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.poss-endpoint-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+.poss-elr-row,
+.poss-ws-pick {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.poss-elr-row input,
+.poss-ws-pick input {
+  flex: 1;
+  min-width: 0;
+}
+.poss-tracks-checklist {
+  max-height: 92px;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 5px;
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+.poss-tracks-checklist label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+.poss-muted {
+  color: #64748b;
+  font-size: 10.5px;
+}
+.poss-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.poss-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poss-card {
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-left: 4px solid #f59e0b;
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.poss-card:hover,
+.poss-card.active {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: rgba(245, 158, 11, 0.65);
+}
+.poss-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.poss-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+.poss-card-meta {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 3px;
+}
+.poss-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+.poss-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.18);
+  color: #e2e8f0;
+}
+.poss-pill.status-active {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+.poss-pill.status-planned {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fde68a;
+}
+.poss-pill.status-handed {
+  background: rgba(16, 185, 129, 0.22);
+  color: #6ee7b7;
+}
+.poss-pill.ole-earthed,
+.poss-pill.ole-isolated {
+  background: rgba(6, 182, 212, 0.22);
+  color: #67e8f9;
+}
+.poss-card-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+.poss-ws-list {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.poss-ws-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  background: rgba(6, 182, 212, 0.14);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: 4px;
+  padding: 3px 6px;
+  color: #cffafe;
+}
+.btn-xs {
+  padding: 2px 6px;
+  font-size: 10px;
+  border-radius: 4px;
+}
+
+.poss-lines-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-top: 2px;
+}
+.poss-lines-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poss-line-card {
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 7px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poss-line-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.poss-line-card-head input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.poss-line-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fbbf24;
+  white-space: nowrap;
+}
+.poss-card-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.poss-card-line-row {
+  font-size: 10.5px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.poss-card-line-row strong {
+  color: #fde68a;
+}
+.pl-limits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pl-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pl-limit-row .pl-lim-qual {
+  width: 82px;
+  flex-shrink: 0;
+  padding: 4px 4px;
+  font-size: 10.5px;
+}
+.pl-limit-row .pl-lim-label {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+

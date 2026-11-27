@@ -60,6 +60,13 @@ async function handleCanvasClick(wx, wy, sx, sy, targetView = null, options = {}
     return;
   }
 
+  // Intercept canvas clicks when the user is picking a possession/worksite limit on the map
+  if (STATE.possessionPickTarget && typeof handlePossessionMapPick === "function") {
+    renderPickCandidates([], null);
+    await handlePossessionMapPick(cands[0]);
+    return;
+  }
+
   if (cands.length === 1) {
     renderPickCandidates([], null);
     await loadAssetDetails(cands[0].type, cands[0].id, false, null, options);
