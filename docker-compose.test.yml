@@ -38,3 +38,13 @@ services:
       - "--cov-report=term-missing"
       - "--cov-fail-under=90"
       - "tests"
+
+  js-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: nr_testing_js
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./tests:/app/tests:ro
+    command: ["node", "tests/js/run_js_checks.mjs"]

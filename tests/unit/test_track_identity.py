@@ -47,6 +47,13 @@ def test_extract_direction_from_tokens_variants():
     assert ti._extract_direction_from_tokens(None, None, None, "REV") == "reversible"
     assert ti._extract_direction_from_tokens("Platform 2", None, None, None) is None
     assert ti._extract_direction_from_tokens(None, None, None, None) is None
+    # Wrong-direction phrasing, SA override codes, and bare track prefixes
+    assert ti._extract_direction_from_tokens(None, "Down Up Slow", None, None) == "up"
+    assert ti._extract_direction_from_tokens(None, "Up Down Fast", None, None) == "down"
+    assert ti._extract_direction_from_tokens(None, None, "DUS", None) == "up"
+    assert ti._extract_direction_from_tokens(None, None, "UDS", None) == "reversible"
+    assert ti._extract_direction_from_tokens("D-1", None, None, None) == "down"
+    assert ti._extract_direction_from_tokens("U-2", None, None, None) == "up"
 
 
 def test_extract_platform_number_variants():
@@ -64,6 +71,9 @@ def test_extract_platform_number_variants():
         == 3
     )
     assert ti._extract_platform_number("3", None, None, None) is None
+    assert ti._extract_platform_number("D-12", None, None, None) == 12
+    assert ti._extract_platform_number("Siding", None, "Siding", None, station_longname="GLASGOW NO.1 SDG") == 1
+    assert ti._extract_platform_number("SDG", None, "SDG", None, station_longname="Acton Siding 4") == 4
 
 
 def test_parse_station_track_rows_directed_and_bidirectional(monkeypatch):
@@ -172,6 +182,33 @@ def test_resolve_reversible_through_line_dir(monkeypatch):
     )
     assert ti._resolve_reversible_through_line_dir(cur_conflict, [1], 10, 1, max_hops=3) is None
 
+    # Turnout (valency >= 3) triggers node coordinate lookup and skips platform/reversible rows
+    cur_turnout = FakeCursor(
+        responses=[
+            [
+                {"start_node_id": 2, "end_node_id": 1},
+                {"start_node_id": 2, "end_node_id": 3},
+                {"start_node_id": 2, "end_node_id": 4},
+            ],
+            [
+                {"node_id": 1, "netx": 0.0, "nety": 0.0},
+                {"node_id": 2, "netx": 100.0, "nety": 0.0},
+                {"node_id": 3, "netx": 200.0, "nety": 0.0},
+                {"node_id": 4, "netx": 150.0, "nety": 80.0},
+            ],
+            [
+                {"name": "P2", "longname": "2", "description": "Platform 2", "sa_line_code": None, "node_ids": [3]},
+                {"name": "REV", "longname": "R", "description": "Up and Down Main", "sa_line_code": None, "node_ids": [3]},
+                {"name": "U-UM", "longname": "UM", "description": "Up Main", "sa_line_code": None, "node_ids": [3]},
+            ],
+        ]
+    )
+    assert ti._resolve_reversible_through_line_dir(cur_turnout, [1, 2], 1, 2, max_hops=2) == "up"
+
+    # Dead-end frontier breaks cleanly and returns None
+    cur_dead = FakeCursor(responses=[[]])
+    assert ti._resolve_reversible_through_line_dir(cur_dead, [99], None, None, max_hops=2) is None
+
 
 def test_resolve_tps_track_identity_all_stages(monkeypatch):
     """Exercises all 4 resolution stages + dead-end spur & opposing-signal bi-dir promotion."""
@@ -263,3 +300,32 @@ def test_resolve_tps_track_identity_all_stages(monkeypatch):
     res_s3b = ti.resolve_tps_track_identity(cur_s3b, [401], start_node_id=401, end_node_id=None, elr="MLN1")
     assert res_s3b["track_name_hint"] == "Dead-End Bay"
     assert res_s3b["source"] == "TPS Dead-End Spur"
+
+    # Partial hint from undirected Stage 1 track + turnout coordinate walk + final None fallback
+    cur_partial = FakeCursor(
+        responses=[
+            [{"name": "P4", "longname": "4", "description": "Platform 4", "node_ids": [501], "sa_line_code": None, "rop_line_code": None, "station_longname": "Slough"}],
+            [],  # stage 2 routes empty
+            [
+                {"start_node_id": 502, "end_node_id": 501},
+                {"start_node_id": 502, "end_node_id": 503},
+                {"start_node_id": 502, "end_node_id": 504},
+            ],
+            [
+                {"node_id": 501, "netx": 0.0, "nety": 0.0},
+                {"node_id": 502, "netx": 100.0, "nety": 0.0},
+                {"node_id": 503, "netx": 200.0, "nety": 0.0},
+                {"node_id": 504, "netx": 150.0, "nety": 80.0},
+            ],
+            [],  # walk station_tracks empty
+            [],  # hop 2 edges empty
+        ]
+    )
+    res_partial = ti.resolve_tps_track_identity(cur_partial, [501, 502], start_node_id=501, end_node_id=502, elr="MLN1")
+    assert res_partial["direction_hint"] is None
+    assert res_partial["platform_num"] == 4
+
+    # Completely unresolved returns all-None dict
+    cur_none = FakeCursor(responses=[[], [], []])
+    res_none = ti.resolve_tps_track_identity(cur_none, [601], elr="MLN1")
+    assert res_none == {"direction_hint": None, "track_name_hint": None, "platform_num": None, "source": None}

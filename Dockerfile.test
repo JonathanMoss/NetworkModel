@@ -5,6 +5,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# Install Node.js for automated frontend JS syntax & unit checks
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
+
 # Install project dependencies, Pylint, and Pytest / BDD / Coverage / HTTPX
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir \

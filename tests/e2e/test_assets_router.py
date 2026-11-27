@@ -5,6 +5,12 @@ import pytest
 
 import main
 from routers import assets as assets_router
+from routers.asset_handlers import (
+    blocks_routes as blocks_routes_handler,
+    graphics_timing as graphics_timing_handler,
+    signalling as signalling_handler,
+    topology as topology_handler,
+)
 import track_identity as ti
 from tests.conftest import FakeConnection, FakeCursor
 
@@ -34,25 +40,23 @@ def client(monkeypatch):
             }
         },
     )
-    monkeypatch.setattr(assets_router, "decode_code", lambda cat, cid: f"{cat}:{cid}" if cid else None)
-    monkeypatch.setattr(ti, "decode_code", lambda cat, cid: f"{cat}:{cid}" if cid else None)
+    decode_stub = lambda cat, cid: f"{cat}:{cid}" if cid else None
+    nwr_stub = lambda *_a, **_kw: {"single_match": True, "best_centreline": {"fid": 1, "track_id": "1100"}}
+    identity_stub = lambda *_a, **_kw: {
+        "direction_hint": "up",
+        "secondary_dir": None,
+        "track_name_hint": "Up Main",
+        "platform_num": None,
+        "source": "TPS Track",
+    }
+    monkeypatch.setattr(ti, "decode_code", decode_stub)
     monkeypatch.setattr(assets_router, "get_saved_track_override", lambda *_a: None)
-    monkeypatch.setattr(
-        assets_router,
-        "find_nwr_cross_links_for_tps",
-        lambda *_a, **_kw: {"single_match": True, "best_centreline": {"fid": 1, "track_id": "1100"}},
-    )
-    monkeypatch.setattr(
-        assets_router,
-        "resolve_tps_track_identity",
-        lambda *_a, **_kw: {
-            "direction_hint": "up",
-            "secondary_dir": None,
-            "track_name_hint": "Up Main",
-            "platform_num": None,
-            "source": "TPS Track",
-        },
-    )
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler, graphics_timing_handler):
+        monkeypatch.setattr(mod, "decode_code", decode_stub)
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler):
+        monkeypatch.setattr(mod, "find_nwr_cross_links_for_tps", nwr_stub)
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler):
+        monkeypatch.setattr(mod, "resolve_tps_track_identity", identity_stub)
     with TestClient(main.app) as tc:
         yield tc
 
@@ -60,7 +64,7 @@ def client(monkeypatch):
 def test_asset_station_200_and_404(client, monkeypatch):
     """GET /api/asset/station/{id} returns station tracks, boundaries, routes, banks, and extrapolated ELR."""
     monkeypatch.setattr(
-        assets_router,
+        topology_handler,
         "get_timing_catalog",
         lambda: {"station_to_banks": {"10": [{"code": "PADB", "description": "GWML"}]}},
     )
@@ -194,7 +198,7 @@ def test_asset_node_200_and_404(client, monkeypatch):
 def test_asset_signal_and_points_200_and_404(client, monkeypatch):
     """GET /api/asset/signal/{id} and /points/{id} resolve blocks, overlaps, boundaries, and fallbacks."""
     monkeypatch.setattr(
-        assets_router,
+        signalling_handler,
         "resolve_node_path_details",
         lambda _cur, nids, **_kw: {
             "coords": [[0.0, 0.0], [100.0, 0.0]],
@@ -254,7 +258,7 @@ def test_asset_signal_and_points_200_and_404(client, monkeypatch):
 
     # Points asset via fallback id lookup + signal-name direction fallback + valency query
     monkeypatch.setattr(
-        assets_router,
+        signalling_handler,
         "resolve_tps_track_identity",
         lambda *_a, **_kw: {"direction_hint": None, "secondary_dir": None, "track_name_hint": None, "platform_num": None, "source": None},
     )
@@ -284,7 +288,7 @@ def test_asset_signal_and_points_200_and_404(client, monkeypatch):
 def test_asset_track_block_route_and_attributesection(client, monkeypatch):
     """Tests track, block, route, and attributesection handlers (200 + 404)."""
     monkeypatch.setattr(
-        assets_router,
+        blocks_routes_handler,
         "resolve_node_path_details",
         lambda _cur, nids, **_kw: {
             "coords": [[0.0, 0.0], [100.0, 0.0]],

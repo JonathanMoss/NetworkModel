@@ -25,6 +25,7 @@ import os
 import threading
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -34,6 +35,7 @@ from config import (
     NWR_DIR,
     SCHEMA_PATH,
     XML_PATH,
+    close_pool,
     decode_code,
     ensure_track_overrides_table,
     get_conn,
@@ -55,8 +57,8 @@ from ingest_network_fusion import ensure_network_fusion_tables_and_ingest
 from ingest_nwr import ensure_nwr_tables_and_ingest
 from routers.assets import api_get_asset, router as assets_router
 from routers.network_fusion import router as network_fusion_router
-from routers.nwr import router as nwr_router
-from routers.tps import router as tps_router
+from routers.nwr import api_nwr_overview, router as nwr_router
+from routers.tps import api_overview, router as tps_router
 from template_renderer import render_template
 from timing_catalog import get_timing_catalog
 from track_identity import (
@@ -131,6 +133,8 @@ def start_background_ingestion() -> None:
         try:
             load_lookup_cache()
             get_timing_catalog()
+            api_overview()
+            api_nwr_overview()
         except Exception:  # pylint: disable=broad-exception-caught
             pass
 
@@ -140,9 +144,12 @@ def start_background_ingestion() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """FastAPI lifespan hook launching background dataset ingestion on startup."""
+    """FastAPI lifespan hook launching background ingestion and closing DB pool."""
     start_background_ingestion()
-    yield
+    try:
+        yield
+    finally:
+        close_pool()
 
 
 app = FastAPI(
@@ -150,6 +157,7 @@ app = FastAPI(
     default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.include_router(tps_router)
 app.include_router(nwr_router)

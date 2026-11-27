@@ -6,10 +6,16 @@ TPS-to-NWR track overrides.
 """
 
 import os
+import threading
 from typing import Any, Optional
 
 import psycopg
 from psycopg.rows import dict_row
+
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover
+    ConnectionPool = None  # type: ignore[assignment,misc]
 
 # ---------------------------------------------------------------------------
 # Environment & filesystem paths
@@ -22,31 +28,69 @@ XML_PATH: str = os.environ.get("XML_PATH", "/data/tps")
 NWR_DIR: str = os.environ.get("NWR_DIR", "/data/nwr")
 NF_DIR: str = os.environ.get("NF_DIR", "/data/network_fusion")
 SCHEMA_PATH: str = os.path.join(os.path.dirname(__file__), "schema.sql")
+DB_POOL_MIN_SIZE: int = int(os.environ.get("DB_POOL_MIN_SIZE", "2"))
+DB_POOL_MAX_SIZE: int = int(os.environ.get("DB_POOL_MAX_SIZE", "12"))
 
 # ---------------------------------------------------------------------------
-# Process-level lazy caches (resettable via reset_caches() in unit tests)
+# Process-level lazy caches & connection pool (resettable in unit tests)
 # ---------------------------------------------------------------------------
 LOOKUP_CACHE: Optional[dict[str, dict[str, dict[str, Any]]]] = None
 OVERRIDES_TABLE_READY: bool = False
+DB_POOL: Optional[Any] = None
+_DB_POOL_LOCK = threading.Lock()
+
+
+def close_pool() -> None:
+    """Close and clear the shared PostgreSQL connection pool if initialized."""
+    global DB_POOL
+    with _DB_POOL_LOCK:
+        if DB_POOL is not None:
+            DB_POOL.close()
+            DB_POOL = None
 
 
 def reset_caches() -> None:
-    """Clear process-level caches in this module.
+    """Clear process-level caches and close any open connection pool.
 
     Intended for isolated unit tests so test cases never leak cached lookup
-    tables or schema-readiness flags across runs.
+    tables, schema-readiness flags, or pooled connections across runs.
     """
     global LOOKUP_CACHE, OVERRIDES_TABLE_READY
     LOOKUP_CACHE = None
     OVERRIDES_TABLE_READY = False
+    close_pool()
 
 
-def get_conn() -> psycopg.Connection:
-    """Open and return a new PostgreSQL connection using ``DATABASE_URL``.
+def get_pool() -> Optional[Any]:
+    """Return the lazily initialized process-wide PostgreSQL ``ConnectionPool``.
 
-    Returns:
-        A live ``psycopg.Connection`` ready for use as a context manager.
+    Returns ``None`` if ``psycopg_pool`` is unavailable or pool creation fails
+    so callers can gracefully fall back to direct ``psycopg.connect()`` calls.
     """
+    global DB_POOL
+    if ConnectionPool is None:
+        return None
+    if DB_POOL is None:
+        with _DB_POOL_LOCK:
+            if DB_POOL is None:
+                DB_POOL = ConnectionPool(
+                    conninfo=DATABASE_URL,
+                    min_size=DB_POOL_MIN_SIZE,
+                    max_size=DB_POOL_MAX_SIZE,
+                    open=True,
+                )
+    return DB_POOL
+
+
+def get_conn() -> Any:
+    """Return a context-managed PostgreSQL connection from the shared pool.
+
+    Falls back to a direct ``psycopg.connect(DATABASE_URL)`` connection if
+    connection pooling is unavailable.
+    """
+    pool = get_pool()
+    if pool is not None:
+        return pool.connection()
     return psycopg.connect(DATABASE_URL)
 
 

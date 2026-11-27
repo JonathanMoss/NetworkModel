@@ -15,7 +15,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "=== Building testing pipeline images ==="
-docker compose -f "$COMPOSE_FILE" build lint test
+docker compose -f "$COMPOSE_FILE" build lint test js-test
 
 echo "=== Running Pylint quality gate (target: 10.00/10) ==="
 docker compose -f "$COMPOSE_FILE" run --rm lint
@@ -23,3 +23,7 @@ docker compose -f "$COMPOSE_FILE" run --rm lint
 echo ""
 echo "=== Running Pytest suite (Unit + BDD + E2E, target: >= 90% coverage) ==="
 docker compose -f "$COMPOSE_FILE" run --rm test
+
+echo ""
+echo "=== Running Frontend JS syntax & unit checks ==="
+docker compose -f "$COMPOSE_FILE" run --rm js-test
