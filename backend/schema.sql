@@ -333,3 +333,8 @@ CREATE TABLE IF NOT EXISTS tps_nwr_track_overrides (
     PRIMARY KEY (asset_type, asset_id)
 );
 
+
+-- Hot-path traversal & geographic lookup indexes
+CREATE INDEX IF NOT EXISTS idx_signals_point_node ON signals (point_node_id);
+CREATE INDEX IF NOT EXISTS idx_signals_id ON signals (id);
+CREATE INDEX IF NOT EXISTS idx_edges_start_end ON edges (start_node_id, end_node_id);

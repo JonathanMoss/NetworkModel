@@ -149,9 +149,46 @@ function getOsmTileUrl(z, x, y) {
   return `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
 }
 
+const OSM_TILE_CACHE_MAX = 256;
 const osmTileCache = new Map();
 let osmOffscreenCanvas = null;
 let osmOffscreenCtx = null;
+
+/**
+ * Retrieve an OSM tile entry and refresh its LRU recency.
+ *
+ * @param {string} tileKey Cache key (`"z_x_y"`).
+ * @returns {object|null} Cached tile entry or null.
+ */
+function getOsmTileEntry(tileKey) {
+  if (!osmTileCache.has(tileKey)) return null;
+  const entry = osmTileCache.get(tileKey);
+  osmTileCache.delete(tileKey);
+  osmTileCache.set(tileKey, entry);
+  return entry;
+}
+
+/**
+ * Insert an OSM tile entry into the bounded LRU cache, evicting the
+ * least-recently-used tile and releasing its Image handlers when full.
+ *
+ * @param {string} tileKey Cache key (`"z_x_y"`).
+ * @param {object} entry Tile descriptor `{ img, loaded, error }`.
+ */
+function setOsmTileEntry(tileKey, entry) {
+  if (osmTileCache.has(tileKey)) {
+    osmTileCache.delete(tileKey);
+  } else if (osmTileCache.size >= OSM_TILE_CACHE_MAX) {
+    const oldestKey = osmTileCache.keys().next().value;
+    const evicted = osmTileCache.get(oldestKey);
+    if (evicted && evicted.img) {
+      evicted.img.onload = null;
+      evicted.img.onerror = null;
+    }
+    osmTileCache.delete(oldestKey);
+  }
+  osmTileCache.set(tileKey, entry);
+}
 
 function getOsmOffscreen(w, h) {
   if (!osmOffscreenCanvas) {
@@ -252,12 +289,12 @@ function renderOsmTiles(ctx, w, h) {
       const pSW = gridVertices[i][j + 1];
 
       const tileKey = `${z}_${tx}_${ty}`;
-      let entry = osmTileCache.get(tileKey);
+      let entry = getOsmTileEntry(tileKey);
       if (!entry) {
         const img = new Image();
         img.crossOrigin = "anonymous";
         entry = { img, loaded: false, error: false };
-        osmTileCache.set(tileKey, entry);
+        setOsmTileEntry(tileKey, entry);
         img.onload = () => {
           entry.loaded = true;
           requestRender();
@@ -292,11 +329,6 @@ function renderOsmTiles(ctx, w, h) {
     ctx.globalAlpha = opacity;
     ctx.drawImage(offCanvas, 0, 0);
     ctx.restore();
-  }
-
-  if (osmTileCache.size > 400) {
-    const keysToDelete = Array.from(osmTileCache.keys()).slice(0, 150);
-    for (const k of keysToDelete) osmTileCache.delete(k);
   }
 }
 

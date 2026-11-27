@@ -121,3 +121,14 @@ def test_get_conn_falls_back_to_psycopg_when_pool_unavailable(monkeypatch):
     assert config.get_conn() == "conn-obj"
     assert captured["dsn"] == config.DATABASE_URL
 
+
+
+def test_ensure_performance_indexes_runs_once(monkeypatch):
+    """ensure_performance_indexes creates all 4 hot-path indexes once and memoizes."""
+    cur = FakeCursor()
+    monkeypatch.setattr(config, "get_conn", lambda: FakeConnection(cur))
+    config.ensure_performance_indexes()
+    config.ensure_performance_indexes()
+    assert len(cur.executed) == len(config._PERFORMANCE_INDEX_DDLS)  # pylint: disable=protected-access
+    assert any("idx_signals_point_node" in q[0] for q in cur.executed)
+    assert any("idx_edges_start_end" in q[0] for q in cur.executed)

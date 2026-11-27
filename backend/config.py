@@ -36,6 +36,7 @@ DB_POOL_MAX_SIZE: int = int(os.environ.get("DB_POOL_MAX_SIZE", "12"))
 # ---------------------------------------------------------------------------
 LOOKUP_CACHE: Optional[dict[str, dict[str, dict[str, Any]]]] = None
 OVERRIDES_TABLE_READY: bool = False
+PERF_INDEXES_READY: bool = False
 DB_POOL: Optional[Any] = None
 _DB_POOL_LOCK = threading.Lock()
 
@@ -55,9 +56,10 @@ def reset_caches() -> None:
     Intended for isolated unit tests so test cases never leak cached lookup
     tables, schema-readiness flags, or pooled connections across runs.
     """
-    global LOOKUP_CACHE, OVERRIDES_TABLE_READY
+    global LOOKUP_CACHE, OVERRIDES_TABLE_READY, PERF_INDEXES_READY
     LOOKUP_CACHE = None
     OVERRIDES_TABLE_READY = False
+    PERF_INDEXES_READY = False
     close_pool()
 
 
@@ -119,6 +121,27 @@ def ensure_track_overrides_table(cur) -> None:
         """
     )
     OVERRIDES_TABLE_READY = True
+
+
+_PERFORMANCE_INDEX_DDLS: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_signals_point_node ON signals (point_node_id)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_id ON signals (id)",
+    "CREATE INDEX IF NOT EXISTS idx_edges_start_end ON edges (start_node_id, end_node_id)",
+    "CREATE INDEX IF NOT EXISTS idx_nwr_tcl_elr_meters ON nwr_track_centrelines (elr, start_meters, end_meters)",
+)
+
+
+def ensure_performance_indexes() -> None:
+    """Idempotently create hot-path traversal and geo-lookup indexes once per process."""
+    global PERF_INDEXES_READY
+    if PERF_INDEXES_READY:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for ddl in _PERFORMANCE_INDEX_DDLS:
+                cur.execute(ddl)
+        conn.commit()
+    PERF_INDEXES_READY = True
 
 
 def get_saved_track_override(cur, asset_type: str, asset_id: int) -> Optional[int]:

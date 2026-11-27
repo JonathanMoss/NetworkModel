@@ -35,10 +35,32 @@ function scheduleViewportFetch() {
   STATE.viewportTimer = setTimeout(fetchViewportData, 90);
 }
 
+const _VIEWPORT_CACHE_MAX = 16;
+const _tpsViewportCache = new Map();
+const _nwrViewportCache = new Map();
+
+function getViewportCacheEntry(cache, key) {
+  if (!cache.has(key)) return null;
+  const val = cache.get(key);
+  cache.delete(key);
+  cache.set(key, val);
+  return val;
+}
+
+function setViewportCacheEntry(cache, key, val) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  } else if (cache.size >= _VIEWPORT_CACHE_MAX) {
+    cache.delete(cache.keys().next().value);
+  }
+  cache.set(key, val);
+}
+
 async function fetchViewportData() {
   if (!STATE.ready || (STATE.activeView !== "tps" && STATE.activeView !== "split") || STATE.tpsCam.zoom < 0.16) return;
   if (STATE.viewportAbort) STATE.viewportAbort.abort();
-  STATE.viewportAbort = new AbortController();
+  const myAbort = new AbortController();
+  STATE.viewportAbort = myAbort;
 
   const bbox = getViewportBBox(0.3, "tps");
   const params = new URLSearchParams({
@@ -59,12 +81,25 @@ async function fetchViewportData() {
     include_overlaps: STATE.colorMode === "signalling" || STATE.tpsCam.zoom >= 1.1,
   });
 
+  const queryStr = params.toString();
+  const cached = getViewportCacheEntry(_tpsViewportCache, queryStr);
+  if (cached) {
+    STATE.viewportData = { ...cached, bbox };
+    if (STATE.activeView !== "nwr") {
+      document.getElementById("hud-loaded").textContent = `${cached.edges.length.toLocaleString()} edges, ${cached.signals.length.toLocaleString()} sigs`;
+    }
+    requestRender();
+    return;
+  }
+
   try {
-    const res = await fetch(`/api/viewport?${params.toString()}`, {
-      signal: STATE.viewportAbort.signal,
+    const res = await fetch(`/api/viewport?${queryStr}`, {
+      signal: myAbort.signal,
     });
-    if (!res.ok) return;
+    if (!res.ok || STATE.viewportAbort !== myAbort) return;
     const data = await res.json();
+    if (STATE.viewportAbort !== myAbort) return;
+    setViewportCacheEntry(_tpsViewportCache, queryStr, data);
     STATE.viewportData = { ...data, bbox };
     if (STATE.activeView !== "nwr") {
       document.getElementById("hud-loaded").textContent = `${data.edges.length.toLocaleString()} edges, ${data.signals.length.toLocaleString()} sigs`;
@@ -78,7 +113,8 @@ async function fetchViewportData() {
 async function fetchNwrViewportData() {
   if ((STATE.activeView !== "nwr" && STATE.activeView !== "split") || STATE.nwrCam.zoom < 0.005) return;
   if (STATE.nwrViewportAbort) STATE.nwrViewportAbort.abort();
-  STATE.nwrViewportAbort = new AbortController();
+  const myAbort = new AbortController();
+  STATE.nwrViewportAbort = myAbort;
 
   const bbox = getViewportBBox(0.3, "nwr");
   const params = new URLSearchParams({
@@ -94,12 +130,7 @@ async function fetchNwrViewportData() {
     include_nf_points: false,
   });
 
-  try {
-    const res = await fetch(`/api/nwr/viewport?${params.toString()}`, {
-      signal: STATE.nwrViewportAbort.signal,
-    });
-    if (!res.ok) return;
-    const data = await res.json();
+  const applyNwrViewport = (data) => {
     STATE.nwrViewportData = { ...data, bbox };
     const extra = [];
     if (data.centrelines && data.centrelines.length) extra.push(`${data.centrelines.length.toLocaleString()} links`);
@@ -111,6 +142,24 @@ async function fetchNwrViewportData() {
       document.getElementById("hud-loaded").textContent = extra.length ? extra.join(", ") : "0 features loaded";
     }
     requestRender();
+  };
+
+  const queryStr = params.toString();
+  const cached = getViewportCacheEntry(_nwrViewportCache, queryStr);
+  if (cached) {
+    applyNwrViewport(cached);
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/nwr/viewport?${queryStr}`, {
+      signal: myAbort.signal,
+    });
+    if (!res.ok || STATE.nwrViewportAbort !== myAbort) return;
+    const data = await res.json();
+    if (STATE.nwrViewportAbort !== myAbort) return;
+    setViewportCacheEntry(_nwrViewportCache, queryStr, data);
+    applyNwrViewport(data);
   } catch (err) {
     if (err.name !== "AbortError") console.error(err);
   }

@@ -37,8 +37,11 @@ def test_start_background_ingestion_spawns_worker(monkeypatch):
     monkeypatch.setattr(
         main, "ensure_network_fusion_tables_and_ingest", lambda *_a: called.append("nf")
     )
+    monkeypatch.setattr(main, "ensure_performance_indexes", lambda: called.append("indexes"))
     monkeypatch.setattr(main, "load_lookup_cache", lambda: called.append("lookup"))
     monkeypatch.setattr(main, "get_timing_catalog", lambda: called.append("timing"))
+    monkeypatch.setattr(main, "api_overview", lambda: called.append("overview"))
+    monkeypatch.setattr(main, "api_nwr_overview", lambda: called.append("nwr_overview"))
 
     threads = []
 
@@ -56,7 +59,7 @@ def test_start_background_ingestion_spawns_worker(monkeypatch):
     monkeypatch.setattr(main.threading, "Thread", ImmediateThread)
     main.start_background_ingestion()
     assert len(threads) == 1
-    assert called == ["tps", "nwr", "nf", "lookup", "timing"]
+    assert called == ["tps", "nwr", "nf", "indexes", "lookup", "timing", "overview", "nwr_overview"]
 
 
 def test_api_status_pending_and_ready(client, monkeypatch):

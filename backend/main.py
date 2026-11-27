@@ -37,6 +37,7 @@ from config import (
     XML_PATH,
     close_pool,
     decode_code,
+    ensure_performance_indexes,
     ensure_track_overrides_table,
     get_conn,
     get_saved_track_override,
@@ -131,6 +132,7 @@ def start_background_ingestion() -> None:
         ensure_nwr_tables_and_ingest(DATABASE_URL, NWR_DIR)
         ensure_network_fusion_tables_and_ingest(DATABASE_URL, NF_DIR)
         try:
+            ensure_performance_indexes()
             load_lookup_cache()
             get_timing_catalog()
             api_overview()

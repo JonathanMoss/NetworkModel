@@ -148,7 +148,15 @@ assert.equal(dlCtx.getCachedAssetDetail("signal:50").id, 50);
 dlCtx.invalidateAssetDetailCache("signal", 50);
 assert.equal(dlCtx.getCachedAssetDetail("signal:50"), null);
 
-// 4. Unit test geo-projection.js (OSGB36 <-> WGS84 round-trip accuracy)
+const vpCache = new Map();
+for (let i = 0; i < 20; i++) {
+  dlCtx.setViewportCacheEntry(vpCache, `k${i}`, { idx: i });
+}
+assert.equal(vpCache.size, 16);
+assert.equal(dlCtx.getViewportCacheEntry(vpCache, "k0"), null);
+assert.equal(dlCtx.getViewportCacheEntry(vpCache, "k19").idx, 19);
+
+// 4. Unit test geo-projection.js (OSGB36 <-> WGS84 round-trip accuracy & LRU OSM tile cap)
 const geoCtx = vm.createContext({ Math });
 vm.runInContext(fs.readFileSync(path.join(JS_DIR, "geo-projection.js"), "utf8"), geoCtx);
 
@@ -159,6 +167,14 @@ assert.ok(lon > -0.2 && lon < -0.15, `Unexpected longitude: ${lon}`);
 const [eBack, nBack] = geoCtx.wgs84_to_osgb36(lat, lon);
 assert.ok(Math.abs(eBack - 526600) < 1.0, `Easting round-trip drift: ${eBack - 526600}`);
 assert.ok(Math.abs(nBack - 181300) < 1.0, `Northing round-trip drift: ${nBack - 181300}`);
+
+// Verify bounded LRU eviction on OSM tile cache (max 256)
+for (let i = 0; i < 260; i++) {
+  geoCtx.setOsmTileEntry(`12_${i}_0`, { img: { onload: () => {}, onerror: () => {} }, loaded: true, error: false });
+}
+assert.equal(vm.runInContext("osmTileCache.size", geoCtx), 256);
+assert.equal(geoCtx.getOsmTileEntry("12_0_0"), null);
+assert.ok(geoCtx.getOsmTileEntry("12_259_0") !== null);
 
 // 5. Unit test persistence.js (Colour-By & layer styles persistence)
 const store = new Map();
