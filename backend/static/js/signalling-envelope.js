@@ -105,6 +105,11 @@ window.setSignalHighlightFilter = function (group, opts = {}) {
     window.selectRouteSpeedProfile(group, false);
   }
 
+  // Plot both Entrance and Exit/Buffer signals geographically when a single route is isolated
+  if (typeof syncGeoHighlightsForRouteFilter === "function") {
+    syncGeoHighlightsForRouteFilter(group, true);
+  }
+
   requestRender();
 };
 

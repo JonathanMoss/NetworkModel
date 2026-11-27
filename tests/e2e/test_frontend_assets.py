@@ -52,6 +52,8 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     dl_js = client.get("/static/js/data-loader.js").text
     assert "shouldUseMinimalDualHighlight" in dl_js
     assert "applyCrossHighlightsForSelectedAsset" in dl_js
+    assert "syncGeoHighlightsForRouteFilter" in dl_js
+    assert "fitGeoCameraToRoutePoints" in dl_js
     assert 'STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all"' in dl_js
     ov_js = client.get("/static/js/render-overlays.js").text
     assert 'grpFilter === "minimal"' in ov_js

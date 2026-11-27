@@ -801,6 +801,7 @@ def _get_signal_or_points_asset(
                     "sighting_point": sight_pt,
                     "pre_signal_point": presig_pt,
                     "entry_signals": entry_sigs,
+                    "start_node_id": nids[0] if nids else None,
                     "coords": b_coords,
                     "route_label": route_label,
                 })
@@ -874,6 +875,7 @@ def _get_signal_or_points_asset(
                     "turnout_count": len(p_info["turnout_nodes"]),
                     "turnout_nodes": p_info["turnout_nodes"],
                     "exit_signals": exit_sigs,
+                    "end_node_id": nids[-1] if nids else None,
                     "coords": b_coords,
                     "route_label": route_label,
                 })

@@ -122,9 +122,14 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
     if (isPulsing) {
       const rippleR = 8 + pulsePhase * 32;
       const rippleAlpha = Math.max(0, 1 - pulsePhase);
+      const isEmerald = ptCol === "#10b981";
       targetCtx.beginPath();
       targetCtx.arc(sx, sy, rippleR, 0, Math.PI * 2);
-      targetCtx.strokeStyle = isDiamond ? `rgba(168, 85, 247, ${rippleAlpha})` : `rgba(245, 158, 11, ${rippleAlpha})`;
+      targetCtx.strokeStyle = isEmerald
+        ? `rgba(16, 185, 129, ${rippleAlpha})`
+        : isDiamond
+        ? `rgba(168, 85, 247, ${rippleAlpha})`
+        : `rgba(245, 158, 11, ${rippleAlpha})`;
       targetCtx.lineWidth = 2.5;
       targetCtx.stroke();
 
@@ -133,7 +138,11 @@ function drawCrossHighlightPulse(targetCtx, highlight, toScreen, mode) {
       const rippleAlpha2 = Math.max(0, 1 - phase2);
       targetCtx.beginPath();
       targetCtx.arc(sx, sy, rippleR2, 0, Math.PI * 2);
-      targetCtx.strokeStyle = isDiamond ? `rgba(217, 70, 239, ${rippleAlpha2 * 0.8})` : `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
+      targetCtx.strokeStyle = isEmerald
+        ? `rgba(52, 211, 153, ${rippleAlpha2 * 0.85})`
+        : isDiamond
+        ? `rgba(217, 70, 239, ${rippleAlpha2 * 0.8})`
+        : `rgba(236, 72, 153, ${rippleAlpha2 * 0.8})`;
       targetCtx.lineWidth = 1.8;
       targetCtx.stroke();
     }
