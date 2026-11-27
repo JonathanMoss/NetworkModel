@@ -822,6 +822,9 @@ window.saveNwrCrossTrackOverride = async function (fid) {
       }),
     });
     if (res.ok) {
+      if (typeof invalidateAssetDetailCache === "function") {
+        invalidateAssetDetailCache(STATE.selectedAsset.asset_type, STATE.selectedAsset.id);
+      }
       await loadAssetDetails(STATE.selectedAsset.asset_type, STATE.selectedAsset.id, false, null);
     }
   } catch (err) {
@@ -838,6 +841,9 @@ window.resetNwrCrossTrackOverride = async function () {
         `/api/nwr/track-override/${encodeURIComponent(STATE.selectedAsset.asset_type)}/${encodeURIComponent(STATE.selectedAsset.id)}`,
         { method: "DELETE" }
       );
+    }
+    if (typeof invalidateAssetDetailCache === "function") {
+      invalidateAssetDetailCache(STATE.selectedAsset.asset_type, STATE.selectedAsset.id);
     }
     await loadAssetDetails(STATE.selectedAsset.asset_type, STATE.selectedAsset.id, false, null);
   } catch (err) {

@@ -63,3 +63,14 @@ def test_template_renderer_guards_path_traversal_and_cycles(tmp_path):
     with pytest.raises(ValueError, match="Circular template include"):
         tr.render_template("a.html", templates_dir=str(tmp_path))
 
+
+
+def test_template_renderer_caches_and_resets():
+    """Repeated render_template calls reuse cached HTML until reset_template_cache()."""
+    tr.reset_template_cache()
+    html1 = tr.render_template("base.html")
+    html2 = tr.render_template("base.html")
+    assert html1 == html2
+    assert len(tr._TEMPLATE_CACHE) >= 1  # pylint: disable=protected-access
+    tr.reset_template_cache()
+    assert not tr._TEMPLATE_CACHE  # pylint: disable=protected-access

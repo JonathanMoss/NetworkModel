@@ -458,7 +458,7 @@ function extractGeoPointFromCrossLinks(nwrCross) {
 
 /**
  * Resolve and cache the OSGB36 (x, y) geographic coordinates of a TPS signal,
- * points, or track node via `/api/asset/{type}/{id}`.
+ * points, or track node via the lightweight `/api/asset/{type}/{id}/geo` endpoint.
  *
  * @param {string} assetType `"signal"`, `"points"`, or `"node"`.
  * @param {number|string} assetId Asset PK or node ID.
@@ -471,10 +471,15 @@ async function fetchAssetGeoPoint(assetType, assetId) {
     return _routeGeoEndpointCache.get(cacheKey);
   }
   try {
-    const res = await fetch(`/api/asset/${encodeURIComponent(assetType)}/${encodeURIComponent(assetId)}`);
+    const res = await fetch(
+      `/api/asset/${encodeURIComponent(assetType)}/${encodeURIComponent(assetId)}/geo`
+    );
     if (!res.ok) return null;
     const payload = await res.json();
-    const pt = extractGeoPointFromCrossLinks(payload?.related?.nwr_cross_links);
+    const pt =
+      payload && isFinite(payload.x) && isFinite(payload.y) && payload.x !== null && payload.y !== null
+        ? { x: Number(payload.x), y: Number(payload.y) }
+        : null;
     _routeGeoEndpointCache.set(cacheKey, pt);
     return pt;
   } catch (err) {
@@ -563,6 +568,8 @@ async function syncGeoHighlightsForRouteFilter(group, shouldFitCamera = true) {
         label: isOutgoing ? `Entry: ${curName}` : `Exit: ${curName}`,
         color: isOutgoing ? "#10b981" : "#f59e0b",
         shape: curShape,
+        asset_type: asset.asset_type,
+        asset_id: asset.id,
       }
     : null;
 
@@ -632,7 +639,17 @@ async function syncGeoHighlightsForRouteFilter(group, shouldFitCamera = true) {
   const resolvedOtherPts = await Promise.all(
     targets.map(async (t) => {
       const geo = await fetchAssetGeoPoint(t.type, t.id);
-      return geo ? { x: geo.x, y: geo.y, label: t.label, color: t.color, shape: t.shape } : null;
+      return geo
+        ? {
+            x: geo.x,
+            y: geo.y,
+            label: t.label,
+            color: t.color,
+            shape: t.shape,
+            asset_type: t.type,
+            asset_id: t.id,
+          }
+        : null;
     })
   );
 
@@ -674,17 +691,77 @@ async function syncGeoHighlightsForRouteFilter(group, shouldFitCamera = true) {
   requestRender();
 }
 
+const _ASSET_DETAIL_CACHE_MAX = 50;
+const _assetDetailCache = new Map();
+let _assetDetailAbortController = null;
+
+/**
+ * Invalidate cached asset detail and route geo endpoint entries (e.g. after
+ * saving or resetting a manual NWR track override).
+ *
+ * @param {string} assetType Canonical asset type.
+ * @param {number|string} assetId Asset ID / PK.
+ */
+function invalidateAssetDetailCache(assetType, assetId) {
+  const key = `${assetType}:${assetId}`;
+  _assetDetailCache.delete(key);
+  _routeGeoEndpointCache.delete(key);
+  if (assetType === "signal" || assetType === "points") {
+    _assetDetailCache.delete(`signal:${assetId}`);
+    _assetDetailCache.delete(`points:${assetId}`);
+    _routeGeoEndpointCache.delete(`signal:${assetId}`);
+    _routeGeoEndpointCache.delete(`points:${assetId}`);
+  }
+}
+
+function getCachedAssetDetail(cacheKey) {
+  if (!_assetDetailCache.has(cacheKey)) return null;
+  const val = _assetDetailCache.get(cacheKey);
+  // Refresh LRU recency
+  _assetDetailCache.delete(cacheKey);
+  _assetDetailCache.set(cacheKey, val);
+  return val;
+}
+
+function setCachedAssetDetail(cacheKey, data) {
+  if (_assetDetailCache.has(cacheKey)) {
+    _assetDetailCache.delete(cacheKey);
+  } else if (_assetDetailCache.size >= _ASSET_DETAIL_CACHE_MAX) {
+    const oldestKey = _assetDetailCache.keys().next().value;
+    _assetDetailCache.delete(oldestKey);
+  }
+  _assetDetailCache.set(cacheKey, data);
+}
+
 async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = null, options = {}) {
   const expandFull = Boolean(options && options.expandFull);
   const isNwrAsset = String(assetType).startsWith("nwr_") || String(assetType).startsWith("nf_");
   const apiPrefix = isNwrAsset ? "/api/nwr/asset" : "/api/asset";
-  const querySuffix = (!isNwrAsset && nwrFid !== null && nwrFid !== undefined && nwrFid !== "")
-    ? `?nwr_fid=${encodeURIComponent(nwrFid)}`
-    : "";
+  const hasManualFid = !isNwrAsset && nwrFid !== null && nwrFid !== undefined && nwrFid !== "";
+  const querySuffix = hasManualFid ? `?nwr_fid=${encodeURIComponent(nwrFid)}` : "";
+  const cacheKey = `${assetType}:${assetId}`;
+
+  // Cancel any previous in-flight asset detail request to prevent out-of-order races
+  if (_assetDetailAbortController) {
+    _assetDetailAbortController.abort();
+  }
+  const abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  _assetDetailAbortController = abortController;
+
   try {
-    const res = await fetch(`${apiPrefix}/${assetType}/${assetId}${querySuffix}`);
-    if (!res.ok) return;
-    const data = await res.json();
+    let data = !hasManualFid ? getCachedAssetDetail(cacheKey) : null;
+    if (!data) {
+      const fetchOpts = abortController ? { signal: abortController.signal } : undefined;
+      const res = await fetch(`${apiPrefix}/${assetType}/${assetId}${querySuffix}`, fetchOpts);
+      if (!res.ok) return;
+      data = await res.json();
+      if (!hasManualFid) {
+        setCachedAssetDetail(cacheKey, data);
+      }
+    }
+    if (abortController && _assetDetailAbortController !== abortController) {
+      return;
+    }
     STATE.selectedAsset = data;
     STATE.selectedAssetExpandFull = expandFull;
 
@@ -761,6 +838,7 @@ async function loadAssetDetails(assetType, assetId, shouldFly = true, nwrFid = n
       }
     }
   } catch (err) {
+    if (err && err.name === "AbortError") return;
     console.error(err);
   }
 }
