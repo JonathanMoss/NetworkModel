@@ -641,7 +641,13 @@ def _augment_running_line_cross_elr_candidates(
                 for c in candidates
             )
         )
-        is_named_branch = bool(br_m) and (
+        br_sub = (
+            br_m.group(1)[1:]
+            if br_m and len(br_m.group(1)) >= 3 and br_m.group(1)[0] in ("u", "d")
+            else (br_m.group(1) if br_m else "")
+        )
+        is_primary_elr_name = bool(br_sub) and len(br_sub) >= 2 and elr.lower().startswith(br_sub)
+        is_named_branch = bool(br_m) and not is_primary_elr_name and (
             direction_hint in ("up", "down")
             and not bool(
                 th_toks
