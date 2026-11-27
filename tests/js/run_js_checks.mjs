@@ -110,14 +110,20 @@ assert.ok(cardHtml.includes("<svg"));
 const approachCardHtml = rspCtx.buildRouteSpeedProfileCard(sampleSignal, "approach:110");
 assert.ok(approachCardHtml.includes("← Rear: T3531"));
 
-// 3. Unit test data-loader.js pure helpers & LRU cache
+// 3. Unit test data-loader modules (pure helpers, viewport LRU, geo extraction, detail LRU)
 const dlCtx = vm.createContext({
   window: {},
   STATE: { activeView: "split" },
   document: { getElementById: () => null },
   console,
 });
-const dlSource = fs.readFileSync(path.join(JS_DIR, "data-loader.js"), "utf8");
+const dlSource = [
+  "data-loader-viewport.js",
+  "data-loader-geo.js",
+  "data-loader.js",
+]
+  .map((f) => fs.readFileSync(path.join(JS_DIR, f), "utf8"))
+  .join("\n");
 vm.runInContext(
   `
   const hoverTooltip = { classList: { add() {}, remove() {} } };

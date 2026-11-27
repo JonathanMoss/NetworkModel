@@ -41,7 +41,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
 
     # Fetch every modular CSS and JS asset referenced by base.html
     asset_urls = re.findall(r'(?:href|src)="(/static/[^"]+)"', html)
-    assert len(asset_urls) >= 26
+    assert len(asset_urls) >= 32
 
     for url in asset_urls:
         asset_resp = client.get(url)
@@ -53,10 +53,14 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     dl_js = client.get("/static/js/data-loader.js").text
     assert "shouldUseMinimalDualHighlight" in dl_js
     assert "applyCrossHighlightsForSelectedAsset" in dl_js
-    assert "syncGeoHighlightsForRouteFilter" in dl_js
-    assert "fitGeoCameraToRoutePoints" in dl_js
     assert "invalidateAssetDetailCache" in dl_js
     assert 'STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all"' in dl_js
+    dl_geo_js = client.get("/static/js/data-loader-geo.js").text
+    assert "syncGeoHighlightsForRouteFilter" in dl_geo_js
+    assert "fitGeoCameraToRoutePoints" in dl_geo_js
+    dl_vp_js = client.get("/static/js/data-loader-viewport.js").text
+    assert "fetchViewportData" in dl_vp_js
+    assert "fetchNwrViewportData" in dl_vp_js
     ov_js = client.get("/static/js/render-overlays.js").text
     assert 'grpFilter === "minimal"' in ov_js
     cam_js = client.get("/static/js/viewport-camera.js").text

@@ -569,3 +569,65 @@ def test_asset_geo_endpoint_signal_points_node_and_errors(client, monkeypatch):
     monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[]])))
     assert client.get("/api/asset/node/99999/geo").status_code == 404
     assert client.get("/api/asset/station/10/geo").status_code == 400
+
+
+def test_asset_geo_edge_fallbacks_and_extract_helper(client, monkeypatch):
+    """Covers geo.py alt-node mileage, e_reg fallback, UP name fallback, and empty cross-links."""
+    assert geo_handler._extract_geo_point(None) == (None, None, None, None, False)  # pylint: disable=protected-access
+    assert geo_handler._extract_geo_point({"geo_snap": {"elr": "MLN1"}})[:3] == (None, None, "MLN1")  # pylint: disable=protected-access
+
+    # Signal with alt-node mileage hit + UP direction from name + no-node points fallback
+    monkeypatch.setattr(
+        geo_handler,
+        "resolve_tps_track_identity",
+        lambda *_a, **_kw: {"direction_hint": None, "secondary_dir": None, "track_name_hint": None, "platform_num": None, "source": None},
+    )
+    monkeypatch.setattr(
+        geo_handler,
+        "find_nwr_cross_links_for_tps",
+        lambda *_a, **_kw: {"node_points": [{"x": 501000.0, "y": 176000.0}], "geo_snap": {"elr": "MLN1"}},
+    )
+    up_sig = {
+        "pk": 70, "id": 700, "signal_id": 7000, "name": "UP MAIN 70", "master_name": "UP MAIN 70",
+        "interlocking_sys_id": 1, "km_region_id": None, "start_node_id": 10, "end_node_id": 20, "point_node_id": None,
+    }
+    cur_alt = FakeCursor(
+        responses=[
+            [up_sig],
+            [{"km_region_id": 5, "km_value": 0}],  # anchor_nid has region but 0 km
+            [{"vmax": 120}],
+            [{"km_region_id": 5, "km_value": 15000}],  # alt_nid=10 fills km_value
+            [{"node_id": 10, "km_value": 15000}, {"node_id": 20, "km_value": 15200}],
+        ]
+    )
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(cur_alt))
+    r_up = client.get("/api/asset/signal/70/geo")
+    assert r_up.status_code == 200
+    assert r_up.json()["x"] == 501000.0
+
+    # Connected edge fallback via e_reg/e_km + points with no node IDs
+    orphan_pts = {
+        "pk": 71, "id": 701, "signal_id": 7001, "name": "POINTS 71", "master_name": "POINTS 71",
+        "interlocking_sys_id": 15, "km_region_id": None, "start_node_id": None, "end_node_id": None, "point_node_id": None,
+    }
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[orphan_pts]])))
+    r_orphan = client.get("/api/asset/points/71/geo")
+    assert r_orphan.status_code == 200
+    assert r_orphan.json()["asset_type"] == "points"
+
+    # Connected edge fallback via e_reg/e_km when s_reg is null
+    ereg_sig = {**up_sig, "pk": 72, "start_node_id": 11, "end_node_id": 21}
+    cur_ereg = FakeCursor(
+        responses=[
+            [ereg_sig],
+            [{"km_region_id": None, "km_value": 0}],
+            [],  # approach edge
+            [],  # alt node 11
+            [{"length": 100, "start_node_id": 11, "s_reg": None, "s_km": None, "e_reg": 5, "e_km": 22000}],
+            [{"node_id": 11, "km_value": 21900}, {"node_id": 21, "km_value": 22000}],
+        ]
+    )
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(cur_ereg))
+    r_ereg = client.get("/api/asset/signal/72/geo")
+    assert r_ereg.status_code == 200
+    assert r_ereg.json()["is_extrapolated"] is True

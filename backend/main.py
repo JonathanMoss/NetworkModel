@@ -23,12 +23,14 @@ continue to work without modification.
 from contextlib import asynccontextmanager
 import os
 import threading
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import config as app_config
 from config import (
     DATABASE_URL,
     NF_DIR,
@@ -56,11 +58,14 @@ from geometry import (
 from ingest import check_already_ingested, run_ingestion
 from ingest_network_fusion import ensure_network_fusion_tables_and_ingest
 from ingest_nwr import ensure_nwr_tables_and_ingest
+from routers import nwr as nwr_module
+from routers import tps as tps_module
 from routers.assets import api_get_asset, router as assets_router
 from routers.network_fusion import router as network_fusion_router
 from routers.nwr import api_nwr_overview, router as nwr_router
 from routers.tps import api_overview, router as tps_router
 from template_renderer import render_template
+import timing_catalog as timing_catalog_module
 from timing_catalog import get_timing_catalog
 from track_identity import (
     _extract_direction_from_tokens,
@@ -163,12 +168,44 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 @app.middleware("http")
-async def add_static_cache_headers(request: Request, call_next):
-    """Add browser cache headers for versioned ``/static/*`` CSS and JS assets."""
+async def add_observability_and_cache_headers(request: Request, call_next):
+    """Add ``Server-Timing`` headers on ``/api/*`` and browser cache headers on ``/static/*``."""
+    t0 = time.perf_counter()
     response = await call_next(request)
-    if request.url.path.startswith("/static/") and response.status_code == 200:
+    path = request.url.path
+    if path.startswith("/api/"):
+        dur_ms = (time.perf_counter() - t0) * 1000.0
+        response.headers["Server-Timing"] = f"app;dur={dur_ms:.1f}"
+    elif path.startswith("/static/") and response.status_code == 200:
         response.headers.setdefault("Cache-Control", "public, max-age=86400")
     return response
+
+
+@app.get("/api/health")
+def api_health() -> ORJSONResponse:
+    """Lightweight health & cache-readiness endpoint for runtime observability."""
+    db_ok = False
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        db_ok = True
+    except Exception:
+        db_ok = False
+
+    payload = {
+        "status": "ok" if db_ok else "degraded",
+        "db_ok": db_ok,
+        "pool_active": app_config.DB_POOL is not None,
+        "caches": {
+            "lookup_loaded": app_config.LOOKUP_CACHE is not None,
+            "timing_loaded": timing_catalog_module.TIMING_CATALOG_CACHE is not None,
+            "overview_cached": tps_module.OVERVIEW_CACHE is not None,
+            "nwr_overview_cached": nwr_module.NWR_OVERVIEW_CACHE is not None,
+        },
+    }
+    return ORJSONResponse(content=payload, status_code=200 if db_ok else 503)
 
 app.include_router(tps_router)
 app.include_router(nwr_router)

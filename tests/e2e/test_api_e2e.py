@@ -166,3 +166,24 @@ def test_asset_routers_error_handling(client, monkeypatch):
     assert client.get("/api/nwr/asset/unknown_nwr/1").status_code == 400
     assert client.get("/api/nwr/asset/nwr_centreline/999999").status_code == 404
 
+
+
+def test_api_health_and_server_timing_header(client, monkeypatch):
+    """GET /api/health reports 200 when DB responds, 503 on error, and /api/* emits Server-Timing."""
+    monkeypatch.setattr(main, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[(1,)]])))
+    r_ok = client.get("/api/health")
+    assert r_ok.status_code == 200
+    assert "app;dur=" in r_ok.headers.get("server-timing", "")
+    body = r_ok.json()
+    assert body["status"] == "ok"
+    assert body["db_ok"] is True
+    assert "caches" in body
+
+    def boom():
+        raise RuntimeError("pg unreachable")
+
+    monkeypatch.setattr(main, "get_conn", boom)
+    r_err = client.get("/api/health")
+    assert r_err.status_code == 503
+    assert r_err.json()["status"] == "degraded"
+    assert r_err.json()["db_ok"] is False
