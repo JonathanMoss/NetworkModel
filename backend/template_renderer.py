@@ -14,6 +14,55 @@ _INCLUDE_RE = re.compile(r'\{%\s*include\s+"([^"]+)"\s*%\}')
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
+# In-memory cache keyed by (base_dir, template_name) -> (mtime_signature, html)
+_TEMPLATE_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def reset_template_cache() -> None:
+    """Clear cached rendered templates (primarily for isolated unit tests)."""
+    _TEMPLATE_CACHE.clear()
+
+
+def _render_recursive(
+    template_name: str,
+    base_dir: str,
+    seen: frozenset[str],
+    mtimes: list[float],
+) -> str:
+    """Recursively resolve template includes while collecting file mtimes."""
+    target_path = os.path.abspath(os.path.join(base_dir, template_name))
+
+    # Guard against path traversal outside the templates root.
+    if not (target_path == base_dir or target_path.startswith(base_dir + os.sep)):
+        raise ValueError(f"Template path escapes templates directory: {template_name}")
+
+    if template_name in seen:
+        raise ValueError(f"Circular template include detected: {template_name}")
+
+    mtimes.append(os.path.getmtime(target_path))
+    with open(target_path, "r", encoding="utf-8") as fh:
+        content = fh.read()
+
+    next_seen = seen | {template_name}
+
+    def _replace(match: re.Match[str]) -> str:
+        partial_name = match.group(1).strip()
+        return _render_recursive(partial_name, base_dir, next_seen, mtimes)
+
+    return _INCLUDE_RE.sub(_replace, content)
+
+
+def _dir_max_mtime(base_dir: str) -> float:
+    """Return the latest modification timestamp across all HTML files in ``base_dir``."""
+    latest = 0.0
+    for root, _dirs, files in os.walk(base_dir):
+        for fname in files:
+            if fname.endswith(".html"):
+                mt = os.path.getmtime(os.path.join(root, fname))
+                if mt > latest:
+                    latest = mt
+    return latest
+
 
 def render_template(
     template_name: str,
@@ -22,37 +71,18 @@ def render_template(
 ) -> str:
     """Render an HTML template by recursively resolving ``{% include "..." %}`` tags.
 
-    Args:
-        template_name: Relative path under ``templates_dir`` (e.g. ``"base.html"``).
-        templates_dir: Optional override directory (defaults to :data:`TEMPLATES_DIR`).
-        _seen: Internal set of active template names to guard against circular includes.
-
-    Returns:
-        Fully composed HTML string.
-
-    Raises:
-        FileNotFoundError: If ``template_name`` or any included partial does not exist.
-        ValueError: If a path escapes ``templates_dir`` or a circular include is detected.
+    Uses an mtime-validated in-memory cache so repeated ``GET /`` requests avoid
+    re-reading all partial files from disk while edits still auto-reload.
     """
     base_dir = os.path.abspath(templates_dir or TEMPLATES_DIR)
-    target_path = os.path.abspath(os.path.join(base_dir, template_name))
+    cache_key = (base_dir, template_name)
+    dir_mtime = _dir_max_mtime(base_dir)
+    cached = _TEMPLATE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == dir_mtime:
+        return cached[1]
 
-    # Guard against path traversal outside the templates root.
-    if not (target_path == base_dir or target_path.startswith(base_dir + os.sep)):
-        raise ValueError(f"Template path escapes templates directory: {template_name}")
-
-    seen = _seen or frozenset()
-    if template_name in seen:
-        raise ValueError(f"Circular template include detected: {template_name}")
-
-    with open(target_path, "r", encoding="utf-8") as fh:
-        content = fh.read()
-
-    next_seen = seen | {template_name}
-
-    def _replace(match: re.Match[str]) -> str:
-        partial_name = match.group(1).strip()
-        return render_template(partial_name, templates_dir=base_dir, _seen=next_seen)
-
-    return _INCLUDE_RE.sub(_replace, content)
+    mtimes: list[float] = []
+    html = _render_recursive(template_name, base_dir, _seen or frozenset(), mtimes)
+    _TEMPLATE_CACHE[cache_key] = (max(mtimes, default=dir_mtime), html)
+    return html
 

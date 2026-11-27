@@ -46,6 +46,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     for url in asset_urls:
         asset_resp = client.get(url)
         assert asset_resp.status_code == 200, f"Failed to serve {url}"
+        assert "max-age=" in asset_resp.headers.get("cache-control", "")
         assert len(asset_resp.text.strip()) > 0, f"Empty asset body for {url}"
 
     # Verify minimal Dual-View single-click & full double-click highlight logic is present
@@ -54,6 +55,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     assert "applyCrossHighlightsForSelectedAsset" in dl_js
     assert "syncGeoHighlightsForRouteFilter" in dl_js
     assert "fitGeoCameraToRoutePoints" in dl_js
+    assert "invalidateAssetDetailCache" in dl_js
     assert 'STATE.highlightGroupFilter = minimalDualMode ? "minimal" : "all"' in dl_js
     ov_js = client.get("/static/js/render-overlays.js").text
     assert 'grpFilter === "minimal"' in ov_js
@@ -66,6 +68,7 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     rsp_js = client.get("/static/js/route-speed-profile.js").text
     assert "buildRouteSpeedProfileCard" in rsp_js
     assert "renderRouteSpeedStepSvg" in rsp_js
+    assert "stepToRouteEndpoint" in rsp_js
     env_js = client.get("/static/js/signalling-envelope.js").text
     assert "setSignalHighlightFilter" in env_js
     assert "buildSignallingEnvelopeWidget" in env_js

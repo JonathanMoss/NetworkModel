@@ -7,6 +7,7 @@ import main
 from routers import assets as assets_router
 from routers.asset_handlers import (
     blocks_routes as blocks_routes_handler,
+    geo as geo_handler,
     graphics_timing as graphics_timing_handler,
     signalling as signalling_handler,
     topology as topology_handler,
@@ -51,11 +52,11 @@ def client(monkeypatch):
     }
     monkeypatch.setattr(ti, "decode_code", decode_stub)
     monkeypatch.setattr(assets_router, "get_saved_track_override", lambda *_a: None)
-    for mod in (topology_handler, signalling_handler, blocks_routes_handler, graphics_timing_handler):
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler, graphics_timing_handler, geo_handler):
         monkeypatch.setattr(mod, "decode_code", decode_stub)
-    for mod in (topology_handler, signalling_handler, blocks_routes_handler):
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler, geo_handler):
         monkeypatch.setattr(mod, "find_nwr_cross_links_for_tps", nwr_stub)
-    for mod in (topology_handler, signalling_handler, blocks_routes_handler):
+    for mod in (topology_handler, signalling_handler, blocks_routes_handler, geo_handler):
         monkeypatch.setattr(mod, "resolve_tps_track_identity", identity_stub)
     with TestClient(main.app) as tc:
         yield tc
@@ -494,3 +495,77 @@ def test_asset_schematic_graphics_and_timing_entities(client, monkeypatch):
     monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[], []])))
     assert client.get("/api/asset/stationbank/999").status_code == 404
 
+
+
+def test_asset_geo_endpoint_signal_points_node_and_errors(client, monkeypatch):
+    """GET /api/asset/{type}/{id}/geo resolves lightweight OSGB36 coords for signal, points, and node."""
+    monkeypatch.setattr(
+        geo_handler,
+        "find_nwr_cross_links_for_tps",
+        lambda *_a, **_kw: {
+            "node_points": [{"x": 512345.0, "y": 180123.0}],
+            "geo_snap": {"x": 512345.0, "y": 180123.0, "elr": "MLN1", "mileage_str": "18m 35ch", "is_extrapolated": False},
+        },
+    )
+
+    sig_row = {
+        "pk": 50, "id": 500, "signal_id": 5000, "name": "T3533", "master_name": "T3533",
+        "interlocking_sys_id": 1, "km_region_id": None, "start_node_id": 10, "end_node_id": 20, "point_node_id": None,
+    }
+    cur_sig = FakeCursor(
+        responses=[
+            [sig_row],
+            [{"km_region_id": None, "km_value": 0}],
+            [{"vmax": 160}],
+            [],  # alt node start_node_id=10
+            [{"length": 150, "start_node_id": 10, "s_reg": 5, "s_km": 29700, "e_reg": 5, "e_km": 29850}],
+            [{"node_id": 10, "km_value": 29700}, {"node_id": 20, "km_value": 29850}],
+        ]
+    )
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(cur_sig))
+    r_sig = client.get("/api/asset/signal/50/geo")
+    assert r_sig.status_code == 200
+    assert r_sig.json()["x"] == 512345.0
+    assert r_sig.json()["y"] == 180123.0
+    assert r_sig.json()["elr"] == "MLN1"
+
+    # Points fallback via id + valency lookup + name direction fallback
+    monkeypatch.setattr(
+        geo_handler,
+        "resolve_tps_track_identity",
+        lambda *_a, **_kw: {"direction_hint": None, "secondary_dir": None, "track_name_hint": None, "platform_num": None, "source": None},
+    )
+    pts_row = {**sig_row, "name": "POINTS DOWN 10", "interlocking_sys_id": 15, "km_region_id": 5}
+    cur_pts = FakeCursor(
+        responses=[
+            [],
+            [pts_row],
+            [{"km_region_id": 5, "km_value": 29700}],
+            [{"vmax": 80}],
+            [{"node_id": 10, "km_value": 29700}, {"node_id": 20, "km_value": 29850}],
+            [{"cnt": 3}],
+        ]
+    )
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(cur_pts))
+    r_pts = client.get("/api/asset/points/500/geo")
+    assert r_pts.status_code == 200
+    assert r_pts.json()["asset_type"] == "points"
+
+    # Node geo lookup (geo_snap fallback when node_points is empty)
+    monkeypatch.setattr(
+        geo_handler,
+        "find_nwr_cross_links_for_tps",
+        lambda *_a, **_kw: {"geo_snap": {"x": 500000.0, "y": 175000.0, "elr": "MLN1"}},
+    )
+    cur_nd = FakeCursor(responses=[[{"node_id": 99, "km_region_id": 5, "km_value": 10000}]])
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(cur_nd))
+    r_nd = client.get("/api/asset/node/99/geo")
+    assert r_nd.status_code == 200
+    assert r_nd.json()["x"] == 500000.0
+
+    # 404 for missing signal and node, 400 for unsupported asset type
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[], []])))
+    assert client.get("/api/asset/signal/99999/geo").status_code == 404
+    monkeypatch.setattr(assets_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[]])))
+    assert client.get("/api/asset/node/99999/geo").status_code == 404
+    assert client.get("/api/asset/station/10/geo").status_code == 400

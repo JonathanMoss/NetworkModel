@@ -47,6 +47,10 @@ function extractRoutesForSpeedProfile(data) {
   if (data.asset_type === "signal" || data.asset_type === "points") {
     for (const blk of rel.outgoing_blocks || []) {
       if (blk.speed_profile && blk.speed_profile.length) {
+        const firstExit = (blk.exit_signals && blk.exit_signals[0]) || null;
+        const exitIsPts = Boolean(
+          firstExit && (firstExit.is_points || (firstExit.name && firstExit.name.toUpperCase().startsWith("POINT")))
+        );
         routes.push({
           key: `outgoing:${blk.block_id}`,
           kind: "Protected (Advance)",
@@ -55,11 +59,23 @@ function extractRoutesForSpeedProfile(data) {
           min_vmax: blk.min_vmax,
           max_vmax: blk.max_vmax,
           speed_profile: blk.speed_profile,
+          step_target: firstExit
+            ? {
+                type: exitIsPts ? "points" : "signal",
+                id: firstExit.pk,
+                name: firstExit.name || `#${firstExit.signal_id}`,
+                direction: "forward",
+              }
+            : null,
         });
       }
     }
     for (const blk of rel.approach_blocks || []) {
       if (blk.speed_profile && blk.speed_profile.length) {
+        const firstEntry = (blk.entry_signals && blk.entry_signals[0]) || null;
+        const entryIsPts = Boolean(
+          firstEntry && (firstEntry.is_points || (firstEntry.name && firstEntry.name.toUpperCase().startsWith("POINT")))
+        );
         routes.push({
           key: `approach:${blk.block_id}`,
           kind: "Approach (Rear)",
@@ -68,6 +84,14 @@ function extractRoutesForSpeedProfile(data) {
           min_vmax: blk.min_vmax,
           max_vmax: blk.max_vmax,
           speed_profile: blk.speed_profile,
+          step_target: firstEntry
+            ? {
+                type: entryIsPts ? "points" : "signal",
+                id: firstEntry.pk,
+                name: firstEntry.name || `#${firstEntry.signal_id}`,
+                direction: "backward",
+              }
+            : null,
         });
       }
     }
@@ -275,6 +299,38 @@ function renderRouteSpeedProfileBody(route) {
 }
 
 /**
+ * Build the Signal-to-Signal corridor stepping button for a route's opposite
+ * endpoint (forward to Exit signal on Protected routes, backward to Entry
+ * signal on Approach routes).
+ *
+ * @param {object} route Normalized route descriptor.
+ * @returns {string} HTML button markup or empty string.
+ */
+function renderRouteStepButtonHtml(route) {
+  const st = route && route.step_target;
+  if (!st || st.id === null || st.id === undefined) return "";
+  const isFwd = st.direction === "forward";
+  const label = isFwd ? `Next: ${st.name} →` : `← Rear: ${st.name}`;
+  const title = isFwd
+    ? `Step forward to inspect exit ${st.type} ${st.name}`
+    : `Step backward to inspect entry ${st.type} ${st.name}`;
+  return `<button type="button" class="rsp-step-btn" onclick="stepToRouteEndpoint('${escapeHtml(st.type)}', ${Number(st.id)})" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+}
+
+/**
+ * Step cleanly to the opposite signal/points endpoint of a selected route
+ * (minimal mode in Dual View, full envelope in TPS View).
+ *
+ * @param {string} assetType `"signal"` or `"points"`.
+ * @param {number} assetId Target signal/points PK.
+ */
+window.stepToRouteEndpoint = function (assetType, assetId) {
+  if (typeof loadAssetDetails === "function") {
+    loadAssetDetails(assetType, assetId, true, null, { expandFull: false });
+  }
+};
+
+/**
  * Build the Inspector "Route Speed Profile" card for signals, points, blocks,
  * and station routes.
  *
@@ -308,13 +364,17 @@ function buildRouteSpeedProfileCard(data, selectedKey = null) {
   const highlightBtnHtml = canHighlightRoute
     ? `<button type="button" class="rsp-highlight-btn" onclick="selectRouteSpeedProfile(document.getElementById('rsp-route-select')?.value || '${escapeHtml(activeRoute.key)}', true)" title="Highlight only this route on the TPS map">Highlight Route</button>`
     : "";
+  const stepBtnHtml = renderRouteStepButtonHtml(activeRoute);
 
   return `
     <div class="rsp-card" id="route-speed-profile-card">
       <div class="rsp-card-header">
         <span class="rsp-badge">SPEED PROFILE</span>
         <span class="rsp-card-title">Route Speed Profile</span>
-        ${highlightBtnHtml}
+        <span class="rsp-header-actions">
+          <span id="rsp-step-btn-slot">${stepBtnHtml}</span>
+          ${highlightBtnHtml}
+        </span>
       </div>
       ${selectorHtml}
       <div id="rsp-card-body">
@@ -329,8 +389,7 @@ function buildRouteSpeedProfileCard(data, selectedKey = null) {
  *
  * When `syncHighlight` is true (user-initiated from this card), clears all other
  * TPS highlights and highlights only the selected route, keeps the Signalling
- * Envelope filter strip above in sync, and keeps only the signal/point marker
- * (removing any extra track centreline highlight) in Geo view.
+ * Envelope filter strip above in sync, and plots both route signals in Geo view.
  *
  * @param {string} routeKey Route key (e.g. `"outgoing:120"` or `"approach:110"`).
  * @param {boolean} syncHighlight Whether to isolate this route on the canvas & envelope bar.
@@ -345,6 +404,10 @@ window.selectRouteSpeedProfile = function (routeKey, syncHighlight = true) {
   if (bodyEl) {
     bodyEl.innerHTML = renderRouteSpeedProfileBody(match);
   }
+  const stepSlot = document.getElementById("rsp-step-btn-slot");
+  if (stepSlot) {
+    stepSlot.innerHTML = renderRouteStepButtonHtml(match);
+  }
   const selEl = document.getElementById("rsp-route-select");
   if (selEl && selEl.value !== routeKey) {
     selEl.value = routeKey;
@@ -354,10 +417,6 @@ window.selectRouteSpeedProfile = function (routeKey, syncHighlight = true) {
     syncHighlight &&
     (routeKey.startsWith("outgoing:") || routeKey.startsWith("approach:"))
   ) {
-    // Keep the selected signal/point marker in Geo view and clear any extra Geo track highlight.
-    if (STATE.crossHighlight && STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
-      STATE.crossHighlight.nwr.ways = [];
-    }
     if (typeof window.setSignalHighlightFilter === "function") {
       window.setSignalHighlightFilter(routeKey, { fromSpeedProfile: true });
     } else {

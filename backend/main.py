@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 import os
 import threading
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -158,6 +158,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.middleware("http")
+async def add_static_cache_headers(request: Request, call_next):
+    """Add browser cache headers for versioned ``/static/*`` CSS and JS assets."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") and response.status_code == 200:
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
 
 app.include_router(tps_router)
 app.include_router(nwr_router)

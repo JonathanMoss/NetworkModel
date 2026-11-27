@@ -14,8 +14,9 @@ function distToSegment(px, py, x0, y0, x1, y1) {
 }
 
 /* Comprehensive Client-Side Hit Testing Across Active View Layers & Labels */
-function findObjectsAtCursor(sx, sy, wx, wy) {
-  if (STATE.activeView === "nwr") {
+function findObjectsAtCursor(sx, sy, wx, wy, targetView = null) {
+  const activeView = targetView || STATE.activeView;
+  if (activeView === "nwr") {
     return findNwrObjectsAtCursor(sx, sy, wx, wy);
   }
   if (!STATE.overview) return [];
@@ -368,8 +369,34 @@ function findNwrObjectsAtCursor(sx, sy, wx, wy) {
     }
   };
 
-  const zoom = STATE.zoom;
+  const zoom = STATE.nwrCam ? STATE.nwrCam.zoom : STATE.zoom;
   const pxTol = 10;
+
+  // 0. Clickable Geo Route Endpoint Markers (Entrance / Exit signals & buffers)
+  if (STATE.crossHighlight && STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
+    const targetCanvas = STATE.activeView === "split" && nwrCanvas ? nwrCanvas : canvas;
+    const cw = targetCanvas ? targetCanvas.clientWidth : 800;
+    const ch = targetCanvas ? targetCanvas.clientHeight : 600;
+    const camX = STATE.nwrCam ? STATE.nwrCam.camX : STATE.camX;
+    const camY = STATE.nwrCam ? STATE.nwrCam.camY : STATE.camY;
+    for (const pt of STATE.crossHighlight.nwr.points || []) {
+      if (!pt.asset_type || pt.asset_id === undefined || pt.asset_id === null) continue;
+      const psx = (pt.x - camX) * zoom + cw / 2;
+      const psy = (camY - pt.y) * zoom + ch / 2;
+      const d = Math.hypot(sx - psx, sy - psy);
+      if (d <= 15) {
+        addHit({
+          type: pt.asset_type,
+          id: pt.asset_id,
+          title: pt.label || `${pt.asset_type} #${pt.asset_id}`,
+          sub: "Click to step to this signal / endpoint",
+          x: pt.x,
+          y: pt.y,
+          score: -10 + d * 0.01,
+        });
+      }
+    }
+  }
 
   // 1. NWR Track Nodes & Node Labels
   if (STATE.nwrLayers.nodes && zoom >= 0.035 && STATE.nwrViewportData.nodes) {

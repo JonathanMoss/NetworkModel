@@ -20,6 +20,7 @@ from routers.asset_handlers.blocks_routes import (
     _get_route_asset,
     _get_track_asset,
 )
+from routers.asset_handlers.geo import get_asset_geo_point
 from routers.asset_handlers.graphics_timing import (
     _get_annotation_asset,
     _get_graphictext_asset,
@@ -87,3 +88,12 @@ def api_get_asset(
         with conn.cursor(row_factory=dict_row) as cur:
             saved_override_fid = get_saved_track_override(cur, asset_type, asset_id)
             return handler(cur, asset_type, asset_id, nwr_fid, saved_override_fid, lookup)
+
+
+@router.get("/api/asset/{asset_type}/{asset_id}/geo")
+def api_get_asset_geo(asset_type: str, asset_id: int) -> dict[str, Any]:
+    """Return lightweight OSGB36 coordinates for a TPS signal, points, or node endpoint."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            saved_override_fid = get_saved_track_override(cur, asset_type, asset_id)
+            return get_asset_geo_point(cur, asset_type, asset_id, saved_override_fid)
