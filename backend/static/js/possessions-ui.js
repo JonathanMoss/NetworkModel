@@ -18,6 +18,7 @@ function createEmptyLimitPoint() {
     asset_id: "",
     label: "",
     qualifier: "at",
+    distance_meters: "",
   };
 }
 
@@ -53,12 +54,112 @@ async function loadPossessions() {
 }
 
 function updatePossessionCounts() {
-  const cnt = (STATE.possessions || []).length;
+  const total = (STATE.possessions || []).length;
+  const vis = STATE.visiblePossessionIds ? STATE.visiblePossessionIds.size : 0;
+  const txt = vis > 0 ? `${vis}/${total}` : String(total);
   const el1 = document.getElementById("cnt-possessions");
   const el2 = document.getElementById("cnt-nwr-possessions");
-  if (el1) el1.textContent = String(cnt);
-  if (el2) el2.textContent = String(cnt);
+  if (el1) el1.textContent = txt;
+  if (el2) el2.textContent = txt;
 }
+
+/** @type {Map<number, number>} Debounce timers for style PATCH calls per possession ID. */
+const _POSS_STYLE_TIMERS = new Map();
+
+/**
+ * Toggle whether a specific possession is rendered on the TPS & NWR views.
+ *
+ * @param {number} possessionId Possession ID.
+ * @param {boolean} isVisible Whether to render it.
+ */
+window.togglePossessionVisibility = function (possessionId, isVisible) {
+  if (!STATE.visiblePossessionIds) STATE.visiblePossessionIds = new Set();
+  if (isVisible) {
+    STATE.visiblePossessionIds.add(possessionId);
+  } else {
+    STATE.visiblePossessionIds.delete(possessionId);
+    if (STATE.activePossessionId === possessionId) STATE.activePossessionId = null;
+  }
+  updatePossessionCounts();
+  renderPossessionsList();
+  requestRender();
+};
+
+window.showAllPossessions = function () {
+  if (!STATE.visiblePossessionIds) STATE.visiblePossessionIds = new Set();
+  for (const p of STATE.possessions || []) {
+    if (p.status !== "Cancelled") STATE.visiblePossessionIds.add(p.id);
+  }
+  updatePossessionCounts();
+  renderPossessionsList();
+  requestRender();
+};
+
+window.hideAllPossessions = function () {
+  if (!STATE.visiblePossessionIds) STATE.visiblePossessionIds = new Set();
+  STATE.visiblePossessionIds.clear();
+  STATE.activePossessionId = null;
+  updatePossessionCounts();
+  renderPossessionsList();
+  requestRender();
+};
+
+window.togglePossessionStylePanel = function (possessionId) {
+  if (!STATE.openPossessionStyleIds) STATE.openPossessionStyleIds = new Set();
+  if (STATE.openPossessionStyleIds.has(possessionId)) {
+    STATE.openPossessionStyleIds.delete(possessionId);
+  } else {
+    STATE.openPossessionStyleIds.add(possessionId);
+  }
+  renderPossessionsList();
+};
+
+/**
+ * Optimistically apply a colour or render-style change to a possession and
+ * persist it to PostgreSQL via `PATCH /api/possessions/{id}/style`.
+ *
+ * @param {number} possessionId Possession ID.
+ * @param {object} patch Style fields (`color`, `pattern`, `thickness`, `halo`, `halo_opacity`, `labels`).
+ */
+window.updatePossessionStyle = function (possessionId, patch) {
+  const poss = (STATE.possessions || []).find((p) => p.id === possessionId);
+  if (!poss || !patch) return;
+
+  if (patch.color) poss.color = patch.color;
+  poss.render_style = { ...(poss.render_style || {}) };
+  for (const k of ["pattern", "thickness", "halo", "halo_opacity", "labels"]) {
+    if (patch[k] !== undefined) poss.render_style[k] = patch[k];
+  }
+
+  // Update card border colour and opacity readout live without full DOM rebuild during drag
+  const card = document.querySelector(`.poss-card[data-poss-id="${possessionId}"]`);
+  if (card && patch.color) card.style.borderLeftColor = patch.color;
+  if (card && patch.halo_opacity !== undefined) {
+    const valEl = card.querySelector(".poss-halo-val");
+    if (valEl) valEl.textContent = `${Math.round(patch.halo_opacity * 100)}%`;
+  }
+  requestRender();
+
+  if (_POSS_STYLE_TIMERS.has(possessionId)) {
+    clearTimeout(_POSS_STYLE_TIMERS.get(possessionId));
+  }
+  const timer = setTimeout(async () => {
+    _POSS_STYLE_TIMERS.delete(possessionId);
+    try {
+      await fetch(`/api/possessions/${possessionId}/style`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          color: poss.color,
+          ...poss.render_style,
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to save possession style:", err);
+    }
+  }, 180);
+  _POSS_STYLE_TIMERS.set(possessionId, timer);
+};
 
 /**
  * Snapshot all current input values inside `#poss-lines-container` back into
@@ -77,6 +178,7 @@ function syncPossessionLinesFromDom() {
       const rows = card.querySelectorAll(`.pl-limit-row[data-side="${side}"]`);
       return Array.from(rows).map((row) => ({
         qualifier: row.querySelector(".pl-lim-qual")?.value || "at",
+        distance_meters: row.querySelector(".pl-lim-dist")?.value || "",
         label: row.querySelector(".pl-lim-label")?.value || "",
         asset_type: row.querySelector(".pl-lim-type")?.value || "",
         asset_id: row.querySelector(".pl-lim-id")?.value || "",
@@ -93,10 +195,12 @@ function renderLimitRowHtml(lineIdx, side, ptIdx, pt, canRemove) {
   const ph = side === "from" ? "Click 🎯 + Pick From on map" : "Click 🎯 + Pick To on map";
   return `
     <div class="pl-limit-row" data-side="${side}" data-pt-idx="${ptIdx}">
+      <input type="number" class="pl-lim-dist" min="0" step="50" value="${escapeHtml(String(pt.distance_meters ?? ""))}" placeholder="m" title="Optional offset in metres (e.g. 400)" />
       <select class="pl-lim-qual" title="Limit qualifier">
         <option value="at" ${pt.qualifier === "at" ? "selected" : ""}>At</option>
         <option value="approach" ${pt.qualifier === "approach" ? "selected" : ""}>Approach</option>
         <option value="beyond" ${pt.qualifier === "beyond" ? "selected" : ""}>Beyond</option>
+        <option value="clear_of" ${pt.qualifier === "clear_of" ? "selected" : ""}>Clear Of</option>
         <option value="buffer" ${pt.qualifier === "buffer" ? "selected" : ""}>Buffer</option>
       </select>
       <input type="text" class="pl-lim-label" value="${escapeHtml(pt.label || "")}" placeholder="${ph}" />
@@ -281,7 +385,10 @@ async function handlePossessionMapPick(candidate) {
 window.focusPossession = function (possessionId) {
   const poss = (STATE.possessions || []).find((p) => p.id === possessionId);
   if (!poss) return;
+  if (!STATE.visiblePossessionIds) STATE.visiblePossessionIds = new Set();
+  STATE.visiblePossessionIds.add(poss.id);
   STATE.activePossessionId = poss.id;
+  updatePossessionCounts();
 
   const tpsBox = poss.tps_geometry && poss.tps_geometry.bbox;
   if (tpsBox && tpsBox.length === 4 && (STATE.activeView === "tps" || STATE.activeView === "split")) {
@@ -314,6 +421,7 @@ function hydrateLineForEditor(ln) {
           asset_id: p.asset_id ?? "",
           label: p.label || "",
           qualifier: p.qualifier || "at",
+          distance_meters: p.distance_meters ?? "",
         }))
       : [
           {
@@ -321,6 +429,7 @@ function hydrateLineForEditor(ln) {
             asset_id: ln.start_asset_id ?? "",
             label: ln.start_label || "",
             qualifier: ln.start_qualifier || "at",
+            distance_meters: "",
           },
         ];
   const tos =
@@ -330,6 +439,7 @@ function hydrateLineForEditor(ln) {
           asset_id: p.asset_id ?? "",
           label: p.label || "",
           qualifier: p.qualifier || "at",
+          distance_meters: p.distance_meters ?? "",
         }))
       : [
           {
@@ -337,6 +447,7 @@ function hydrateLineForEditor(ln) {
             asset_id: ln.end_asset_id ?? "",
             label: ln.end_label || "",
             qualifier: ln.end_qualifier || "at",
+            distance_meters: "",
           },
         ];
   return {
@@ -476,10 +587,62 @@ function renderPossessionsList() {
           </div>`
         : "";
 
+      const isVisible = STATE.visiblePossessionIds ? STATE.visiblePossessionIds.has(p.id) : false;
+      const isStyleOpen = STATE.openPossessionStyleIds ? STATE.openPossessionStyleIds.has(p.id) : false;
+      const rs = p.render_style || {};
+      const pat = rs.pattern || "dashed";
+      const thk = rs.thickness || "normal";
+      const haloOn = rs.halo !== false;
+      const haloOp = typeof rs.halo_opacity === "number" ? rs.halo_opacity : 0.3;
+      const lblMode = rs.labels || "zoomed";
+      const stylePanelHtml = isStyleOpen
+        ? `<div class="poss-style-panel" onclick="event.stopPropagation()">
+            <div class="poss-style-grid">
+              <div class="poss-style-field">
+                <span>Line Pattern</span>
+                <select onchange="updatePossessionStyle(${p.id}, { pattern: this.value })">
+                  <option value="dashed" ${pat === "dashed" ? "selected" : ""}>Dashed</option>
+                  <option value="solid" ${pat === "solid" ? "selected" : ""}>Solid</option>
+                  <option value="dotted" ${pat === "dotted" ? "selected" : ""}>Dotted</option>
+                  <option value="double" ${pat === "double" ? "selected" : ""}>Double-stripe</option>
+                </select>
+              </div>
+              <div class="poss-style-field">
+                <span>Thickness</span>
+                <select onchange="updatePossessionStyle(${p.id}, { thickness: this.value })">
+                  <option value="thin" ${thk === "thin" ? "selected" : ""}>Thin</option>
+                  <option value="normal" ${thk === "normal" ? "selected" : ""}>Normal</option>
+                  <option value="bold" ${thk === "bold" ? "selected" : ""}>Bold</option>
+                </select>
+              </div>
+            </div>
+            <div class="poss-style-halo-row">
+              <label style="flex-direction:row;align-items:center;gap:4px;cursor:pointer;">
+                <input type="checkbox" ${haloOn ? "checked" : ""} onchange="updatePossessionStyle(${p.id}, { halo: this.checked })" />
+                <span>Halo</span>
+              </label>
+              <input type="range" min="0" max="60" step="5" value="${Math.round(haloOp * 100)}" oninput="updatePossessionStyle(${p.id}, { halo_opacity: Number(this.value) / 100 })" title="Halo glow opacity" />
+              <span class="poss-halo-val">${Math.round(haloOp * 100)}%</span>
+            </div>
+            <div class="poss-style-field">
+              <span>PLB Marker Labels</span>
+              <select onchange="updatePossessionStyle(${p.id}, { labels: this.value })">
+                <option value="zoomed" ${lblMode === "zoomed" ? "selected" : ""}>Zoomed / Active</option>
+                <option value="always" ${lblMode === "always" ? "selected" : ""}>Always Show</option>
+                <option value="off" ${lblMode === "off" ? "selected" : ""}>Hidden</option>
+              </select>
+            </div>
+          </div>`
+        : "";
+
       return `
-        <div class="poss-card ${STATE.activePossessionId === p.id ? "active" : ""}" style="border-left-color:${escapeHtml(p.color || "#f59e0b")}" onclick="focusPossession(${p.id})">
+        <div class="poss-card ${STATE.activePossessionId === p.id ? "active" : ""}" data-poss-id="${p.id}" style="border-left-color:${escapeHtml(p.color || "#f59e0b")}" onclick="focusPossession(${p.id})">
           <div class="poss-card-top">
-            <span class="poss-card-title">${escapeHtml(p.title)}</span>
+            <div class="poss-card-lead">
+              <input type="checkbox" class="poss-vis-chk" ${isVisible ? "checked" : ""} onclick="event.stopPropagation()" onchange="togglePossessionVisibility(${p.id}, this.checked)" title="Show / hide on map views" />
+              <input type="color" class="poss-card-swatch" value="${escapeHtml(p.color || "#f59e0b")}" onclick="event.stopPropagation()" oninput="updatePossessionStyle(${p.id}, { color: this.value })" title="Quick colour picker" />
+              <span class="poss-card-title">${escapeHtml(p.title)}</span>
+            </div>
             <span class="poss-pill ${statusCls}">${escapeHtml(p.status || "Planned")}</span>
           </div>
           ${p.won_ref ? `<div class="poss-card-meta"><strong>${escapeHtml(p.won_ref)}</strong></div>` : ""}
@@ -494,7 +657,10 @@ function renderPossessionsList() {
             <span class="poss-pill">${(p.worksites || []).length} Worksite(s)</span>
           </div>
           ${wsHtml}
+          ${stylePanelHtml}
           <div class="poss-card-actions">
+            <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); openPossessionWonModal(${p.id})" title="View &amp; export Weekly Operating Notice">📄 WON</button>
+            <button type="button" class="btn btn-xs ${isStyleOpen ? "btn-primary" : "btn-secondary"}" onclick="event.stopPropagation(); togglePossessionStylePanel(${p.id})">🎨 Style</button>
             <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); openEditPossessionForm(${p.id})">Edit</button>
             <button type="button" class="btn btn-xs btn-accent" onclick="event.stopPropagation(); openAddWorksiteForm(${p.id})">+ Worksite (ES)</button>
             <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); deletePossession(${p.id})">Delete</button>
@@ -524,6 +690,75 @@ function renderPossessionsList() {
   });
   document.getElementById("btn-cancel-poss-pick")?.addEventListener("click", cancelPossessionMapPick);
   document.getElementById("btn-add-poss-line")?.addEventListener("click", addPossessionLine);
+  document.getElementById("btn-poss-show-all")?.addEventListener("click", showAllPossessions);
+  document.getElementById("btn-poss-hide-all")?.addEventListener("click", hideAllPossessions);
+
+  // Weekly Operating Notice (WON) Preview & Export Modal
+  let _activeWonId = null;
+  let _activeWonFilename = "possession_WON.txt";
+  const wonModal = document.getElementById("poss-won-modal");
+  const wonPre = document.getElementById("poss-won-text");
+  const wonTitle = document.getElementById("poss-won-modal-title");
+  const wonHeaderChk = document.getElementById("chk-won-include-header");
+
+  async function fetchAndRenderWon() {
+    if (!_activeWonId || !wonPre) return;
+    const inc = wonHeaderChk ? wonHeaderChk.checked : true;
+    wonPre.textContent = "Generating Weekly Operating Notice...";
+    try {
+      const res = await fetch(`/api/possessions/${_activeWonId}/won?include_header=${inc ? "true" : "false"}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      _activeWonFilename = data.filename || `possession_${_activeWonId}_WON.txt`;
+      if (wonTitle) wonTitle.textContent = `WON Preview — ${data.title || `#${_activeWonId}`}`;
+      wonPre.textContent = data.text || "";
+    } catch (err) {
+      console.error("Failed to fetch WON text:", err);
+      wonPre.textContent = "Failed to generate WON text.";
+    }
+  }
+
+  window.openPossessionWonModal = function (possessionId) {
+    _activeWonId = possessionId;
+    wonModal?.classList.remove("hidden");
+    fetchAndRenderWon();
+  };
+
+  wonHeaderChk?.addEventListener("change", fetchAndRenderWon);
+  document.getElementById("btn-close-won-modal")?.addEventListener("click", () => {
+    wonModal?.classList.add("hidden");
+  });
+  wonModal?.addEventListener("click", (e) => {
+    if (e.target === wonModal) wonModal.classList.add("hidden");
+  });
+  document.getElementById("btn-copy-won")?.addEventListener("click", async () => {
+    if (!wonPre) return;
+    try {
+      await navigator.clipboard.writeText(wonPre.textContent || "");
+      const btn = document.getElementById("btn-copy-won");
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = "✓ Copied!";
+        setTimeout(() => {
+          btn.textContent = orig;
+        }, 1500);
+      }
+    } catch (err) {
+      console.error("Copy failed:", err);
+    }
+  });
+  document.getElementById("btn-download-won")?.addEventListener("click", () => {
+    if (!wonPre) return;
+    const blob = new Blob([wonPre.textContent || ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = _activeWonFilename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
 
   document.getElementById("btn-new-possession")?.addEventListener("click", () => {
     wsForm?.classList.add("hidden");
@@ -555,6 +790,7 @@ function renderPossessionsList() {
       asset_id: toOptInt(p.asset_id),
       label: (p.label || "").trim() || null,
       qualifier: p.qualifier || "at",
+      distance_meters: toOptInt(p.distance_meters),
     });
 
     const linesPayload = POSS_FORM_LINES.map((ln) => {
@@ -572,6 +808,9 @@ function renderPossessionsList() {
       };
     });
 
+    const existingPoss = editId
+      ? (STATE.possessions || []).find((p) => String(p.id) === String(editId))
+      : null;
     const payload = {
       won_ref: document.getElementById("poss-won-ref").value.trim() || null,
       title: document.getElementById("poss-title").value.trim(),
@@ -584,6 +823,7 @@ function renderPossessionsList() {
       color: document.getElementById("poss-color").value || "#f59e0b",
       notes: document.getElementById("poss-notes").value.trim() || null,
       lines: linesPayload,
+      render_style: existingPoss?.render_style || {},
     };
 
     const url = editId ? `/api/possessions/${editId}` : "/api/possessions";

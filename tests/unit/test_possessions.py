@@ -292,3 +292,51 @@ def test_resolve_multi_from_to_fan_in_deduplicates_shared_trunk(monkeypatch):
     # Shared TPS trunk deduplicated -> 2nd way only has bay2 spur [[0,20],[50,0]]
     assert len(tps_g["ways"]) == 2
     assert tps_g["ways"][1]["coords"] == [[0.0, 20.0], [50.0, 0.0]]
+
+
+def test_format_possession_won_text_exact_uk_format():
+    """Formats multi-line possessions in authentic UK Weekly Operating Notice (WON) wording."""
+    sample = {
+        "won_ref": "WON Wk34",
+        "title": "Southbury Renewal",
+        "picop_name": "A. Smith",
+        "start_dt": "Sat 23:30",
+        "end_dt": "Sun 06:00",
+        "ole_isolation": "Earthed",
+        "notes": "Adjacent line open at 20mph.",
+        "lines": [
+            {
+                "line_name": "Up Fast",
+                "from_limits": [{"asset_type": "signal", "label": "SIG: NT102", "qualifier": "beyond", "distance_meters": 400}],
+                "to_limits": [{"asset_type": "signal", "label": "SB204", "qualifier": "approach", "distance_meters": 400}],
+            },
+            {
+                "line_name": "Up Slow Line",
+                "from_limits": [{"asset_type": "signal", "label": "NT106", "qualifier": "beyond", "distance_meters": 400}],
+                "to_limits": [{"asset_type": "points", "label": "No. 512A points at Southbury", "qualifier": "clear_of"}],
+            },
+            {
+                "line_name": "Up E&G",
+                "from_limits": [{"asset_type": "signal", "label": "SIG: CQ53", "qualifier": "beyond"}],
+                "to_limits": [
+                    {"asset_type": "signal", "label": "P5: GLGQHL", "qualifier": "approach"},
+                    {"asset_type": "signal", "label": "P7: GLGQHL", "qualifier": "approach"},
+                    {"asset_type": "signal", "label": "P6: GLGQHL", "qualifier": "approach"},
+                ],
+            },
+        ],
+    }
+    assert poss.extract_won_station_codes(sample) == ["GLGQHL"]
+    text_no_hdr = poss.format_possession_won_text(
+        sample,
+        include_header=False,
+        station_names={"GLGQHL": "Glasgow Queen Street"},
+    )
+    assert "UP FAST LINE:\nBetween 400 metres BEYOND Signal NT102 and 400 metres ON THE APPROACH TO\nSignal SB204." in text_no_hdr
+    assert "UP SLOW LINE:\nBetween 400 metres BEYOND Signal NT106 and CLEAR OF No. 512A points at\nSouthbury." in text_no_hdr
+    assert "UP E&G LINE:\nBetween BEYOND Signal CQ53 and ON THE APPROACH TO Buffers Platforms 5, 6,\n7 Glasgow Queen Street." in text_no_hdr
+
+    text_with_hdr = poss.format_possession_won_text(sample, include_header=True)
+    assert "WON Wk34 — SOUTHBURY RENEWAL" in text_with_hdr
+    assert "PICOP: A. Smith | OLE: Earthed" in text_with_hdr
+    assert "Notes: Adjacent line open at 20mph." in text_with_hdr

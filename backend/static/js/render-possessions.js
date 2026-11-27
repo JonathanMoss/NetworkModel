@@ -1,10 +1,42 @@
 /**
  * @fileoverview HTML5 Canvas overlay renderer for Engineers' Possessions
  * (PICOP / T3) and inner Worksites (ES zones) on both TPS and NWR views.
+ * Supports multi-possession visibility checkboxes and per-possession styles
+ * (colour, line pattern, thickness, halo glow/opacity, and PLB label mode).
  */
 
 /**
- * Draw all saved Engineers' Possessions and their inner Worksites onto the
+ * Resolve normalized rendering style options for a possession.
+ *
+ * @param {object} poss Possession record from API.
+ * @param {boolean} isNwr Whether rendering on NWR Geographic view.
+ * @param {boolean} isActive Whether this possession is currently focused.
+ * @returns {object} Normalized style parameters.
+ */
+function resolvePossessionRenderStyle(poss, isNwr, isActive) {
+  const rs = poss.render_style || {};
+  const thicknessScale =
+    rs.thickness === "thin" ? 0.68 : rs.thickness === "bold" ? 1.55 : 1.0;
+  const baseHaloW = isNwr ? (isActive ? 5.2 : 3.8) : isActive ? 14 : 10;
+  const baseCoreW = isNwr ? (isActive ? 2.6 : 1.9) : isActive ? 5.0 : 3.6;
+  const defaultHaloAlpha = isNwr ? (isActive ? 0.3 : 0.18) : isActive ? 0.38 : 0.22;
+  const haloAlpha =
+    typeof rs.halo_opacity === "number" && !Number.isNaN(rs.halo_opacity)
+      ? Math.max(0, Math.min(0.65, rs.halo_opacity))
+      : defaultHaloAlpha;
+  return {
+    color: poss.color || "#f59e0b",
+    pattern: rs.pattern || "dashed",
+    halo: rs.halo !== false,
+    haloWidth: baseHaloW * thicknessScale,
+    haloAlpha,
+    coreWidth: baseCoreW * thicknessScale,
+    labels: rs.labels || "zoomed",
+  };
+}
+
+/**
+ * Draw all ticked Engineers' Possessions and their inner Worksites onto the
  * active TPS Schematic or NWR Geographic Track Model canvas.
  *
  * @param {CanvasRenderingContext2D} targetCtx Target 2D canvas context.
@@ -16,6 +48,8 @@ function drawPossessionsOverlay(targetCtx, targetView) {
   if (!layerOn) return;
   const list = STATE.possessions || [];
   if (!list.length) return;
+  const visibleIds = STATE.visiblePossessionIds;
+  if (!visibleIds || !visibleIds.size) return;
 
   const c = targetCtx.canvas || (isNwr ? nwrCanvas : canvas);
   const w = c.clientWidth;
@@ -32,14 +66,17 @@ function drawPossessionsOverlay(targetCtx, targetView) {
 
   for (const poss of list) {
     if (poss.status === "Cancelled") continue;
+    if (!visibleIds.has(poss.id)) continue;
     const geom = isNwr ? poss.nwr_geometry : poss.tps_geometry;
     if (!geom) continue;
+
     const isActive = STATE.activePossessionId === poss.id;
-    const baseCol = poss.color || "#f59e0b";
+    const st = resolvePossessionRenderStyle(poss, isNwr, isActive);
+    const baseCol = st.color;
     const ways = geom.ways || [];
     const markers = geom.markers || [];
 
-    // 1. Possession blocked-line band (glow halo + high-vis dashed core)
+    // 1. Possession blocked-line band (optional glow halo + styled core)
     for (const way of ways) {
       const pts = way.coords || [];
       if (pts.length < 2) continue;
@@ -51,23 +88,50 @@ function drawPossessionsOverlay(targetCtx, targetView) {
         targetCtx.lineTo(xi, yi);
       }
 
-      // Outer hazard halo (tight on NWR Geo view so adjacent parallel tracks stay unobstructed)
-      targetCtx.save();
-      targetCtx.strokeStyle = baseCol;
-      targetCtx.globalAlpha = isNwr ? (isActive ? 0.30 : 0.18) : (isActive ? 0.38 : 0.22);
-      targetCtx.lineWidth = isNwr ? (isActive ? 5.2 : 3.8) : (isActive ? 14 : 10);
+      // Optional outer hazard halo
+      if (st.halo && st.haloAlpha > 0) {
+        targetCtx.save();
+        targetCtx.strokeStyle = baseCol;
+        targetCtx.globalAlpha = st.haloAlpha;
+        targetCtx.lineWidth = st.haloWidth;
+        targetCtx.lineCap = "round";
+        targetCtx.lineJoin = "round";
+        targetCtx.stroke();
+        targetCtx.restore();
+      }
+
+      // Styled core line (dashed / solid / dotted / double-stripe)
       targetCtx.lineCap = "round";
       targetCtx.lineJoin = "round";
-      targetCtx.stroke();
-      targetCtx.restore();
-
-      // Core engineering dashed stripe
-      targetCtx.strokeStyle = baseCol;
-      targetCtx.lineWidth = isNwr ? (isActive ? 2.6 : 1.9) : (isActive ? 5.0 : 3.6);
-      targetCtx.lineCap = "round";
-      targetCtx.setLineDash(isNwr ? [7, 5] : [10, 6]);
-      targetCtx.stroke();
-      targetCtx.setLineDash([]);
+      if (st.pattern === "solid") {
+        targetCtx.strokeStyle = baseCol;
+        targetCtx.lineWidth = st.coreWidth;
+        targetCtx.setLineDash([]);
+        targetCtx.stroke();
+      } else if (st.pattern === "dotted") {
+        targetCtx.strokeStyle = baseCol;
+        targetCtx.lineWidth = st.coreWidth;
+        targetCtx.setLineDash(isNwr ? [2, 4] : [3, 6]);
+        targetCtx.stroke();
+        targetCtx.setLineDash([]);
+      } else if (st.pattern === "double") {
+        // Outer colour rail + dark inner gap for high-contrast double-stripe look
+        targetCtx.strokeStyle = baseCol;
+        targetCtx.lineWidth = st.coreWidth * 1.65;
+        targetCtx.setLineDash([]);
+        targetCtx.stroke();
+        targetCtx.strokeStyle = "#0f172a";
+        targetCtx.lineWidth = Math.max(1.0, st.coreWidth * 0.55);
+        targetCtx.setLineDash(isNwr ? [6, 4] : [8, 5]);
+        targetCtx.stroke();
+        targetCtx.setLineDash([]);
+      } else {
+        targetCtx.strokeStyle = baseCol;
+        targetCtx.lineWidth = st.coreWidth;
+        targetCtx.setLineDash(isNwr ? [7, 5] : [10, 6]);
+        targetCtx.stroke();
+        targetCtx.setLineDash([]);
+      }
     }
 
     // 2. Possession Limit Board (PLB) / Protecting Signal markers
@@ -78,7 +142,7 @@ function drawPossessionsOverlay(targetCtx, targetView) {
       const markerCol = isStart ? "#ef4444" : baseCol;
 
       // Diamond limit board marker
-      const sz = isNwr ? (isActive ? 6.5 : 5.2) : (isActive ? 8 : 6.5);
+      const sz = isNwr ? (isActive ? 6.5 : 5.2) : isActive ? 8 : 6.5;
       targetCtx.beginPath();
       targetCtx.moveTo(sx, sy - sz);
       targetCtx.lineTo(sx + sz, sy);
@@ -91,8 +155,13 @@ function drawPossessionsOverlay(targetCtx, targetView) {
       targetCtx.lineWidth = 1.6;
       targetCtx.stroke();
 
-      // Floating PLB label badge (always shown for active possession, or zoomed in)
-      const showLabel = isActive || (isNwr ? cam.zoom >= 0.04 : cam.zoom >= 0.35);
+      // Floating PLB label badge (always / zoomed / off)
+      const showLabel =
+        st.labels === "always"
+          ? true
+          : st.labels === "off"
+          ? false
+          : isActive || (isNwr ? cam.zoom >= 0.04 : cam.zoom >= 0.35);
       if (showLabel && m.label) {
         const prefixParts = [];
         if (poss.won_ref) prefixParts.push(poss.won_ref);
@@ -128,7 +197,7 @@ function drawPossessionsOverlay(targetCtx, targetView) {
           targetCtx.lineTo(wxi, wyi);
         }
         targetCtx.strokeStyle = "#06b6d4";
-        targetCtx.lineWidth = isNwr ? (isActive ? 2.4 : 1.8) : (isActive ? 4.2 : 3.0);
+        targetCtx.lineWidth = isNwr ? (isActive ? 2.4 : 1.8) : isActive ? 4.2 : 3.0;
         targetCtx.setLineDash(isNwr ? [4, 4] : [5, 5]);
         targetCtx.stroke();
         targetCtx.setLineDash([]);
@@ -145,7 +214,7 @@ function drawPossessionsOverlay(targetCtx, targetView) {
         targetCtx.lineWidth = 1.4;
         targetCtx.stroke();
 
-        if (isActive && wm.label) {
+        if (isActive && st.labels !== "off" && wm.label) {
           const lbl = `${ws.title}: ${wm.label}`;
           targetCtx.font = "600 9.5px Inter, sans-serif";
           const tw = targetCtx.measureText(lbl).width;
@@ -164,4 +233,3 @@ function drawPossessionsOverlay(targetCtx, targetView) {
 
   targetCtx.restore();
 }
-

@@ -389,4 +389,148 @@
   padding: 4px 6px;
   font-size: 11px;
 }
+.poss-card-lead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+.poss-vis-chk {
+  width: 15px;
+  height: 15px;
+  accent-color: #f59e0b;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.poss-card-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.poss-style-panel {
+  margin-top: 7px;
+  padding: 7px 8px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poss-style-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.poss-style-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+.poss-style-field select {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 4px;
+  color: #f8fafc;
+  padding: 3px 5px;
+  font-size: 10.5px;
+}
+.poss-style-halo-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  color: #cbd5e1;
+}
+.poss-style-halo-row input[type="range"] {
+  flex: 1;
+  accent-color: #f59e0b;
+}
+.pl-limit-row .pl-lim-dist {
+  width: 52px;
+  flex-shrink: 0;
+  padding: 4px 4px;
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.poss-won-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 95;
+  backdrop-filter: blur(4px);
+}
+.poss-won-modal.hidden {
+  display: none;
+}
+.poss-won-dialog {
+  width: 680px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 48px);
+  background: #0f172a;
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  border-radius: 10px;
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.poss-won-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(30, 41, 59, 0.9);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+.poss-won-head h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: #f8fafc;
+}
+.poss-won-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.9);
+}
+.poss-won-chk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+.poss-won-actions {
+  display: flex;
+  gap: 6px;
+}
+.poss-won-pre {
+  margin: 0;
+  padding: 16px 18px;
+  overflow: auto;
+  flex: 1;
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #f8fafc;
+  background: #020617;
+  white-space: pre-wrap;
+}
 

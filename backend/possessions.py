@@ -9,6 +9,8 @@ Resolves both TPS Schematic (``netx, nety``) and NWR Geographic Track Model
      and resolving correlated TPS edges in that ELR mileage range.
 """
 
+import re
+import textwrap
 from typing import Any, Optional
 
 from config import decode_code, get_saved_track_override
@@ -20,6 +22,7 @@ QUALIFIER_PREFIXES: dict[str, str] = {
     "at": "",
     "approach": "Approach to ",
     "beyond": "Beyond ",
+    "clear_of": "Clear of ",
     "buffer": "Buffer / ",
 }
 
@@ -488,3 +491,175 @@ def resolve_worksite_geometries(
         for m in geom.get("markers", []):
             m["label"] = m["label"].replace("PLB Start:", "WMB Start:").replace("PLB End:", "WMB End:")
     return tps_geom, nwr_geom
+
+
+_PLATFORM_LABEL_RE = re.compile(
+    r"^(?:P|PLT|PLAT(?:FORM)?)\s*(\d+[A-Z]?)\s*[:\-]\s*([A-Z0-9]+)$",
+    re.IGNORECASE,
+)
+
+
+def _plat_sort_key(plat: str) -> tuple[int, str]:
+    """Natural sort key for platform numbers like '5', '6', '7', '10A'."""
+    m = re.match(r"^(\d+)(.*)$", plat.strip())
+    return (int(m.group(1)), m.group(2)) if m else (9999, plat)
+
+
+def _apply_won_qualifier(asset_text: str, qual: str, dist: Any) -> str:
+    """Prefix an asset phrase with optional metre offset and WON qualifier wording."""
+    dist_prefix = f"{int(dist)} metres " if dist is not None and int(dist) > 0 else ""
+    if qual == "beyond":
+        return f"{dist_prefix}BEYOND {asset_text}"
+    if qual == "approach":
+        return f"{dist_prefix}ON THE APPROACH TO {asset_text}"
+    if qual == "clear_of":
+        return f"CLEAR OF {asset_text}"
+    if qual == "buffer":
+        if "buffer" in asset_text.lower():
+            return f"{dist_prefix}{asset_text}"
+        return f"{dist_prefix}the buffer stops at {asset_text}"
+    return f"{dist_prefix}{asset_text}"
+
+
+def _format_won_asset_phrase(spec: dict[str, Any]) -> str:
+    """Format a single From/To limit point into authentic UK WON wording."""
+    raw_lbl = (spec.get("label") or "").strip()
+    atype = (spec.get("asset_type") or "").lower()
+    qual = (spec.get("qualifier") or "at").lower()
+    dist = spec.get("distance_meters")
+
+    # Strip internal TPS prefixes like "SIG: " or "PTS: " for clean WON prose
+    clean = re.sub(r"^(?:SIG|PTS|SIGNAL|POINTS)\s*:\s*", "", raw_lbl, flags=re.IGNORECASE).strip()
+    if not clean:
+        clean = "limit"
+
+    lower_clean = clean.lower()
+    if atype == "signal" and not lower_clean.startswith(("signal ", "buffer", "the buffer")):
+        asset_text = f"Signal {clean}"
+    elif atype == "points" and "point" not in lower_clean:
+        asset_text = f"No. {clean} points"
+    else:
+        asset_text = clean
+
+    return _apply_won_qualifier(asset_text, qual, dist)
+
+
+def _format_won_limit_side(
+    specs: list[dict[str, Any]],
+    station_names: Optional[dict[str, str]] = None,
+) -> str:
+    """Format a list of From or To limits, grouping platform buffers at the same station."""
+    if not specs:
+        return "TBC"
+    stn_map = station_names or {}
+    phrases: list[str] = []
+    # Group platform-buffer specs by (station_code, qualifier, distance_meters) preserving order
+    grouped_plats: dict[tuple[str, str, Optional[int]], list[str]] = {}
+    group_order: list[tuple[str, Any]] = []
+
+    for spec in specs:
+        raw_lbl = (spec.get("label") or "").strip()
+        clean = re.sub(r"^(?:SIG|PTS|SIGNAL|POINTS)\s*:\s*", "", raw_lbl, flags=re.IGNORECASE).strip()
+        pm = _PLATFORM_LABEL_RE.match(clean)
+        if pm:
+            plat_num = pm.group(1).upper()
+            stn_code = pm.group(2).upper()
+            qual = (spec.get("qualifier") or "at").lower()
+            dist = spec.get("distance_meters")
+            gkey = (stn_code, qual, int(dist) if dist is not None else None)
+            if gkey not in grouped_plats:
+                grouped_plats[gkey] = []
+                group_order.append(("plat", gkey))
+            if plat_num not in grouped_plats[gkey]:
+                grouped_plats[gkey].append(plat_num)
+        else:
+            group_order.append(("raw", spec))
+
+    for kind, item in group_order:
+        if kind == "plat":
+            stn_code, qual, dist = item
+            plats = sorted(grouped_plats[item], key=_plat_sort_key)
+            stn_label = stn_map.get(stn_code) or stn_code
+            noun = "Platforms" if len(plats) > 1 else "Platform"
+            asset_text = f"Buffers {noun} {', '.join(plats)} {stn_label}"
+            phrases.append(_apply_won_qualifier(asset_text, qual, dist))
+        else:
+            phrases.append(_format_won_asset_phrase(item))
+
+    return _join_won_phrases(phrases)
+
+
+def _join_won_phrases(phrases: list[str]) -> str:
+    """Join one or more WON endpoint phrases grammatically."""
+    if not phrases:
+        return "TBC"
+    if len(phrases) == 1:
+        return phrases[0]
+    return ", ".join(phrases[:-1]) + f" and {phrases[-1]}"
+
+
+def extract_won_station_codes(possession: dict[str, Any]) -> list[str]:
+    """Return distinct station abbreviations referenced by platform-buffer labels."""
+    codes: set[str] = set()
+    raw_lines = possession.get("lines") or []
+    line_entries = raw_lines if isinstance(raw_lines, list) and raw_lines else [possession]
+    for ln in line_entries:
+        for side in ("from", "to"):
+            for spec in _extract_limit_specs(ln, side):
+                raw_lbl = (spec.get("label") or "").strip()
+                clean = re.sub(r"^(?:SIG|PTS|SIGNAL|POINTS)\s*:\s*", "", raw_lbl, flags=re.IGNORECASE).strip()
+                pm = _PLATFORM_LABEL_RE.match(clean)
+                if pm:
+                    codes.add(pm.group(2).upper())
+    return sorted(codes)
+
+
+def format_possession_won_text(
+    possession: dict[str, Any],
+    include_header: bool = True,
+    line_width: int = 74,
+    station_names: Optional[dict[str, str]] = None,
+) -> str:
+    """Format a saved Engineers' Possession into Weekly Operating Notice (WON) text."""
+    blocks: list[str] = []
+
+    if include_header:
+        hdr_lines: list[str] = []
+        title = (possession.get("title") or "ENGINEERS' POSSESSION").strip().upper()
+        won_ref = (possession.get("won_ref") or "").strip()
+        hdr_lines.append(f"{won_ref} — {title}" if won_ref else title)
+        window_parts = [p for p in ((possession.get("start_dt") or "").strip(), (possession.get("end_dt") or "").strip()) if p]
+        if window_parts:
+            hdr_lines.append(f"Timing: {' to '.join(window_parts)}")
+        meta_parts: list[str] = []
+        if (possession.get("picop_name") or "").strip():
+            meta_parts.append(f"PICOP: {possession['picop_name'].strip()}")
+        if (possession.get("ole_isolation") or "").strip() and possession["ole_isolation"] != "N/A":
+            meta_parts.append(f"OLE: {possession['ole_isolation'].strip()}")
+        if meta_parts:
+            hdr_lines.append(" | ".join(meta_parts))
+        blocks.append("\n".join(hdr_lines))
+
+    raw_lines = possession.get("lines") or []
+    line_entries = raw_lines if isinstance(raw_lines, list) and raw_lines else [possession]
+
+    for idx, ln in enumerate(line_entries):
+        raw_name = (ln.get("line_name") or possession.get("lines_blocked") or f"LINE {idx + 1}").strip()
+        heading = raw_name.upper()
+        if not any(tok in heading for tok in ("LINE", "PLATFORM", "LOOP", "SIDING", "ROAD", "TRACK")):
+            heading = f"{heading} LINE"
+
+        from_specs = _extract_limit_specs(ln, "from")
+        to_specs = _extract_limit_specs(ln, "to")
+        from_str = _format_won_limit_side(from_specs, station_names)
+        to_str = _format_won_limit_side(to_specs, station_names)
+
+        sentence = f"Between {from_str} and {to_str}."
+        wrapped = textwrap.fill(sentence, width=line_width)
+        blocks.append(f"{heading}:\n{wrapped}")
+
+    if include_header and (possession.get("notes") or "").strip():
+        notes_wrapped = textwrap.fill(f"Notes: {possession['notes'].strip()}", width=line_width)
+        blocks.append(notes_wrapped)
+
+    return "\n\n".join(blocks) + "\n"

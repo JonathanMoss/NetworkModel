@@ -366,6 +366,7 @@ CREATE TABLE IF NOT EXISTS engineers_possessions (
     end_meters INTEGER,
     track_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+    render_style JSONB NOT NULL DEFAULT '{}'::jsonb,
     tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
     nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),

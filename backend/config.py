@@ -180,6 +180,7 @@ def ensure_possessions_tables(cur) -> None:
             end_meters INTEGER,
             track_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+            render_style JSONB NOT NULL DEFAULT '{}'::jsonb,
             tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
             nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -189,6 +190,9 @@ def ensure_possessions_tables(cur) -> None:
     )
     cur.execute(
         "ALTER TABLE engineers_possessions ADD COLUMN IF NOT EXISTS lines JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+    cur.execute(
+        "ALTER TABLE engineers_possessions ADD COLUMN IF NOT EXISTS render_style JSONB NOT NULL DEFAULT '{}'::jsonb"
     )
     cur.execute(
         """

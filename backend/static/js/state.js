@@ -138,6 +138,8 @@ const STATE = {
 
   selectedAsset: null,
   possessions: [],
+  visiblePossessionIds: new Set(),
+  openPossessionStyleIds: new Set(),
   activePossessionId: null,
   possessionPickTarget: null,
   highlightGroupFilter: "all",

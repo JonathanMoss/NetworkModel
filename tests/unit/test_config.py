@@ -139,7 +139,8 @@ def test_ensure_possessions_tables_runs_once():
     cur = FakeCursor()
     config.ensure_possessions_tables(cur)
     config.ensure_possessions_tables(cur)
-    assert len(cur.executed) == 4
+    assert len(cur.executed) == 5
     assert "engineers_possessions" in cur.executed[0][0]
     assert "ADD COLUMN IF NOT EXISTS lines" in cur.executed[1][0]
-    assert "possession_worksites" in cur.executed[2][0]
+    assert "ADD COLUMN IF NOT EXISTS render_style" in cur.executed[2][0]
+    assert "possession_worksites" in cur.executed[3][0]

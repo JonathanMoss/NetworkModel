@@ -114,6 +114,51 @@ def test_possessions_crud_and_worksites_e2e(client, monkeypatch):
     monkeypatch.setattr(poss_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[]])))
     assert client.put("/api/possessions/999", json={"title": "Missing"}).status_code == 404
 
+    # PATCH /api/possessions/{id}/style (200 + 404)
+    styled_poss = {
+        **sample_poss,
+        "color": "#ef4444",
+        "render_style": {"pattern": "double", "thickness": "bold", "halo": True, "halo_opacity": 0.45, "labels": "always"},
+    }
+    monkeypatch.setattr(
+        poss_router,
+        "get_conn",
+        lambda: FakeConnection(FakeCursor(responses=[[{"id": 1, "color": "#f59e0b", "render_style": {}}], [styled_poss]])),
+    )
+    r_style = client.patch(
+        "/api/possessions/1/style",
+        json={"color": "#ef4444", "pattern": "double", "thickness": "bold", "halo": True, "halo_opacity": 0.45, "labels": "always"},
+    )
+    assert r_style.status_code == 200
+    assert r_style.json()["render_style"]["pattern"] == "double"
+    monkeypatch.setattr(poss_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[]])))
+    assert client.patch("/api/possessions/999/style", json={"pattern": "solid"}).status_code == 404
+
+    # GET /api/possessions/{id}/won (200 + station name lookup + 404)
+    won_poss = {
+        **sample_poss,
+        "lines": [
+            {
+                "line_name": "Up E&G",
+                "from_limits": [{"asset_type": "signal", "label": "SIG: CQ53", "qualifier": "beyond"}],
+                "to_limits": [{"asset_type": "signal", "label": "P5: GLGQHL", "qualifier": "approach"}],
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        poss_router,
+        "get_conn",
+        lambda: FakeConnection(
+            FakeCursor(responses=[[won_poss], [{"abbrev": "GLGQHL", "longname": "GLASGOW QUEEN STREET"}]])
+        ),
+    )
+    r_won = client.get("/api/possessions/1/won?include_header=true")
+    assert r_won.status_code == 200
+    assert r_won.json()["filename"].endswith("_WON.txt")
+    assert "Glasgow Queen Street" in r_won.json()["text"]
+    monkeypatch.setattr(poss_router, "get_conn", lambda: FakeConnection(FakeCursor(responses=[[]])))
+    assert client.get("/api/possessions/999/won").status_code == 404
+
     # POST & DELETE worksites (200 + 404)
     monkeypatch.setattr(
         poss_router,

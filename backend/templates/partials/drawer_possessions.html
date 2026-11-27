@@ -6,6 +6,8 @@
         <h3>Engineers' Possessions</h3>
       </div>
       <div class="poss-header-btns">
+        <button type="button" id="btn-poss-show-all" class="btn btn-xs btn-secondary" title="Show all possessions on map">Show All</button>
+        <button type="button" id="btn-poss-hide-all" class="btn btn-xs btn-secondary" title="Hide all possessions on map">Hide All</button>
         <button type="button" id="btn-new-possession" class="btn btn-sm btn-primary">+ New</button>
         <button type="button" id="btn-close-possessions" class="btn btn-sm btn-secondary" title="Close Possessions Drawer">&times;</button>
       </div>
@@ -147,4 +149,28 @@
       <p class="empty-state">No engineers' possessions recorded yet. Click <strong>+ New</strong> to map one.</p>
     </div>
   </aside>
+
+  <!-- Weekly Operating Notice (WON) Preview & Export Modal -->
+  <div id="poss-won-modal" class="poss-won-modal hidden" role="dialog" aria-modal="true" aria-label="Weekly Operating Notice Preview">
+    <div class="poss-won-dialog">
+      <div class="poss-won-head">
+        <div>
+          <span class="poss-badge">WON • SECTION B</span>
+          <h3 id="poss-won-modal-title">Weekly Operating Notice</h3>
+        </div>
+        <button type="button" id="btn-close-won-modal" class="btn btn-sm btn-secondary">&times;</button>
+      </div>
+      <div class="poss-won-toolbar">
+        <label class="poss-won-chk">
+          <input type="checkbox" id="chk-won-include-header" checked />
+          <span>Include Possession Header &amp; Notes</span>
+        </label>
+        <div class="poss-won-actions">
+          <button type="button" id="btn-copy-won" class="btn btn-xs btn-secondary">📋 Copy Text</button>
+          <button type="button" id="btn-download-won" class="btn btn-xs btn-primary">⬇ Export .txt</button>
+        </div>
+      </div>
+      <pre id="poss-won-text" class="poss-won-pre"></pre>
+    </div>
+  </div>
 

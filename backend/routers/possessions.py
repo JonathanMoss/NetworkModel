@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 
 from config import ensure_possessions_tables, get_conn
 from ingest_nwr import decode_track_id
-from possessions import resolve_possession_geometries, resolve_worksite_geometries
+from possessions import (
+    extract_won_station_codes,
+    format_possession_won_text,
+    resolve_possession_geometries,
+    resolve_worksite_geometries,
+)
 
 router = APIRouter(tags=["possessions"])
 
@@ -21,6 +26,7 @@ class PossessionLimitPoint(BaseModel):
     asset_id: Optional[int] = None
     label: Optional[str] = None
     qualifier: str = "at"
+    distance_meters: Optional[int] = None
 
 
 class PossessionLinePayload(BaseModel):
@@ -72,6 +78,18 @@ class PossessionPayload(BaseModel):
     end_meters: Optional[int] = None
     track_ids: list[str] = Field(default_factory=list)
     lines: list[PossessionLinePayload] = Field(default_factory=list)
+    render_style: dict[str, Any] = Field(default_factory=dict)
+
+
+class PossessionStylePayload(BaseModel):
+    """Per-possession visual rendering style update (persisted to PostgreSQL)."""
+
+    color: Optional[str] = None
+    pattern: Optional[str] = None
+    thickness: Optional[str] = None
+    halo: Optional[bool] = None
+    halo_opacity: Optional[float] = None
+    labels: Optional[str] = None
 
 
 class WorksitePayload(BaseModel):
@@ -166,13 +184,13 @@ def api_create_possession(body: PossessionPayload) -> dict[str, Any]:
                     lines_blocked, ole_isolation, status, notes, color,
                     limit_mode, start_asset_type, start_asset_id, start_label, start_qualifier,
                     end_asset_type, end_asset_id, end_label, end_qualifier,
-                    elr, start_meters, end_meters, track_ids, lines, tps_geometry, nwr_geometry
+                    elr, start_meters, end_meters, track_ids, lines, render_style, tps_geometry, nwr_geometry
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
+                    %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
                 )
                 RETURNING *
                 """,
@@ -184,6 +202,7 @@ def api_create_possession(body: PossessionPayload) -> dict[str, Any]:
                     data["end_asset_type"], data["end_asset_id"], data["end_label"], data["end_qualifier"],
                     data["elr"], data["start_meters"], data["end_meters"],
                     json.dumps(data["track_ids"] or []), json.dumps(data["lines"] or []),
+                    json.dumps(data.get("render_style") or {}),
                     json.dumps(tps_geom), json.dumps(nwr_geom),
                 ),
             )
@@ -210,7 +229,8 @@ def api_update_possession(possession_id: int, body: PossessionPayload) -> dict[s
                     start_asset_type = %s, start_asset_id = %s, start_label = %s, start_qualifier = %s,
                     end_asset_type = %s, end_asset_id = %s, end_label = %s, end_qualifier = %s,
                     elr = %s, start_meters = %s, end_meters = %s,
-                    track_ids = %s::jsonb, lines = %s::jsonb, tps_geometry = %s::jsonb, nwr_geometry = %s::jsonb,
+                    track_ids = %s::jsonb, lines = %s::jsonb, render_style = %s::jsonb,
+                    tps_geometry = %s::jsonb, nwr_geometry = %s::jsonb,
                     updated_at = NOW()
                 WHERE id = %s
                 RETURNING *
@@ -223,6 +243,7 @@ def api_update_possession(possession_id: int, body: PossessionPayload) -> dict[s
                     data["end_asset_type"], data["end_asset_id"], data["end_label"], data["end_qualifier"],
                     data["elr"], data["start_meters"], data["end_meters"],
                     json.dumps(data["track_ids"] or []), json.dumps(data["lines"] or []),
+                    json.dumps(data.get("render_style") or {}),
                     json.dumps(tps_geom), json.dumps(nwr_geom),
                     possession_id,
                 ),
@@ -238,6 +259,74 @@ def api_update_possession(possession_id: int, body: PossessionPayload) -> dict[s
             updated["worksites"] = [_serialize_row(w) for w in cur.fetchall()]
             conn.commit()
     return updated
+
+
+@router.patch("/api/possessions/{possession_id}/style")
+def api_update_possession_style(possession_id: int, body: PossessionStylePayload) -> dict[str, Any]:
+    """Update colour and per-possession rendering style in PostgreSQL without re-routing."""
+    patch = body.model_dump(exclude_none=True)
+    new_color = patch.pop("color", None)
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            ensure_possessions_tables(cur)
+            cur.execute(
+                "SELECT id, color, render_style FROM engineers_possessions WHERE id = %s",
+                (possession_id,),
+            )
+            existing = cur.fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Possession not found")
+            merged_style = dict(existing.get("render_style") or {})
+            merged_style.update(patch)
+            final_color = new_color or existing.get("color") or "#f59e0b"
+            cur.execute(
+                """
+                UPDATE engineers_possessions
+                SET color = %s, render_style = %s::jsonb, updated_at = NOW()
+                WHERE id = %s
+                RETURNING *
+                """,
+                (final_color, json.dumps(merged_style), possession_id),
+            )
+            updated = _serialize_row(cur.fetchone())
+            conn.commit()
+    return updated
+
+
+@router.get("/api/possessions/{possession_id}/won")
+def api_export_possession_won(
+    possession_id: int,
+    include_header: bool = Query(True),
+) -> dict[str, Any]:
+    """Return Weekly Operating Notice (WON) formatted text for a possession."""
+    station_names: dict[str, str] = {}
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            ensure_possessions_tables(cur)
+            cur.execute("SELECT * FROM engineers_possessions WHERE id = %s", (possession_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Possession not found")
+            poss = _serialize_row(row)
+            stn_codes = extract_won_station_codes(poss)
+            if stn_codes:
+                cur.execute(
+                    "SELECT UPPER(abbrev) AS abbrev, longname FROM stations WHERE UPPER(abbrev) = ANY(%s)",
+                    (stn_codes,),
+                )
+                for sr in cur.fetchall():
+                    if sr.get("abbrev") and sr.get("longname"):
+                        station_names[sr["abbrev"]] = str(sr["longname"]).strip().title()
+    text = format_possession_won_text(poss, include_header=include_header, station_names=station_names)
+    base_slug = (poss.get("won_ref") or poss.get("title") or f"possession_{possession_id}").strip()
+    safe_slug = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in base_slug).strip("_") or f"possession_{possession_id}"
+    return {
+        "id": possession_id,
+        "title": poss.get("title"),
+        "won_ref": poss.get("won_ref"),
+        "filename": f"{safe_slug}_WON.txt",
+        "text": text,
+    }
 
 
 @router.delete("/api/possessions/{possession_id}")
