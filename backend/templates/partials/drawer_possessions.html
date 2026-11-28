@@ -18,6 +18,20 @@
       <button type="button" id="btn-cancel-poss-pick" class="btn btn-xs btn-secondary">Cancel</button>
     </div>
 
+    <!-- Post-Save Isolated Tracks Suggestion Prompt -->
+    <div id="poss-isolated-prompt" class="poss-isolated-prompt hidden">
+      <div class="poss-isolated-head">
+        <span>⚠️ Isolated Tracks Detected</span>
+        <button type="button" id="btn-dismiss-isolated" class="btn btn-xs btn-secondary">&times;</button>
+      </div>
+      <div class="poss-isolated-sub">All connections to these tracks are under this possession. Include them as separate lines?</div>
+      <div id="poss-isolated-list" class="poss-isolated-list"></div>
+      <div class="poss-form-actions">
+        <button type="button" id="btn-accept-isolated" class="btn btn-xs btn-primary">+ Add Selected Lines</button>
+        <button type="button" id="btn-skip-isolated" class="btn btn-xs btn-secondary">Dismiss</button>
+      </div>
+    </div>
+
     <!-- Create / Edit Possession Form -->
     <form id="poss-form" class="poss-form hidden">
       <input type="hidden" id="poss-edit-id" value="" />

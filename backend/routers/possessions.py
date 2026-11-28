@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from config import ensure_possessions_tables, get_conn
 from ingest_nwr import decode_track_id
+from possession_routing import detect_isolated_possession_tracks
 from possessions import (
     extract_won_station_codes,
     format_possession_won_text,
@@ -33,6 +34,7 @@ class PossessionLinePayload(BaseModel):
     """A single blocked line (with freeform designation and one or more From/To limits)."""
 
     line_name: Optional[str] = None
+    is_isolated: bool = False
     limit_mode: str = "signal_points"
     from_limits: list[PossessionLimitPoint] = Field(default_factory=list)
     to_limits: list[PossessionLimitPoint] = Field(default_factory=list)
@@ -208,6 +210,9 @@ def api_create_possession(body: PossessionPayload) -> dict[str, Any]:
             )
             created = _serialize_row(cur.fetchone())
             created["worksites"] = []
+            created["isolated_suggestions"] = detect_isolated_possession_tracks(
+                cur, (tps_geom or {}).get("ways") or []
+            )
             conn.commit()
     return created
 
@@ -257,6 +262,9 @@ def api_update_possession(possession_id: int, body: PossessionPayload) -> dict[s
                 (possession_id,),
             )
             updated["worksites"] = [_serialize_row(w) for w in cur.fetchall()]
+            updated["isolated_suggestions"] = detect_isolated_possession_tracks(
+                cur, (tps_geom or {}).get("ways") or []
+            )
             conn.commit()
     return updated
 

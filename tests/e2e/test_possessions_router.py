@@ -33,6 +33,7 @@ def client(monkeypatch):
             {"ways": [], "markers": [], "bbox": None},
         ),
     )
+    monkeypatch.setattr(poss_router, "detect_isolated_possession_tracks", lambda *_a: [])
     with TestClient(main.app) as tc:
         yield tc
 

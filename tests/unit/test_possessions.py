@@ -341,3 +341,23 @@ def test_format_possession_won_text_exact_uk_format():
     assert "WON Wk34 — SOUTHBURY RENEWAL" in text_with_hdr
     assert "PICOP: A. Smith | OLE: Earthed" in text_with_hdr
     assert "Notes: Adjacent line open at 20mph." in text_with_hdr
+
+    # Isolated tracks fold into the primary line heading (and blank primary line falls back to NWR track_id)
+    stafford = {
+        "title": "JM TEST",
+        "nwr_geometry": {"ways": [{"track_id": "1100"}]},
+        "lines": [
+            {
+                "line_name": None,
+                "from_limits": [{"asset_type": "signal", "label": "SIG: SC3594", "qualifier": "beyond"}],
+                "to_limits": [{"asset_type": "signal", "label": "SIG: LS3580", "qualifier": "approach"}],
+            },
+            {"line_name": "Platform 1", "is_isolated": True, "from_limits": [], "to_limits": []},
+            {"line_name": "Up Bay Siding", "is_isolated": True, "from_limits": [], "to_limits": []},
+        ],
+    }
+    stafford_won = poss.format_possession_won_text(stafford, include_header=False)
+    assert stafford_won.strip() == (
+        "UP FAST LINE, PLATFORM 1, UP BAY SIDING:\n"
+        "Between BEYOND Signal SC3594 and ON THE APPROACH TO Signal LS3580."
+    )

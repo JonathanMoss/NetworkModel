@@ -208,3 +208,55 @@ def test_find_tps_and_nwr_internal_crossovers():
     assert [w["fid"] for w in nwr_xovers] == [10]
     assert nwr_xovers[0]["is_crossover"] is True
 
+    # NWR isolated-loop tail extension: fid=20 (Platform 1) was clipped at 259120,
+    # while its full DB centreline reaches 259200 (touching blocked Up line fid=1) -> extended!
+    blocked_iso = [
+        {"fid": 1, "line_name": "Up", "coords": [[259000.0, 665500.0], [259200.0, 665500.0]]},
+        {"fid": 20, "line_name": "Platform 1", "is_isolated": True, "coords": [[259050.0, 665504.0], [259120.0, 665504.0]]},
+    ]
+    full_iso_row = [
+        {"fid": 20, "elr": "LEC3", "track_id": "1500", "length_meters": 480.0, "coords": [[259050.0, 665504.0], [259120.0, 665504.0], [259200.0, 665500.0]]},
+    ]
+    iso_xovers = pr.find_nwr_internal_crossovers(FakeCursor(responses=[full_iso_row]), blocked_iso)
+    assert [w["fid"] for w in iso_xovers] == [20]
+    assert iso_xovers[0]["coords"][-1] == [259200.0, 665500.0]
+
+
+def test_detect_isolated_possession_tracks_platform_and_bay_siding():
+    """Detects a trapped 2-ended platform loop and branching dead-end bay siding."""
+    # Blocked Up Fast: 1(0,0) -> 2(100,0) -> 3(200,0) -> 4(300,0)
+    # Trapped Platform 1 loop between 2(100,0) and 3(200,0): 2 -> 10(110,12) -> 11(150,12) -> 12(190,12) -> 3
+    # Trapped Up Bay Siding branching off 11(150,12): 11 -> 20(160,24) (UBS buffer stop)
+    blocked_ways = [{"coords": [[0.0, 0.0], [100.0, 0.0], [200.0, 0.0], [300.0, 0.0]]}]
+    edges = [
+        {"start_node_id": 1, "end_node_id": 2, "x0": 0.0, "y0": 0.0, "x1": 100.0, "y1": 0.0, "length": 100},
+        {"start_node_id": 2, "end_node_id": 3, "x0": 100.0, "y0": 0.0, "x1": 200.0, "y1": 0.0, "length": 100},
+        {"start_node_id": 3, "end_node_id": 4, "x0": 200.0, "y0": 0.0, "x1": 300.0, "y1": 0.0, "length": 100},
+        # Trapped Platform 1 loop
+        {"start_node_id": 2, "end_node_id": 10, "x0": 100.0, "y0": 0.0, "x1": 110.0, "y1": 12.0, "length": 30},
+        {"start_node_id": 10, "end_node_id": 11, "x0": 110.0, "y0": 12.0, "x1": 150.0, "y1": 12.0, "length": 40},
+        {"start_node_id": 11, "end_node_id": 12, "x0": 150.0, "y0": 12.0, "x1": 190.0, "y1": 12.0, "length": 40},
+        {"start_node_id": 12, "end_node_id": 3, "x0": 190.0, "y0": 12.0, "x1": 200.0, "y1": 0.0, "length": 30},
+        # Trapped Up Bay Siding branching off node 11
+        {"start_node_id": 11, "end_node_id": 20, "x0": 150.0, "y0": 12.0, "x1": 160.0, "y1": 24.0, "length": 45},
+    ]
+    sigs = [
+        {"pk": 501, "name": "POINTS: 746", "master_name": "POINTS: 746", "interlocking_sys_id": 16, "bumper": False, "start_node_id": 1, "end_node_id": 2, "point_node_id": None},
+        {"pk": 502, "name": "POINTS: 727A", "master_name": "POINTS: 727A", "interlocking_sys_id": 16, "bumper": False, "start_node_id": 4, "end_node_id": 3, "point_node_id": None},
+        {"pk": 503, "name": "POINTS: 732A", "master_name": "POINTS: 732A", "interlocking_sys_id": 16, "bumper": False, "start_node_id": 10, "end_node_id": 11, "point_node_id": None},
+        {"pk": 504, "name": "UBS: STAFFRD", "master_name": "UBS: STAFFRD", "interlocking_sys_id": 2, "bumper": True, "start_node_id": 11, "end_node_id": 20, "point_node_id": None},
+    ]
+    st_rows = [
+        {"name": "U-1", "longname": "1", "node_ids": [10, 11, 12]},
+    ]
+    cur = FakeCursor(responses=[edges, sigs, st_rows])
+    sugs = pr.detect_isolated_possession_tracks(cur, blocked_ways)
+    names = [s["line_name"] for s in sugs]
+    assert "Platform 1" in names
+    assert "Up Bay Siding" in names
+    # Platform 1 anchors strictly on interior nodes (10 -> 12) so it plots along Platform 1, not Up Fast
+    assert sugs[0]["from_limits"][0]["asset_id"] == 10
+    assert sugs[0]["to_limits"][0]["asset_id"] == 12
+    assert sugs[1]["to_limits"][0]["label"] == "UBS: STAFFRD"
+    assert sugs[1]["to_limits"][0]["qualifier"] == "buffer"
+

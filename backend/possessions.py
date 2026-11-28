@@ -440,6 +440,9 @@ def _resolve_single_line_geometries(
         for coll in (tps_ways, tps_markers, nwr_ways, nwr_markers):
             for item in coll:
                 item["line_name"] = line_name
+    if line.get("is_isolated"):
+        for w in nwr_ways:
+            w["is_isolated"] = True
 
     return tps_ways, tps_markers, nwr_ways, nwr_markers
 
@@ -545,7 +548,8 @@ def _format_won_asset_phrase(spec: dict[str, Any]) -> str:
         clean = "limit"
 
     lower_clean = clean.lower()
-    if atype == "signal" and not lower_clean.startswith(("signal ", "buffer", "the buffer")):
+    is_buf_lbl = lower_clean.startswith(("signal ", "buffer", "the buffer", "ubs:", "dbs:", "ubs ", "dbs "))
+    if atype == "signal" and not is_buf_lbl:
         asset_text = f"Signal {clean}"
     elif atype == "points" and "point" not in lower_clean:
         asset_text = f"No. {clean} points"
@@ -654,11 +658,40 @@ def format_possession_won_text(
     raw_lines = possession.get("lines") or []
     line_entries = raw_lines if isinstance(raw_lines, list) and raw_lines else [possession]
 
-    for idx, ln in enumerate(line_entries):
-        raw_name = (ln.get("line_name") or possession.get("lines_blocked") or f"LINE {idx + 1}").strip()
+    # Fold auto-included isolated tracks (e.g. Platform 1, Up Bay Siding) into the
+    # primary line heading rather than emitting verbose internal points/buffer blocks.
+    main_lines = [ln for ln in line_entries if not ln.get("is_isolated")]
+    isolated_names = [
+        ln["line_name"].strip().upper()
+        for ln in line_entries
+        if ln.get("is_isolated") and (ln.get("line_name") or "").strip()
+    ]
+    render_lines = main_lines if main_lines else line_entries
+
+    # Fallback NWR track-code label if a primary line had no freeform name typed
+    _tid_prefix_names = {
+        "11": "UP FAST", "12": "UP SLOW", "13": "UP GOODS", "14": "UP SINGLE", "15": "UP LOOP",
+        "21": "DOWN FAST", "22": "DOWN SLOW", "23": "DOWN GOODS", "24": "DOWN SINGLE", "25": "DOWN LOOP",
+        "31": "REVERSIBLE FAST", "32": "REVERSIBLE SLOW", "34": "SINGLE",
+    }
+    nwr_ways = (possession.get("nwr_geometry") or {}).get("ways") or []
+
+    for idx, ln in enumerate(render_lines):
+        raw_name = (ln.get("line_name") or "").strip()
+        if not raw_name and len(line_entries) == 1:
+            raw_name = (possession.get("lines_blocked") or "").strip()
+        if not raw_name and nwr_ways:
+            first_tid = str(nwr_ways[0].get("track_id") or "")
+            raw_name = _tid_prefix_names.get(first_tid[:2], "")
+        if not raw_name:
+            raw_name = f"LINE {idx + 1}"
+
         heading = raw_name.upper()
         if not any(tok in heading for tok in ("LINE", "PLATFORM", "LOOP", "SIDING", "ROAD", "TRACK")):
             heading = f"{heading} LINE"
+
+        if idx == 0 and main_lines and isolated_names:
+            heading = ", ".join([heading, *isolated_names])
 
         from_specs = _extract_limit_specs(ln, "from")
         to_specs = _extract_limit_specs(ln, "to")

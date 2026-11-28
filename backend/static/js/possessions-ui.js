@@ -452,6 +452,7 @@ function hydrateLineForEditor(ln) {
         ];
   return {
     line_name: ln.line_name || "",
+    is_isolated: Boolean(ln.is_isolated),
     from_limits: froms,
     to_limits: tos,
   };
@@ -779,6 +780,95 @@ function renderPossessionsList() {
     wsForm?.classList.add("hidden");
   });
 
+  // Post-save Isolated Tracks suggestion prompt
+  let _pendingIsolatedPoss = null;
+  let _pendingIsolatedItems = [];
+  const isoPrompt = document.getElementById("poss-isolated-prompt");
+  const isoList = document.getElementById("poss-isolated-list");
+
+  function hideIsolatedPrompt() {
+    _pendingIsolatedPoss = null;
+    _pendingIsolatedItems = [];
+    isoPrompt?.classList.add("hidden");
+  }
+
+  function showIsolatedPrompt(savedPoss, suggestions) {
+    if (!isoPrompt || !isoList || !Array.isArray(suggestions) || !suggestions.length) {
+      hideIsolatedPrompt();
+      return;
+    }
+    _pendingIsolatedPoss = savedPoss;
+    _pendingIsolatedItems = suggestions;
+    isoList.innerHTML = suggestions
+      .map((s, i) => {
+        const fromLbl = (s.from_limits || []).map((p) => p.label || "Start").join(", ");
+        const toLbl = (s.to_limits || []).map((p) => p.label || "End").join(", ");
+        return `
+          <label class="poss-isolated-item">
+            <input type="checkbox" class="poss-iso-chk" data-idx="${i}" checked />
+            <span>
+              <strong>${escapeHtml(s.line_name || `Isolated Line ${i + 1}`)}</strong>
+              <small>${escapeHtml(fromLbl)} → ${escapeHtml(toLbl)}</small>
+            </span>
+          </label>`;
+      })
+      .join("");
+    isoPrompt.classList.remove("hidden");
+  }
+
+  document.getElementById("btn-dismiss-isolated")?.addEventListener("click", hideIsolatedPrompt);
+  document.getElementById("btn-skip-isolated")?.addEventListener("click", hideIsolatedPrompt);
+  document.getElementById("btn-accept-isolated")?.addEventListener("click", async () => {
+    if (!_pendingIsolatedPoss || !isoList) return;
+    const chosen = Array.from(isoList.querySelectorAll(".poss-iso-chk:checked"))
+      .map((c) => _pendingIsolatedItems[Number(c.dataset.idx)])
+      .filter(Boolean)
+      .map((s) => ({
+        line_name: s.line_name || null,
+        is_isolated: true,
+        limit_mode: "signal_points",
+        from_limits: s.from_limits || [],
+        to_limits: s.to_limits || [],
+      }));
+    if (!chosen.length) {
+      hideIsolatedPrompt();
+      return;
+    }
+    const p = _pendingIsolatedPoss;
+    const existingLines = Array.isArray(p.lines) ? p.lines : [];
+    const mergedLines = [...existingLines, ...chosen];
+    const payload = {
+      won_ref: p.won_ref || null,
+      title: p.title,
+      picop_name: p.picop_name || null,
+      picop_contact: p.picop_contact || null,
+      start_dt: p.start_dt || null,
+      end_dt: p.end_dt || null,
+      lines_blocked: null,
+      ole_isolation: p.ole_isolation || "N/A",
+      status: p.status || "Planned",
+      color: p.color || "#f59e0b",
+      notes: p.notes || null,
+      lines: mergedLines,
+      render_style: p.render_style || {},
+    };
+    hideIsolatedPrompt();
+    try {
+      const res = await fetch(`/api/possessions/${p.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        await loadPossessions();
+        if (updated && updated.id) focusPossession(updated.id);
+      }
+    } catch (err) {
+      console.error("Failed to add isolated lines:", err);
+    }
+  });
+
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     syncPossessionLinesFromDom();
@@ -802,6 +892,7 @@ function renderPossessionsList() {
         .filter((p) => p.asset_id !== null || p.label);
       return {
         line_name: (ln.line_name || "").trim() || null,
+        is_isolated: Boolean(ln.is_isolated),
         limit_mode: "signal_points",
         from_limits: froms,
         to_limits: tos,
@@ -839,6 +930,11 @@ function renderPossessionsList() {
         form.classList.add("hidden");
         await loadPossessions();
         if (saved && saved.id) focusPossession(saved.id);
+        if (saved && Array.isArray(saved.isolated_suggestions) && saved.isolated_suggestions.length) {
+          showIsolatedPrompt(saved, saved.isolated_suggestions);
+        } else {
+          hideIsolatedPrompt();
+        }
       }
     } catch (err) {
       console.error("Failed to save possession:", err);

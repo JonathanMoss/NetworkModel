@@ -1256,6 +1256,14 @@ def find_nwr_cross_links_for_tps(
     """
     if not elr:
         return _empty_nwr_cross_links()
+    if item_label:
+        lbl_u = item_label.strip().upper()
+        if re.search(r"\bUBS\b", lbl_u):
+            direction_hint = "up"
+            track_name_hint = "Up Bay Terminal"
+        elif re.search(r"\bDBS\b", lbl_u):
+            direction_hint = "down"
+            track_name_hint = "Down Bay Terminal"
     try:
         cur.execute(
             "SELECT fid, asset_id, elr, start_mile_yards, end_mile_yards, parts, min_x, max_x, min_y, max_y FROM nwr_elrs WHERE elr = %s LIMIT 1",

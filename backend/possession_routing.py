@@ -11,8 +11,10 @@ with direction-aware Dijkstra on both:
      and end centrelines precisely to the OSGB36 PLB coordinates.
 """
 
+from collections import deque
 import heapq
 import math
+import re
 from typing import Any, Optional
 
 # Turn / crossover penalties (in metres equivalent)
@@ -717,22 +719,48 @@ def find_nwr_internal_crossovers(
         SELECT fid, elr, track_id, start_node_id, end_node_id, length_meters, coords
         FROM nwr_track_centrelines
         WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
-          AND COALESCE(length_meters, 0) <= %s
+          AND (COALESCE(length_meters, 0) <= %s OR fid = ANY(%s))
         """,
-        (min_x - pad, max_x + pad, min_y - pad, max_y + pad, max_len_m),
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad, max_len_m, list(blocked_fids)),
     )
     rows = cur.fetchall()
     if not rows:
         return []
 
+    blocked_by_fid: dict[int, list[dict[str, Any]]] = {}
+    for w in blocked_nwr_ways:
+        if w.get("fid") is not None:
+            blocked_by_fid.setdefault(int(w["fid"]), []).append(w)
+
     xover_ways: list[dict[str, Any]] = []
     for r in rows:
         fid = int(r["fid"])
-        if fid in blocked_fids:
-            continue
         cs = r.get("coords") or []
         if len(cs) < 2:
             continue
+
+        # If a blocked isolated-line segment was clipped at an interior signal (e.g. Stafford
+        # Platform 1 clipped at SC9355), extend its remaining tail to the connecting points
+        # whenever the full centreline's unclipped end lands on another blocked line (e.g. 746).
+        if fid in blocked_fids:
+            seg_ways = blocked_by_fid.get(fid, [])
+            if any(sw.get("is_isolated") for sw in seg_ways):
+                seg_boxes = [b for b in way_boxes if b[5] != seg_ways[0].get("line_name")]
+                if seg_boxes:
+                    s_on, _ = _point_on_any_way(cs[0], seg_boxes)
+                    e_on, _ = _point_on_any_way(cs[-1], seg_boxes)
+                    if s_on or e_on:
+                        xover_ways.append(
+                            {
+                                "fid": fid,
+                                "elr": r.get("elr"),
+                                "track_id": r.get("track_id"),
+                                "coords": cs,
+                                "is_crossover": True,
+                            }
+                        )
+            continue
+
         is_xover_tid = _is_nwr_crossover(r.get("track_id"))
         seg_len = float(r.get("length_meters") or 0.0)
         if not is_xover_tid and seg_len > 150.0:
@@ -760,4 +788,324 @@ def find_nwr_internal_crossovers(
         )
 
     return xover_ways
+
+
+def _friendly_track_label(st_rows: list[dict[str, Any]], fallback: str) -> str:
+    """Derive a clean human-readable line designation from TPS ``station_tracks`` rows."""
+    for r in st_rows:
+        name = (r.get("name") or "").strip().upper()
+        longn = (r.get("longname") or "").strip().upper()
+        pm = re.match(r"^(?:[UD]-)?(\d+[A-Z]?)$", name)
+        if pm and longn.isdigit():
+            return f"Platform {pm.group(1)}"
+    for r in st_rows:
+        name = (r.get("name") or "").strip().upper()
+        if "SDG" in name or "SIDING" in name:
+            return "Bay Siding"
+        if "BAY" in name:
+            return "Bay Platform"
+        if "LOOP" in name or "UL" in name or "DL" in name:
+            return "Loop Line"
+        if "DEP" in name or "ARR" in name:
+            return "Depot / Arrival Siding"
+    return fallback
+
+
+def _asset_limit_for_node(
+    node_id: int,
+    sig_by_node: dict[int, dict[str, Any]],
+    default_qualifier: str = "at",
+) -> dict[str, Any]:
+    """Build a From/To limit point dict from the best signal/points asset at ``node_id``."""
+    sig = sig_by_node.get(node_id)
+    if sig:
+        is_pts = (
+            sig.get("interlocking_sys_id") in (15, 16)
+            or (sig.get("name") or "").upper().startswith("POINT")
+        )
+        return {
+            "asset_type": "points" if is_pts else "signal",
+            "asset_id": int(sig["pk"]),
+            "label": (sig.get("name") or sig.get("master_name") or f"Node #{node_id}").strip(),
+            "qualifier": default_qualifier,
+            "distance_meters": None,
+        }
+    return {
+        "asset_type": "node",
+        "asset_id": int(node_id),
+        "label": f"Node #{node_id}",
+        "qualifier": default_qualifier,
+        "distance_meters": None,
+    }
+
+
+def _extract_trapped_component_suggestions(
+    cur: Any,
+    comp: set[int],
+    touch_blocked: set[int],
+    adj: dict[int, dict[int, float]],
+) -> list[dict[str, Any]]:
+    """Convert a trapped TPS node component into ready-to-add possession line suggestions."""
+    all_nids = list(comp | touch_blocked)
+    cur.execute(
+        """
+        SELECT pk, name, master_name, interlocking_sys_id, bumper, start_node_id, end_node_id, point_node_id
+        FROM signals
+        WHERE end_node_id = ANY(%s) OR point_node_id = ANY(%s)
+        """,
+        (all_nids, all_nids),
+    )
+    sig_rows = cur.fetchall()
+    sig_by_node: dict[int, dict[str, Any]] = {}
+    buffer_sigs: list[tuple[int, dict[str, Any]]] = []
+
+    for s in sig_rows:
+        anchor = s.get("point_node_id") or s.get("end_node_id")
+        if anchor is None:
+            continue
+        anid = int(anchor)
+        is_pts = s.get("interlocking_sys_id") in (15, 16) or (s.get("name") or "").upper().startswith("POINT")
+        # Prefer points assets at junctions, otherwise keep first signal
+        if anid not in sig_by_node or is_pts:
+            sig_by_node[anid] = s
+        nm_u = (s.get("name") or "").upper()
+        is_buf = (
+            bool(s.get("bumper"))
+            or s.get("interlocking_sys_id") == 2
+            or bool(re.search(r"\b(?:BUFFER|UBS|DBS|BAY)\b", nm_u))
+        )
+        if is_buf and anid in comp:
+            buffer_sigs.append((anid, s))
+
+    cur.execute(
+        "SELECT DISTINCT name, longname, node_ids FROM station_tracks WHERE node_ids && %s",
+        (list(comp),),
+    )
+    st_rows = cur.fetchall()
+
+    suggestions: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[Any, Any]] = set()
+
+    # 1. Trapped through-loop / platform connected at 2+ points to blocked lines (e.g. Stafford Platform 1)
+    # Anchor on the interior endpoints INSIDE ``comp`` (not on the main blocked line) so straight-route
+    # pathfinding plots along the trapped platform/loop itself rather than re-tracing the main line;
+    # the connecting turnout legs are then automatically lit by find_*_internal_crossovers().
+    touch_sorted = sorted(touch_blocked)
+    if len(touch_sorted) >= 2:
+        n_start_b, n_end_b = touch_sorted[0], touch_sorted[-1]
+        # Shortest path inside comp between the two blocked-line junction nodes
+        q_loop: deque[tuple[int, list[int]]] = deque([(n_start_b, [n_start_b])])
+        seen_loop = {n_start_b}
+        interior_path: list[int] = []
+        while q_loop:
+            u, path = q_loop.popleft()
+            if u == n_end_b and len(path) >= 3:
+                interior_path = path[1:-1]
+                break
+            for v in adj.get(u, {}):
+                if v in seen_loop:
+                    continue
+                if v == n_end_b and u != n_start_b:
+                    interior_path = path[1:]
+                    q_loop.clear()
+                    break
+                if v in comp:
+                    seen_loop.add(v)
+                    q_loop.append((v, path + [v]))
+
+        sig_interior = [n for n in interior_path if n in sig_by_node]
+        if len(sig_interior) >= 2:
+            n_from, n_to = sig_interior[0], sig_interior[-1]
+        elif len(interior_path) >= 2:
+            n_from, n_to = interior_path[0], interior_path[-1]
+        else:
+            n_from, n_to = n_start_b, n_end_b
+
+        from_lim = _asset_limit_for_node(n_from, sig_by_node, "at")
+        to_lim = _asset_limit_for_node(n_to, sig_by_node, "at")
+        line_name = _friendly_track_label(st_rows, "Isolated Loop / Platform")
+        pkey = (from_lim["asset_id"], to_lim["asset_id"])
+        seen_pairs.add(pkey)
+        suggestions.append(
+            {
+                "line_name": line_name,
+                "is_isolated": True,
+                "limit_mode": "signal_points",
+                "from_limits": [from_lim],
+                "to_limits": [to_lim],
+                "reason": "All connections to this line are under possession",
+            }
+        )
+
+    # 2. Trapped dead-end bays / sidings terminating at buffer stops inside the component
+    for buf_nid, buf_sig in buffer_sigs:
+        # Walk BFS inside comp to nearest junction points asset or touch_blocked node
+        q: deque[tuple[int, list[int]]] = deque([(buf_nid, [buf_nid])])
+        seen_walk = {buf_nid}
+        anchor_nid: Optional[int] = None
+        spur_nodes: list[int] = [buf_nid]
+        while q:
+            u, path = q.popleft()
+            if u != buf_nid and (u in touch_blocked or (u in sig_by_node and sig_by_node[u].get("interlocking_sys_id") in (15, 16))):
+                anchor_nid = u
+                spur_nodes = path
+                break
+            for v in adj.get(u, {}):
+                if v not in seen_walk and (v in comp or v in touch_blocked):
+                    seen_walk.add(v)
+                    q.append((v, path + [v]))
+
+        if anchor_nid is None and touch_sorted:
+            anchor_nid = touch_sorted[0]
+        if anchor_nid is None:
+            continue
+
+        from_lim = _asset_limit_for_node(anchor_nid, sig_by_node, "at")
+        buf_label = (buf_sig.get("name") or buf_sig.get("master_name") or f"Buffer #{buf_nid}").strip()
+        to_lim = {
+            "asset_type": "signal",
+            "asset_id": int(buf_sig["pk"]),
+            "label": buf_label,
+            "qualifier": "buffer",
+            "distance_meters": None,
+        }
+        pkey = (from_lim["asset_id"], to_lim["asset_id"])
+        if pkey in seen_pairs:
+            continue
+        seen_pairs.add(pkey)
+
+        spur_set = {n for n in spur_nodes if n != anchor_nid}
+        spur_sts = [r for r in st_rows if spur_set & set(r.get("node_ids") or [])]
+        if "UBS" in buf_label.upper():
+            default_name = "Up Bay Siding"
+        elif "DBS" in buf_label.upper():
+            default_name = "Down Bay Siding"
+        else:
+            default_name = "Bay Siding"
+        line_name = _friendly_track_label(spur_sts, default_name)
+        suggestions.append(
+            {
+                "line_name": line_name,
+                "is_isolated": True,
+                "limit_mode": "signal_points",
+                "from_limits": [from_lim],
+                "to_limits": [to_lim],
+                "reason": "Dead-end siding/bay isolated by this possession",
+            }
+        )
+
+    return suggestions
+
+
+def detect_isolated_possession_tracks(
+    cur: Any,
+    blocked_tps_ways: list[dict[str, Any]],
+    max_comp_nodes: int = 120,
+    max_comp_len_m: float = 5000.0,
+) -> list[dict[str, Any]]:
+    """Detect tracks (bays, sidings, platforms, loops) completely isolated by a possession.
+
+    Removes the possession's blocked TPS nodes from the local corridor graph and
+    flood-fills each adjacent unblocked component. Any bounded component whose
+    entire boundary connects only to ``blocked_nodes`` (no escape to the open
+    network) is converted into ready-to-add line suggestions.
+    """
+    if not blocked_tps_ways:
+        return []
+
+    blocked_xy: set[tuple[float, float]] = set()
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+    for w in blocked_tps_ways:
+        for pt in w.get("coords") or []:
+            if len(pt) < 2:
+                continue
+            rx, ry = round(float(pt[0]), 1), round(float(pt[1]), 1)
+            blocked_xy.add((rx, ry))
+            min_x, max_x = min(min_x, rx), max(max_x, rx)
+            min_y, max_y = min(min_y, ry), max(max_y, ry)
+
+    if len(blocked_xy) < 2 or min_x == float("inf"):
+        return []
+
+    pad = 250.0
+    cur.execute(
+        """
+        SELECT start_node_id, end_node_id, x0, y0, x1, y1, length
+        FROM edges
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    adj: dict[int, dict[int, float]] = {}
+    node_xy: dict[int, tuple[float, float]] = {}
+    blocked_nodes: set[int] = set()
+    for r in rows:
+        a, b = r.get("start_node_id"), r.get("end_node_id")
+        if a is None or b is None or r.get("x0") is None or r.get("x1") is None:
+            continue
+        ia, ib = int(a), int(b)
+        p0 = (round(float(r["x0"]), 1), round(float(r["y0"]), 1))
+        p1 = (round(float(r["x1"]), 1), round(float(r["y1"]), 1))
+        elen = float(r.get("length") or 0.0)
+        adj.setdefault(ia, {})[ib] = elen
+        adj.setdefault(ib, {})[ia] = elen
+        node_xy[ia] = p0
+        node_xy[ib] = p1
+        if p0 in blocked_xy:
+            blocked_nodes.add(ia)
+        if p1 in blocked_xy:
+            blocked_nodes.add(ib)
+
+    if not blocked_nodes:
+        return []
+
+    visited: set[int] = set(blocked_nodes)
+    suggestions: list[dict[str, Any]] = []
+    esc_min_x, esc_max_x = min_x - pad + 20.0, max_x + pad - 20.0
+    esc_min_y, esc_max_y = min_y - pad + 20.0, max_y + pad - 20.0
+
+    for bn in sorted(blocked_nodes):
+        for nb in adj.get(bn, {}):
+            if nb in visited:
+                continue
+            comp: set[int] = {nb}
+            q: deque[int] = deque([nb])
+            visited.add(nb)
+            touch_blocked: set[int] = {bn}
+            escaped = False
+            total_len = 0.0
+            seen_e: set[tuple[int, int]] = set()
+
+            while q:
+                u = q.popleft()
+                if len(comp) > max_comp_nodes:
+                    escaped = True
+                    break
+                for v, el in adj.get(u, {}).items():
+                    ek = (u, v) if u <= v else (v, u)
+                    if ek not in seen_e:
+                        seen_e.add(ek)
+                        total_len += el
+                    if v in blocked_nodes:
+                        touch_blocked.add(v)
+                    elif v not in comp:
+                        vx, vy = node_xy[v]
+                        if vx < esc_min_x or vx > esc_max_x or vy < esc_min_y or vy > esc_max_y:
+                            escaped = True
+                            break
+                        comp.add(v)
+                        visited.add(v)
+                        q.append(v)
+                if escaped:
+                    break
+
+            if not escaped and total_len <= max_comp_len_m and len(comp) >= 2:
+                suggestions.extend(_extract_trapped_component_suggestions(cur, comp, touch_blocked, adj))
+
+    return suggestions
 
