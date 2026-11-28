@@ -546,6 +546,9 @@ function renderSchematic() {
   }
 
   // 10. Highlight & Hover Preview Overlays (drawn on top of all layers and labels)
+  if (typeof drawPossessionsOverlay === "function") {
+    drawPossessionsOverlay(ctx, "tps");
+  }
   drawHighlightAndPreviewOverlays(ctx, "tps");
   if (STATE.crossHighlight.tps && STATE.crossHighlight.tps.active) {
     drawCrossHighlightPulse(ctx, STATE.crossHighlight.tps, (wx, wy) => worldToScreen(wx, wy, "tps"), "tps");

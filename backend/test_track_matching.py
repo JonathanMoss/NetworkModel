@@ -236,6 +236,10 @@ REGRESSION_CASES = [
     ("CMD2 SOT277 (Stoke P2 -> 2100)", "signal", 7668, "CMD2", "2100"),
     ("CMD2 SOT426 (Stoke P2 DM -> 2100)", "signal", 7669, "CMD2", "2100"),
     ("CMD2 SOT431 (Stoke P3 Bay -> 3600)", "signal", 7674, "CMD2", "3600"),
+    # Glasgow Queen Street approach (EGM1 U-UEG must not jump to nearby SGN branch)
+    ("EGM1 CC52 (Up E&G -> 1100)", "signal", 32096, "EGM1", "1100"),
+    # Stafford Up Bay Siding (UBS buffer stop -> LEC3 1600 UP TERMINAL)
+    ("LEC3 UBS: STAFFRD (Up Bay -> 1600)", "signal", 47174, "LEC3", "1600"),
 ]
 
 

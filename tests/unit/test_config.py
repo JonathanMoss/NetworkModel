@@ -132,3 +132,15 @@ def test_ensure_performance_indexes_runs_once(monkeypatch):
     assert len(cur.executed) == len(config._PERFORMANCE_INDEX_DDLS)  # pylint: disable=protected-access
     assert any("idx_signals_point_node" in q[0] for q in cur.executed)
     assert any("idx_edges_start_end" in q[0] for q in cur.executed)
+
+
+def test_ensure_possessions_tables_runs_once():
+    """Possessions DDL executes on first call and is memoized thereafter."""
+    cur = FakeCursor()
+    config.ensure_possessions_tables(cur)
+    config.ensure_possessions_tables(cur)
+    assert len(cur.executed) == 5
+    assert "engineers_possessions" in cur.executed[0][0]
+    assert "ADD COLUMN IF NOT EXISTS lines" in cur.executed[1][0]
+    assert "ADD COLUMN IF NOT EXISTS render_style" in cur.executed[2][0]
+    assert "possession_worksites" in cur.executed[3][0]

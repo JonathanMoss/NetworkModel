@@ -509,6 +509,9 @@ function renderNwrModel() {
   }
 
   // 6. Highlight & Hover Preview Overlays (drawn on top of all layers and labels)
+  if (typeof drawPossessionsOverlay === "function") {
+    drawPossessionsOverlay(ctx, "nwr");
+  }
   drawHighlightAndPreviewOverlays(ctx, "nwr");
   if (STATE.crossHighlight.nwr && STATE.crossHighlight.nwr.active) {
     drawCrossHighlightPulse(ctx, STATE.crossHighlight.nwr, worldToScreen, "nwr");

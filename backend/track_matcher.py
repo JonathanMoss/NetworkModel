@@ -641,7 +641,13 @@ def _augment_running_line_cross_elr_candidates(
                 for c in candidates
             )
         )
-        is_named_branch = bool(br_m) and (
+        br_sub = (
+            br_m.group(1)[1:]
+            if br_m and len(br_m.group(1)) >= 3 and br_m.group(1)[0] in ("u", "d")
+            else (br_m.group(1) if br_m else "")
+        )
+        is_primary_elr_name = bool(br_sub) and len(br_sub) >= 2 and elr.lower().startswith(br_sub)
+        is_named_branch = bool(br_m) and not is_primary_elr_name and (
             direction_hint in ("up", "down")
             and not bool(
                 th_toks
@@ -1250,6 +1256,14 @@ def find_nwr_cross_links_for_tps(
     """
     if not elr:
         return _empty_nwr_cross_links()
+    if item_label:
+        lbl_u = item_label.strip().upper()
+        if re.search(r"\bUBS\b", lbl_u):
+            direction_hint = "up"
+            track_name_hint = "Up Bay Terminal"
+        elif re.search(r"\bDBS\b", lbl_u):
+            direction_hint = "down"
+            track_name_hint = "Down Bay Terminal"
     try:
         cur.execute(
             "SELECT fid, asset_id, elr, start_mile_yards, end_mile_yards, parts, min_x, max_x, min_y, max_y FROM nwr_elrs WHERE elr = %s LIMIT 1",

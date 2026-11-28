@@ -13,6 +13,9 @@ source =
     routers.nwr
     routers.assets
     routers.asset_handlers
+    possessions
+    possession_routing
+    routers.possessions
 branch = False
 
 [report]

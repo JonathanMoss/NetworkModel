@@ -17,22 +17,26 @@ from track_identity import resolve_tps_track_identity
 from track_matcher import find_nwr_cross_links_for_tps
 
 
-def _extract_geo_point(nwr_cross: Optional[dict[str, Any]]) -> tuple[Optional[float], Optional[float], Optional[str], Optional[str], bool]:
-    """Extract primary OSGB36 ``(x, y)`` and snap metadata from ``nwr_cross_links``."""
+def _extract_geo_point(
+    nwr_cross: Optional[dict[str, Any]],
+) -> tuple[Optional[float], Optional[float], Optional[str], Optional[str], bool, Optional[str]]:
+    """Extract primary OSGB36 ``(x, y)``, snap metadata, and matched ``track_id``."""
     if not nwr_cross:
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     snap = nwr_cross.get("geo_snap") or {}
-    elr = snap.get("elr")
+    best = nwr_cross.get("best_centreline") or {}
+    track_id = str(best["track_id"]) if best.get("track_id") else None
+    elr = best.get("elr") or snap.get("elr")
     mileage_str = snap.get("mileage_str")
     is_extrap = bool(snap.get("is_extrapolated"))
 
     node_pts = nwr_cross.get("node_points") or []
     pt = node_pts[0] if node_pts else nwr_cross.get("node_point")
     if pt and pt.get("x") is not None and pt.get("y") is not None:
-        return float(pt["x"]), float(pt["y"]), elr, mileage_str, is_extrap
+        return float(pt["x"]), float(pt["y"]), elr, mileage_str, is_extrap, track_id
     if snap.get("x") is not None and snap.get("y") is not None:
-        return float(snap["x"]), float(snap["y"]), elr, mileage_str, is_extrap
-    return None, None, elr, mileage_str, is_extrap
+        return float(snap["x"]), float(snap["y"]), elr, mileage_str, is_extrap, track_id
+    return None, None, elr, mileage_str, is_extrap, track_id
 
 
 def _resolve_signal_or_points_geo(
@@ -76,8 +80,9 @@ def _resolve_signal_or_points_geo(
     )
 
     sig_km_reg = sig["km_region_id"]
-    sig_km_val = 0
+    sig_km_val: Optional[int] = None
     is_extrap = False
+    is_dead_end_terminus = False
     if anchor_nid:
         cur.execute(
             "SELECT km_region_id, km_value FROM nodes WHERE node_id = %s",
@@ -89,6 +94,21 @@ def _resolve_signal_or_points_geo(
                 sig_km_reg = nd["km_region_id"]
             if nd["km_value"]:
                 sig_km_val = nd["km_value"]
+            elif nd["km_value"] == 0 and sig_km_reg:
+                # Preserve genuine 0m 00ch terminus buffer stops (at most 1 distinct non-zero neighbor)
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT CASE WHEN start_node_id = %s THEN end_node_id ELSE start_node_id END) AS cnt
+                    FROM edges
+                    WHERE (start_node_id = %s OR end_node_id = %s)
+                      AND COALESCE(length, 0) > 0
+                    """,
+                    (anchor_nid, anchor_nid, anchor_nid),
+                )
+                deg_row = cur.fetchone()
+                if deg_row and int(deg_row["cnt"]) <= 1:
+                    sig_km_val = 0
+                    is_dead_end_terminus = True
 
     approach_edge = None
     if sig["start_node_id"] and sig["end_node_id"]:
@@ -98,7 +118,7 @@ def _resolve_signal_or_points_geo(
         )
         approach_edge = cur.fetchone()
 
-    if not sig_km_reg or not sig_km_val:
+    if not sig_km_reg or (sig_km_val is None and not is_dead_end_terminus):
         for alt_nid in (sig["start_node_id"], sig["end_node_id"]):
             if not alt_nid or alt_nid == anchor_nid:
                 continue
@@ -112,7 +132,7 @@ def _resolve_signal_or_points_geo(
                 sig_km_val = alt_nd["km_value"]
                 break
 
-    if (not sig_km_reg or not sig_km_val) and anchor_nid:
+    if (not sig_km_reg or sig_km_val is None) and anchor_nid:
         cur.execute(
             """
             SELECT e.length, e.start_node_id,
@@ -182,7 +202,7 @@ def _resolve_signal_or_points_geo(
     nwr_cross = find_nwr_cross_links_for_tps(
         cur,
         sig_elr,
-        sig_km_val,
+        0 if sig_km_val is None else sig_km_val,
         direction_hint=sig_dir,
         track_name_hint=sig_identity["track_name_hint"],
         tps_valency=tps_valency,
@@ -199,13 +219,14 @@ def _resolve_signal_or_points_geo(
         edge_vmax=approach_edge.get("vmax") if approach_edge else None,
         tps_node_ids=[n for n in (sig["start_node_id"], sig["end_node_id"]) if n is not None],
     )
-    gx, gy, elr, mileage_str, snap_extrap = _extract_geo_point(nwr_cross)
+    gx, gy, elr, mileage_str, snap_extrap, track_id = _extract_geo_point(nwr_cross)
     return {
         "asset_type": "points" if is_points else "signal",
         "id": sig["pk"],
         "x": gx,
         "y": gy,
         "elr": elr or sig_elr,
+        "track_id": track_id,
         "mileage_str": mileage_str,
         "is_extrapolated": snap_extrap or is_extrap,
     }
@@ -243,13 +264,14 @@ def _resolve_node_geo(cur: Any, asset_id: int, saved_override_fid: Optional[int]
         secondary_dir=node_identity.get("secondary_dir"),
         tps_node_ids=[nd["node_id"]],
     )
-    gx, gy, elr, mileage_str, snap_extrap = _extract_geo_point(nwr_cross)
+    gx, gy, elr, mileage_str, snap_extrap, track_id = _extract_geo_point(nwr_cross)
     return {
         "asset_type": "node",
         "id": nd["node_id"],
         "x": gx,
         "y": gy,
         "elr": elr or elr_str,
+        "track_id": track_id,
         "mileage_str": mileage_str,
         "is_extrapolated": snap_extrap,
     }

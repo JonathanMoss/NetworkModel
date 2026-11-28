@@ -547,7 +547,7 @@ def score_line_class(
 
     if flags.is_bay_or_term:
         if d2 == "6":
-            return 60.0, True
+            return 140.0, True
         if d2 in ("1", "2"):
             return -20.0, True
         if d2 == "7":

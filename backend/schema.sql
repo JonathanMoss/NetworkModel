@@ -338,3 +338,58 @@ CREATE TABLE IF NOT EXISTS tps_nwr_track_overrides (
 CREATE INDEX IF NOT EXISTS idx_signals_point_node ON signals (point_node_id);
 CREATE INDEX IF NOT EXISTS idx_signals_id ON signals (id);
 CREATE INDEX IF NOT EXISTS idx_edges_start_end ON edges (start_node_id, end_node_id);
+
+CREATE TABLE IF NOT EXISTS engineers_possessions (
+    id BIGSERIAL PRIMARY KEY,
+    won_ref TEXT,
+    title TEXT NOT NULL,
+    picop_name TEXT,
+    picop_contact TEXT,
+    start_dt TEXT,
+    end_dt TEXT,
+    lines_blocked TEXT,
+    ole_isolation TEXT NOT NULL DEFAULT 'N/A',
+    status TEXT NOT NULL DEFAULT 'Planned',
+    notes TEXT,
+    color TEXT NOT NULL DEFAULT '#f59e0b',
+    limit_mode TEXT NOT NULL DEFAULT 'signal_points',
+    start_asset_type TEXT,
+    start_asset_id BIGINT,
+    start_label TEXT,
+    start_qualifier TEXT NOT NULL DEFAULT 'at',
+    end_asset_type TEXT,
+    end_asset_id BIGINT,
+    end_label TEXT,
+    end_qualifier TEXT NOT NULL DEFAULT 'at',
+    elr TEXT,
+    start_meters INTEGER,
+    end_meters INTEGER,
+    track_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    lines JSONB NOT NULL DEFAULT '[]'::jsonb,
+    render_style JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+    nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS possession_worksites (
+    id BIGSERIAL PRIMARY KEY,
+    possession_id BIGINT NOT NULL REFERENCES engineers_possessions(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    es_name TEXT,
+    wmb_start_label TEXT,
+    wmb_end_label TEXT,
+    start_asset_type TEXT,
+    start_asset_id BIGINT,
+    end_asset_type TEXT,
+    end_asset_id BIGINT,
+    start_meters INTEGER,
+    end_meters INTEGER,
+    notes TEXT,
+    tps_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+    nwr_geometry JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_possession_worksites_pid ON possession_worksites (possession_id);

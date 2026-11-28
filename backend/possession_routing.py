@@ -1,0 +1,1111 @@
+"""Straight-through track-graph pathfinding for Engineers' Possessions.
+
+Replaces naive hop-count BFS and straight-line ("as the crow flies") fallbacks
+with direction-aware Dijkstra on both:
+  1. The TPS Schematic track graph (``edges`` / ``nodes``), disallowing
+     reversals and heavily penalizing diverging crossovers at junctions so
+     possessions strictly follow the straight-through road along track sections.
+  2. The NWR Geographic Track Model graph (``nwr_track_centrelines`` connected
+     by ``start_node_id`` / ``end_node_id``), disallowing reversals, heavily
+     penalizing ``*7xx`` crossovers and track-ID changes, and trimming the start
+     and end centrelines precisely to the OSGB36 PLB coordinates.
+"""
+
+from collections import deque
+import heapq
+import math
+import re
+from typing import Any, Optional
+
+# Turn / crossover penalties (in metres equivalent)
+_TPS_CROSSOVER_PENALTY = 500_000.0
+_NWR_CROSSOVER_TRACK_PENALTY = 500_000.0
+_NWR_DIVERGING_ANGLE_PENALTY = 250_000.0
+_NWR_TRACK_CHANGE_PENALTY = 100_000.0
+_NWR_ELR_BOUNDARY_TRACK_PENALTY = 2_000.0
+
+# Cosine thresholds for direction continuity
+_REVERSAL_COS_LIMIT = -0.15       # > ~99° turn = physically impossible reversal
+_STRAIGHT_COS_THRESHOLD = 0.965   # < ~15° deflection = straight-through route
+
+
+def _unit_vec(dx: float, dy: float) -> Optional[tuple[float, float]]:
+    """Return a 2D unit vector, or ``None`` for degenerate zero-length vectors."""
+    mag = math.hypot(dx, dy)
+    if mag < 1e-9:
+        return None
+    return (dx / mag, dy / mag)
+
+
+def _polyline_end_tangent(coords: list[list[float]], at_start: bool) -> Optional[tuple[float, float]]:
+    """Compute a stable unit tangent vector at the start or end of a polyline.
+
+    Walks up to ~25m along the polyline from the chosen endpoint so tiny
+    1-metre digitization jitter at switch tips does not distort the angle.
+    """
+    if len(coords) < 2:
+        return None
+    if at_start:
+        p0 = coords[0]
+        target = coords[1]
+        for pt in coords[1:]:
+            target = pt
+            if math.hypot(pt[0] - p0[0], pt[1] - p0[1]) >= 25.0:
+                break
+        return _unit_vec(float(target[0]) - float(p0[0]), float(target[1]) - float(p0[1]))
+    p_end = coords[-1]
+    prev = coords[-2]
+    for pt in reversed(coords[:-1]):
+        prev = pt
+        if math.hypot(p_end[0] - pt[0], p_end[1] - pt[1]) >= 25.0:
+            break
+    return _unit_vec(float(p_end[0]) - float(prev[0]), float(p_end[1]) - float(prev[1]))
+
+
+def _is_nwr_crossover(track_id: Optional[str]) -> bool:
+    """Return True if an NWR 4-digit track ID denotes a crossover (``17xx``/``27xx``/``37xx``)."""
+    tid = str(track_id or "").strip()
+    return len(tid) >= 2 and tid[1] == "7"
+
+
+def _project_point_on_polyline(
+    coords: list[list[float]],
+    px: float,
+    py: float,
+) -> tuple[float, float, int, list[float]]:
+    """Project ``(px, py)`` onto a polyline.
+
+    Returns ``(dist_sq, dist_along, seg_idx, projected_xy)`` where
+    ``dist_along`` is cumulative distance from ``coords[0]``.
+    """
+    best_d2 = float("inf")
+    best_along = 0.0
+    best_idx = 0
+    best_pt = [float(coords[0][0]), float(coords[0][1])]
+    cum = 0.0
+
+    for i in range(len(coords) - 1):
+        ax, ay = float(coords[i][0]), float(coords[i][1])
+        bx, by = float(coords[i + 1][0]), float(coords[i + 1][1])
+        abx, aby = bx - ax, by - ay
+        seg_len2 = abx * abx + aby * aby
+        if seg_len2 < 1e-12:
+            t = 0.0
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / seg_len2))
+        qx, qy = ax + t * abx, ay + t * aby
+        d2 = (px - qx) ** 2 + (py - qy) ** 2
+        seg_len = math.sqrt(seg_len2)
+        if d2 < best_d2:
+            best_d2 = d2
+            best_along = cum + t * seg_len
+            best_idx = i
+            best_pt = [round(qx, 3), round(qy, 3)]
+        cum += seg_len
+
+    return best_d2, best_along, best_idx, best_pt
+
+
+def _slice_polyline_by_dist(
+    coords: list[list[float]],
+    d_start: float,
+    d_end: float,
+) -> list[list[float]]:
+    """Slice ``coords`` between cumulative distances ``[d_start, d_end]`` (supports reverse)."""
+    if len(coords) < 2:
+        return []
+    reverse_out = d_start > d_end
+    lo, hi = (d_end, d_start) if reverse_out else (d_start, d_end)
+    if hi - lo < 1e-6:
+        return []
+
+    out: list[list[float]] = []
+    cum = 0.0
+    for i in range(len(coords) - 1):
+        ax, ay = float(coords[i][0]), float(coords[i][1])
+        bx, by = float(coords[i + 1][0]), float(coords[i + 1][1])
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len < 1e-9:
+            continue
+        seg_end = cum + seg_len
+        if seg_end >= lo and cum <= hi:
+            t0 = max(0.0, (lo - cum) / seg_len)
+            t1 = min(1.0, (hi - cum) / seg_len)
+            p0 = [round(ax + t0 * (bx - ax), 3), round(ay + t0 * (by - ay), 3)]
+            p1 = [round(ax + t1 * (bx - ax), 3), round(ay + t1 * (by - ay), 3)]
+            if not out or math.hypot(p0[0] - out[-1][0], p0[1] - out[-1][1]) > 1e-3:
+                out.append(p0)
+            if math.hypot(p1[0] - out[-1][0], p1[1] - out[-1][1]) > 1e-3:
+                out.append(p1)
+        cum = seg_end
+
+    if reverse_out:
+        out.reverse()
+    return out
+
+
+def _run_tps_dijkstra(
+    adj: dict[int, list[tuple[int, float, float, float, float, float]]],
+    start_node_id: int,
+    end_node_id: int,
+) -> list[int]:
+    """Run direction-aware straight-through Dijkstra over a TPS adjacency map."""
+    if start_node_id not in adj or end_node_id not in adj:
+        return []
+
+    # State: (cost, curr_node, prev_node)
+    pq: list[tuple[float, int, int]] = [(0.0, start_node_id, -1)]
+    best_cost: dict[tuple[int, int], float] = {(start_node_id, -1): 0.0}
+    parent: dict[tuple[int, int], Optional[tuple[int, int]]] = {(start_node_id, -1): None}
+    end_state: Optional[tuple[int, int]] = None
+
+    while pq:
+        cost, curr, prev = heapq.heappop(pq)
+        state = (curr, prev)
+        if cost > best_cost.get(state, float("inf")):
+            continue
+        if curr == end_node_id:
+            end_state = state
+            break
+
+        # Incoming unit vector from prev -> curr
+        in_vec: Optional[tuple[float, float]] = None
+        if prev != -1:
+            for nb, _l, ux, uy, vx, vy in adj.get(prev, ()):
+                if nb == curr:
+                    in_vec = _unit_vec(vx - ux, vy - uy)
+                    break
+
+        neighbors = adj.get(curr, ())
+        is_junction = len(neighbors) >= 3
+        for nxt, edge_len, ux, uy, vx, vy in neighbors:
+            if nxt == prev:
+                continue
+            penalty = 0.0
+            if in_vec is not None:
+                out_vec = _unit_vec(vx - ux, vy - uy)
+                if out_vec is not None:
+                    dot = in_vec[0] * out_vec[0] + in_vec[1] * out_vec[1]
+                    if dot < _REVERSAL_COS_LIMIT:
+                        # Physically impossible reversal through a trailing switch
+                        continue
+                    if is_junction and dot < _STRAIGHT_COS_THRESHOLD:
+                        penalty += _TPS_CROSSOVER_PENALTY
+                    else:
+                        penalty += (1.0 - max(0.0, dot)) * 50.0
+
+            new_cost = cost + edge_len + penalty
+            nxt_state = (nxt, curr)
+            if new_cost < best_cost.get(nxt_state, float("inf")):
+                best_cost[nxt_state] = new_cost
+                parent[nxt_state] = state
+                heapq.heappush(pq, (new_cost, nxt, curr))
+
+    if end_state is None:
+        return []
+
+    path_nids: list[int] = []
+    st: Optional[tuple[int, int]] = end_state
+    while st is not None:
+        path_nids.append(st[0])
+        st = parent.get(st)
+    path_nids.reverse()
+    return path_nids
+
+
+def find_tps_straight_path(
+    cur: Any,
+    start_node_id: Optional[int],
+    end_node_id: Optional[int],
+) -> list[list[float]]:
+    """Find the straight-through TPS schematic track path between two nodes.
+
+    Fetches the local corridor of ``edges`` in a single spatial query and runs
+    direction-aware Dijkstra so the route follows every TPS track section
+    without jumping across crossovers onto adjacent lines.
+    """
+    if start_node_id is None or end_node_id is None:
+        return []
+    if start_node_id == end_node_id:
+        cur.execute("SELECT netx, nety FROM nodes WHERE node_id = %s", (start_node_id,))
+        row = cur.fetchone()
+        return [[float(row["netx"]), float(row["nety"])]] if row else []
+
+    cur.execute(
+        "SELECT node_id, netx, nety FROM nodes WHERE node_id IN (%s, %s)",
+        (start_node_id, end_node_id),
+    )
+    end_nodes = {int(r["node_id"]): (float(r["netx"]), float(r["nety"])) for r in cur.fetchall() if r["netx"] is not None}
+    if start_node_id not in end_nodes or end_node_id not in end_nodes:
+        return []
+
+    sx, sy = end_nodes[start_node_id]
+    ex, ey = end_nodes[end_node_id]
+    span = math.hypot(ex - sx, ey - sy)
+
+    for pad_mult in (0.45, 1.5):
+        pad = max(2500.0, span * pad_mult)
+        min_x, max_x = min(sx, ex) - pad, max(sx, ex) + pad
+        min_y, max_y = min(sy, ey) - pad, max(sy, ey) + pad
+        cur.execute(
+            """
+            SELECT start_node_id, end_node_id, x0, y0, x1, y1, length
+            FROM edges
+            WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+            """,
+            (min_x, max_x, min_y, max_y),
+        )
+        rows = cur.fetchall()
+        adj: dict[int, list[tuple[int, float, float, float, float, float]]] = {}
+        node_xy: dict[int, list[float]] = {
+            start_node_id: [sx, sy],
+            end_node_id: [ex, ey],
+        }
+        for r in rows:
+            a, b = r.get("start_node_id"), r.get("end_node_id")
+            if a is None or b is None or r.get("x0") is None or r.get("x1") is None:
+                continue
+            ia, ib = int(a), int(b)
+            x0, y0, x1, y1 = float(r["x0"]), float(r["y0"]), float(r["x1"]), float(r["y1"])
+            elen = float(r.get("length") or 0.0)
+            if elen <= 0.0:
+                elen = max(math.hypot(x1 - x0, y1 - y0), 1.0)
+            adj.setdefault(ia, []).append((ib, elen, x0, y0, x1, y1))
+            adj.setdefault(ib, []).append((ia, elen, x1, y1, x0, y0))
+            node_xy.setdefault(ia, [x0, y0])
+            node_xy.setdefault(ib, [x1, y1])
+
+        path_nids = _run_tps_dijkstra(adj, start_node_id, end_node_id)
+        if path_nids:
+            return [node_xy[nid] for nid in path_nids if nid in node_xy]
+
+    return []
+
+
+def _pick_anchor_centrelines(
+    rows: list[dict[str, Any]],
+    px: float,
+    py: float,
+    pref_elr: Optional[str],
+    pref_track_id: Optional[str],
+) -> list[tuple[float, dict[str, Any], float]]:
+    """Find the best NWR centreline(s) matching an OSGB36 endpoint.
+
+    When ``pref_track_id`` is known and present near ``(px, py)``, restricts
+    anchors strictly to that ``track_id`` so an adjacent parallel road (3.5m
+    away) can never be seeded as an equal-cost alternative.
+    """
+    scored: list[tuple[float, dict[str, Any], float]] = []
+    elr_u = (pref_elr or "").strip().upper()
+    tid_s = str(pref_track_id or "").strip()
+
+    for r in rows:
+        coords = r.get("coords") or []
+        if len(coords) < 2:
+            continue
+        d2, along, _idx, _pt = _project_point_on_polyline(coords, px, py)
+        dist = math.sqrt(d2)
+        if dist > 80.0:
+            continue
+        rank = dist
+        if elr_u and (r.get("elr") or "").strip().upper() != elr_u:
+            rank += 25.0
+        if tid_s and str(r.get("track_id") or "").strip() != tid_s:
+            rank += 500.0
+        if _is_nwr_crossover(r.get("track_id")):
+            rank += 40.0
+        scored.append((rank, r, along))
+
+    if tid_s:
+        exact_tid = [item for item in scored if str(item[1].get("track_id") or "").strip() == tid_s]
+        if exact_tid:
+            scored = exact_tid
+
+    scored.sort(key=lambda item: item[0])
+    return scored[:2]
+
+
+def _nwr_endpoint_key(node_id: Any, pt: list[float]) -> str:
+    """Return a canonical NWR junction key, falling back to a 0.5m OSGB36 spatial key.
+
+    Network Rail centrelines leave ``start_node_id`` / ``end_node_id`` as ``NULL``
+    at ELR boundaries (e.g. ``LEC5`` -> ``LEC4``). Synthesizing a spatial key from
+    the endpoint coordinates stitches those segments seamlessly.
+    """
+    if node_id is not None and str(node_id).strip():
+        return str(node_id).strip()
+    return f"XY:{round(float(pt[0]) * 2.0) / 2.0:.1f},{round(float(pt[1]) * 2.0) / 2.0:.1f}"
+
+
+def _run_nwr_dijkstra(
+    rows: list[dict[str, Any]],
+    start_anchors: list[tuple[float, dict[str, Any], float]],
+    end_anchors: list[tuple[float, dict[str, Any], float]],
+) -> list[tuple[dict[str, Any], bool, float, float]]:
+    """Run straight-through Dijkstra over NWR centrelines connected by track nodes.
+
+    Returns an ordered list of ``(centreline_row, forward_flag, clip_lo_m, clip_hi_m)``.
+    """
+    end_by_fid = {int(r["fid"]): (rk, r, along) for rk, r, along in end_anchors}
+
+    # Fast path: start and end lie on the exact same centreline segment
+    for _rk, s_row, s_along in start_anchors:
+        sfid = int(s_row["fid"])
+        if sfid in end_by_fid:
+            _erk, e_row, e_along = end_by_fid[sfid]
+            return [(e_row, s_along <= e_along, s_along, e_along)]
+
+    # Build node -> oriented centreline adjacency
+    by_fid: dict[int, dict[str, Any]] = {}
+    node_adj: dict[str, list[tuple[int, bool, str, float, Optional[tuple[float, float]], Optional[tuple[float, float]]]]] = {}
+    total_len_by_fid: dict[int, float] = {}
+
+    for r in rows:
+        coords = r.get("coords") or []
+        if len(coords) < 2:
+            continue
+        sn_s = _nwr_endpoint_key(r.get("start_node_id"), coords[0])
+        en_s = _nwr_endpoint_key(r.get("end_node_id"), coords[-1])
+        fid = int(r["fid"])
+        by_fid[fid] = r
+        plen = sum(
+            math.hypot(float(coords[i + 1][0]) - float(coords[i][0]), float(coords[i + 1][1]) - float(coords[i][1]))
+            for i in range(len(coords) - 1)
+        )
+        total_len_by_fid[fid] = max(plen, 1.0)
+        t_start = _polyline_end_tangent(coords, at_start=True)
+        t_end = _polyline_end_tangent(coords, at_start=False)
+        t_start_rev = (-t_start[0], -t_start[1]) if t_start else None
+        t_end_rev = (-t_end[0], -t_end[1]) if t_end else None
+
+        node_adj.setdefault(sn_s, []).append((fid, True, en_s, total_len_by_fid[fid], t_start, t_end))
+        node_adj.setdefault(en_s, []).append((fid, False, sn_s, total_len_by_fid[fid], t_end_rev, t_start_rev))
+
+    # State: (cost, curr_node_str, curr_fid, curr_forward)
+    pq: list[tuple[float, str, int, bool]] = []
+    best_cost: dict[tuple[str, int, bool], float] = {}
+    parent: dict[tuple[str, int, bool], Optional[tuple[str, int, bool]]] = {}
+    start_along_map: dict[int, float] = {}
+
+    for rk, s_row, s_along in start_anchors:
+        sfid = int(s_row["fid"])
+        if sfid not in by_fid:
+            continue
+        start_along_map[sfid] = s_along
+        plen = total_len_by_fid[sfid]
+        s_coords = s_row["coords"]
+        sn_s = _nwr_endpoint_key(s_row.get("start_node_id"), s_coords[0])
+        en_s = _nwr_endpoint_key(s_row.get("end_node_id"), s_coords[-1])
+        anchor_pen = rk * 100.0
+        # Can leave start centreline forwards toward en_s or backwards toward sn_s
+        for fwd, exit_node, init_dist in (
+            (True, en_s, max(plen - s_along, 0.0) + anchor_pen),
+            (False, sn_s, max(s_along, 0.0) + anchor_pen),
+        ):
+            st = (exit_node, sfid, fwd)
+            if init_dist < best_cost.get(st, float("inf")):
+                best_cost[st] = init_dist
+                parent[st] = None
+                heapq.heappush(pq, (init_dist, exit_node, sfid, fwd))
+
+    best_goal_cost = float("inf")
+    goal_chain: Optional[tuple[tuple[str, int, bool], int, bool, float]] = None
+
+    while pq:
+        cost, curr_node, curr_fid, curr_fwd = heapq.heappop(pq)
+        st = (curr_node, curr_fid, curr_fwd)
+        if cost > best_cost.get(st, float("inf")) or cost >= best_goal_cost:
+            continue
+
+        curr_row = by_fid[curr_fid]
+        curr_coords = curr_row["coords"]
+        if curr_fwd:
+            curr_exit_vec = _polyline_end_tangent(curr_coords, at_start=False)
+        else:
+            raw_t = _polyline_end_tangent(curr_coords, at_start=True)
+            curr_exit_vec = (-raw_t[0], -raw_t[1]) if raw_t else None
+        curr_tid = str(curr_row.get("track_id") or "").strip()
+        curr_elr = (curr_row.get("elr") or "").strip().upper()
+
+        for nxt_fid, nxt_fwd, nxt_exit_node, nxt_len, nxt_entry_vec, _nxt_exit_vec in node_adj.get(curr_node, ()):
+            if nxt_fid == curr_fid:
+                continue
+            nxt_row = by_fid[nxt_fid]
+            penalty = 0.0
+            if curr_exit_vec is not None and nxt_entry_vec is not None:
+                dot = curr_exit_vec[0] * nxt_entry_vec[0] + curr_exit_vec[1] * nxt_entry_vec[1]
+                if dot < _REVERSAL_COS_LIMIT:
+                    continue
+                if dot < _STRAIGHT_COS_THRESHOLD:
+                    penalty += _NWR_DIVERGING_ANGLE_PENALTY
+                else:
+                    penalty += (1.0 - max(0.0, dot)) * 50.0
+
+            nxt_tid = str(nxt_row.get("track_id") or "").strip()
+            nxt_elr = (nxt_row.get("elr") or "").strip().upper()
+            if _is_nwr_crossover(nxt_tid):
+                penalty += _NWR_CROSSOVER_TRACK_PENALTY
+            elif curr_tid and nxt_tid and nxt_tid != curr_tid:
+                penalty += (
+                    _NWR_TRACK_CHANGE_PENALTY
+                    if curr_elr == nxt_elr
+                    else _NWR_ELR_BOUNDARY_TRACK_PENALTY
+                )
+
+            if nxt_fid in end_by_fid:
+                end_rk, _e_row, e_along = end_by_fid[nxt_fid]
+                partial = e_along if nxt_fwd else max(nxt_len - e_along, 0.0)
+                total = cost + partial + penalty + end_rk * 100.0
+                if total < best_goal_cost:
+                    best_goal_cost = total
+                    goal_chain = (st, nxt_fid, nxt_fwd, e_along)
+                continue
+
+            new_cost = cost + nxt_len + penalty
+            nxt_st = (nxt_exit_node, nxt_fid, nxt_fwd)
+            if new_cost < best_cost.get(nxt_st, float("inf")):
+                best_cost[nxt_st] = new_cost
+                parent[nxt_st] = st
+                heapq.heappush(pq, (new_cost, nxt_exit_node, nxt_fid, nxt_fwd))
+
+    if goal_chain is None:
+        return []
+
+    last_st, end_fid, end_fwd, end_along = goal_chain
+    rev_states: list[tuple[str, int, bool]] = []
+    cur_st: Optional[tuple[str, int, bool]] = last_st
+    while cur_st is not None:
+        rev_states.append(cur_st)
+        cur_st = parent.get(cur_st)
+    rev_states.reverse()
+
+    segments: list[tuple[dict[str, Any], bool, float, float]] = []
+    for idx, (_node, fid, fwd) in enumerate(rev_states):
+        plen = total_len_by_fid[fid]
+        if idx == 0:
+            s_along = start_along_map[fid]
+            lo, hi = (s_along, plen) if fwd else (s_along, 0.0)
+        else:
+            lo, hi = (0.0, plen) if fwd else (plen, 0.0)
+        segments.append((by_fid[fid], fwd, lo, hi))
+
+    end_plen = total_len_by_fid[end_fid]
+    e_lo, e_hi = (0.0, end_along) if end_fwd else (end_plen, end_along)
+    segments.append((by_fid[end_fid], end_fwd, e_lo, e_hi))
+    return segments
+
+
+def find_nwr_straight_path(
+    cur: Any,
+    start_ep: dict[str, Any],
+    end_ep: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Find the straight-through NWR geographic track path between two endpoints.
+
+    Uses the physical ``nwr_track_centrelines`` node graph so possessions follow
+    actual tracks seamlessly across ELR boundaries without jumping crossovers or
+    falling back to straight lines.
+    """
+    sx, sy = start_ep.get("nwr_x"), start_ep.get("nwr_y")
+    ex, ey = end_ep.get("nwr_x"), end_ep.get("nwr_y")
+    if sx is None or sy is None or ex is None or ey is None:
+        return []
+
+    fx, fy, tx, ty = float(sx), float(sy), float(ex), float(ey)
+    span = math.hypot(tx - fx, ty - fy)
+    pad = max(1500.0, span * 0.35)
+
+    cur.execute(
+        """
+        SELECT fid, elr, track_id, start_node_id, end_node_id,
+               start_meters, end_meters, length_meters, coords
+        FROM nwr_track_centrelines
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+        """,
+        (min(fx, tx) - pad, max(fx, tx) + pad, min(fy, ty) - pad, max(fy, ty) + pad),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    start_anchors = _pick_anchor_centrelines(rows, fx, fy, start_ep.get("elr"), start_ep.get("track_id"))
+    end_anchors = _pick_anchor_centrelines(rows, tx, ty, end_ep.get("elr"), end_ep.get("track_id"))
+    if not start_anchors or not end_anchors:
+        return []
+
+    segments = _run_nwr_dijkstra(rows, start_anchors, end_anchors)
+    ways: list[dict[str, Any]] = []
+    for row, _fwd, d0, d1 in segments:
+        clipped = _slice_polyline_by_dist(row["coords"], d0, d1)
+        if len(clipped) >= 2:
+            ways.append(
+                {
+                    "fid": row["fid"],
+                    "elr": row.get("elr"),
+                    "track_id": row.get("track_id"),
+                    "coords": clipped,
+                }
+            )
+    return ways
+
+
+def _point_on_any_way(
+    pt: list[float],
+    way_boxes: list[tuple[float, float, float, float, list[list[float]], Optional[str]]],
+    tol: float = 2.5,
+) -> tuple[bool, Optional[str]]:
+    """Return ``(True, line_name)`` if OSGB36 point ``pt`` lies within ``tol`` metres of a blocked way."""
+    px, py = float(pt[0]), float(pt[1])
+    tol2 = tol * tol
+    for min_x, min_y, max_x, max_y, coords, lname in way_boxes:
+        if px < min_x - tol or px > max_x + tol or py < min_y - tol or py > max_y + tol:
+            continue
+        d2, _along, _idx, _proj = _project_point_on_polyline(coords, px, py)
+        if d2 <= tol2:
+            return True, lname
+    return False, None
+
+
+def find_tps_internal_crossovers(
+    cur: Any,
+    blocked_ways: list[dict[str, Any]],
+    max_len_m: float = 250.0,
+    max_hops: int = 8,
+) -> list[dict[str, Any]]:
+    """Find TPS crossover/connecting tracks whose ends BOTH lie on blocked lines.
+
+    Walks only unblocked direct edges or short degree-2 chains (so it never
+    touches an open line) between two nodes already covered by ``blocked_ways``.
+    """
+    if not blocked_ways:
+        return []
+
+    blocked_xy: set[tuple[float, float]] = set()
+    blocked_edges: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+
+    for way in blocked_ways:
+        pts = way.get("coords") or []
+        for pt in pts:
+            if len(pt) < 2:
+                continue
+            rx, ry = round(float(pt[0]), 1), round(float(pt[1]), 1)
+            blocked_xy.add((rx, ry))
+            min_x, max_x = min(min_x, rx), max(max_x, rx)
+            min_y, max_y = min(min_y, ry), max(max_y, ry)
+        for i in range(len(pts) - 1):
+            k0 = (round(float(pts[i][0]), 1), round(float(pts[i][1]), 1))
+            k1 = (round(float(pts[i + 1][0]), 1), round(float(pts[i + 1][1]), 1))
+            blocked_edges.add((k0, k1) if k0 <= k1 else (k1, k0))
+
+    if len(blocked_xy) < 2 or min_x == float("inf"):
+        return []
+
+    pad = 40.0
+    cur.execute(
+        """
+        SELECT start_node_id, end_node_id, x0, y0, x1, y1, length
+        FROM edges
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    adj: dict[int, dict[int, tuple[float, list[float], list[float]]]] = {}
+    blocked_nodes: set[int] = set()
+    for r in rows:
+        a, b = r.get("start_node_id"), r.get("end_node_id")
+        if a is None or b is None or r.get("x0") is None or r.get("x1") is None:
+            continue
+        ia, ib = int(a), int(b)
+        p0 = [float(r["x0"]), float(r["y0"])]
+        p1 = [float(r["x1"]), float(r["y1"])]
+        elen = float(r.get("length") or 0.0)
+        if elen <= 0.0:
+            elen = max(math.hypot(p1[0] - p0[0], p1[1] - p0[1]), 1.0)
+        adj.setdefault(ia, {})[ib] = (elen, p0, p1)
+        adj.setdefault(ib, {})[ia] = (elen, p1, p0)
+        if (round(p0[0], 1), round(p0[1], 1)) in blocked_xy:
+            blocked_nodes.add(ia)
+        if (round(p1[0], 1), round(p1[1], 1)) in blocked_xy:
+            blocked_nodes.add(ib)
+
+    if len(blocked_nodes) < 2:
+        return []
+
+    xover_ways: list[dict[str, Any]] = []
+    seen_chains: set[tuple[int, int]] = set()
+
+    for start_nid in sorted(blocked_nodes):
+        for nxt_nid, (first_len, p0, p1) in adj.get(start_nid, {}).items():
+            k0 = (round(p0[0], 1), round(p0[1], 1))
+            k1 = (round(p1[0], 1), round(p1[1], 1))
+            ekey = (k0, k1) if k0 <= k1 else (k1, k0)
+            if ekey in blocked_edges:
+                continue
+
+            # Walk unblocked direct edge or degree-2 chain until hitting another blocked node
+            coords = [p0, p1]
+            total_len = first_len
+            prev_nid = start_nid
+            curr_nid = nxt_nid
+            reached = curr_nid in blocked_nodes and curr_nid != start_nid
+            hops = 1
+
+            while not reached and hops < max_hops and total_len <= max_len_m:
+                nbs = adj.get(curr_nid, {})
+                if len(nbs) != 2:
+                    break
+                next_candidates = [nb for nb in nbs if nb != prev_nid]
+                if not next_candidates:
+                    break
+                step_nid = next_candidates[0]
+                step_len, _sp0, sp1 = nbs[step_nid]
+                total_len += step_len
+                coords.append(sp1)
+                prev_nid, curr_nid = curr_nid, step_nid
+                hops += 1
+                if curr_nid in blocked_nodes:
+                    reached = curr_nid != start_nid
+                    break
+
+            if reached and total_len <= max_len_m:
+                ckey = (start_nid, curr_nid) if start_nid <= curr_nid else (curr_nid, start_nid)
+                if ckey not in seen_chains:
+                    seen_chains.add(ckey)
+                    xover_ways.append({"coords": coords, "is_crossover": True})
+
+    return xover_ways
+
+
+def find_nwr_internal_crossovers(
+    cur: Any,
+    blocked_nwr_ways: list[dict[str, Any]],
+    max_len_m: float = 350.0,
+) -> list[dict[str, Any]]:
+    """Find NWR geographic crossovers whose ends BOTH lie on blocked possession ways."""
+    if not blocked_nwr_ways:
+        return []
+
+    blocked_fids: set[int] = set()
+    way_boxes: list[tuple[float, float, float, float, list[list[float]], Optional[str]]] = []
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+
+    for w in blocked_nwr_ways:
+        if w.get("fid") is not None:
+            blocked_fids.add(int(w["fid"]))
+        cs = w.get("coords") or []
+        if len(cs) < 2:
+            continue
+        xs = [float(p[0]) for p in cs]
+        ys = [float(p[1]) for p in cs]
+        w_min_x, w_max_x = min(xs), max(xs)
+        w_min_y, w_max_y = min(ys), max(ys)
+        way_boxes.append((w_min_x, w_min_y, w_max_x, w_max_y, cs, w.get("line_name")))
+        min_x, max_x = min(min_x, w_min_x), max(max_x, w_max_x)
+        min_y, max_y = min(min_y, w_min_y), max(max_y, w_max_y)
+
+    if not way_boxes or min_x == float("inf"):
+        return []
+
+    pad = 80.0
+    cur.execute(
+        """
+        SELECT fid, elr, track_id, start_node_id, end_node_id, length_meters, coords
+        FROM nwr_track_centrelines
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+          AND (COALESCE(length_meters, 0) <= %s OR fid = ANY(%s))
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad, max_len_m, list(blocked_fids)),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    blocked_by_fid: dict[int, list[dict[str, Any]]] = {}
+    for w in blocked_nwr_ways:
+        if w.get("fid") is not None:
+            blocked_by_fid.setdefault(int(w["fid"]), []).append(w)
+
+    xover_ways: list[dict[str, Any]] = []
+    for r in rows:
+        fid = int(r["fid"])
+        cs = r.get("coords") or []
+        if len(cs) < 2:
+            continue
+
+        # If a blocked isolated-line segment was clipped at an interior signal (e.g. Stafford
+        # Platform 1 clipped at SC9355), extend its remaining tail to the connecting points
+        # whenever the full centreline's unclipped end lands on another blocked line (e.g. 746).
+        if fid in blocked_fids:
+            seg_ways = blocked_by_fid.get(fid, [])
+            if any(sw.get("is_isolated") for sw in seg_ways):
+                seg_boxes = [b for b in way_boxes if b[5] != seg_ways[0].get("line_name")]
+                if seg_boxes:
+                    s_on, _ = _point_on_any_way(cs[0], seg_boxes)
+                    e_on, _ = _point_on_any_way(cs[-1], seg_boxes)
+                    if s_on or e_on:
+                        xover_ways.append(
+                            {
+                                "fid": fid,
+                                "elr": r.get("elr"),
+                                "track_id": r.get("track_id"),
+                                "coords": cs,
+                                "is_crossover": True,
+                            }
+                        )
+            continue
+
+        is_xover_tid = _is_nwr_crossover(r.get("track_id"))
+        seg_len = float(r.get("length_meters") or 0.0)
+        if not is_xover_tid and seg_len > 150.0:
+            continue
+
+        on_start, lname_start = _point_on_any_way(cs[0], way_boxes)
+        if not on_start:
+            continue
+        on_end, lname_end = _point_on_any_way(cs[-1], way_boxes)
+        if not on_end:
+            continue
+
+        # Non-crossover short connecting segments must bridge two different blocked lines
+        if not is_xover_tid and lname_start == lname_end:
+            continue
+
+        xover_ways.append(
+            {
+                "fid": fid,
+                "elr": r.get("elr"),
+                "track_id": r.get("track_id"),
+                "coords": cs,
+                "is_crossover": True,
+            }
+        )
+
+    return xover_ways
+
+
+def _friendly_track_label(st_rows: list[dict[str, Any]], fallback: str) -> str:
+    """Derive a clean human-readable line designation from TPS ``station_tracks`` rows."""
+    for r in st_rows:
+        name = (r.get("name") or "").strip().upper()
+        longn = (r.get("longname") or "").strip().upper()
+        pm = re.match(r"^(?:[UD]-)?(\d+[A-Z]?)$", name)
+        if pm and longn.isdigit():
+            return f"Platform {pm.group(1)}"
+    for r in st_rows:
+        name = (r.get("name") or "").strip().upper()
+        if "SDG" in name or "SIDING" in name:
+            return "Bay Siding"
+        if "BAY" in name:
+            return "Bay Platform"
+        if "LOOP" in name or "UL" in name or "DL" in name:
+            return "Loop Line"
+        if "DEP" in name or "ARR" in name:
+            return "Depot / Arrival Siding"
+    return fallback
+
+
+def _asset_limit_for_node(
+    node_id: int,
+    sig_by_node: dict[int, dict[str, Any]],
+    default_qualifier: str = "at",
+) -> dict[str, Any]:
+    """Build a From/To limit point dict from the best signal/points asset at ``node_id``."""
+    sig = sig_by_node.get(node_id)
+    if sig:
+        is_pts = (
+            sig.get("interlocking_sys_id") in (15, 16)
+            or (sig.get("name") or "").upper().startswith("POINT")
+        )
+        return {
+            "asset_type": "points" if is_pts else "signal",
+            "asset_id": int(sig["pk"]),
+            "label": (sig.get("name") or sig.get("master_name") or f"Node #{node_id}").strip(),
+            "qualifier": default_qualifier,
+            "distance_meters": None,
+        }
+    return {
+        "asset_type": "node",
+        "asset_id": int(node_id),
+        "label": f"Node #{node_id}",
+        "qualifier": default_qualifier,
+        "distance_meters": None,
+    }
+
+
+def _extract_trapped_component_suggestions(
+    cur: Any,
+    comp: set[int],
+    touch_blocked: set[int],
+    adj: dict[int, dict[int, float]],
+) -> list[dict[str, Any]]:
+    """Convert a trapped TPS node component into ready-to-add possession line suggestions."""
+    all_nids = list(comp | touch_blocked)
+    cur.execute(
+        """
+        SELECT pk, name, master_name, interlocking_sys_id, bumper, start_node_id, end_node_id, point_node_id
+        FROM signals
+        WHERE end_node_id = ANY(%s) OR point_node_id = ANY(%s)
+        """,
+        (all_nids, all_nids),
+    )
+    sig_rows = cur.fetchall()
+    sig_by_node: dict[int, dict[str, Any]] = {}
+    buffer_sigs: list[tuple[int, dict[str, Any]]] = []
+
+    for s in sig_rows:
+        anchor = s.get("point_node_id") or s.get("end_node_id")
+        if anchor is None:
+            continue
+        anid = int(anchor)
+        is_pts = s.get("interlocking_sys_id") in (15, 16) or (s.get("name") or "").upper().startswith("POINT")
+        # Prefer points assets at junctions, otherwise keep first signal
+        if anid not in sig_by_node or is_pts:
+            sig_by_node[anid] = s
+        nm_u = (s.get("name") or "").upper()
+        is_buf = (
+            bool(s.get("bumper"))
+            or s.get("interlocking_sys_id") == 2
+            or bool(re.search(r"\b(?:BUFFER|UBS|DBS|BAY)\b", nm_u))
+        )
+        if is_buf and anid in comp:
+            buffer_sigs.append((anid, s))
+
+    cur.execute(
+        "SELECT DISTINCT name, longname, node_ids FROM station_tracks WHERE node_ids && %s",
+        (list(comp),),
+    )
+    st_rows = cur.fetchall()
+
+    suggestions: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[Any, Any]] = set()
+
+    # 1. Trapped through-loop / platform connected at 2+ points to blocked lines (e.g. Stafford Platform 1)
+    # Anchor on the interior endpoints INSIDE ``comp`` (not on the main blocked line) so straight-route
+    # pathfinding plots along the trapped platform/loop itself rather than re-tracing the main line;
+    # the connecting turnout legs are then automatically lit by find_*_internal_crossovers().
+    touch_sorted = sorted(touch_blocked)
+    if len(touch_sorted) >= 2:
+        n_start_b, n_end_b = touch_sorted[0], touch_sorted[-1]
+        # Shortest path inside comp between the two blocked-line junction nodes
+        q_loop: deque[tuple[int, list[int]]] = deque([(n_start_b, [n_start_b])])
+        seen_loop = {n_start_b}
+        interior_path: list[int] = []
+        while q_loop:
+            u, path = q_loop.popleft()
+            if u == n_end_b and len(path) >= 3:
+                interior_path = path[1:-1]
+                break
+            for v in adj.get(u, {}):
+                if v in seen_loop:
+                    continue
+                if v == n_end_b and u != n_start_b:
+                    interior_path = path[1:]
+                    q_loop.clear()
+                    break
+                if v in comp:
+                    seen_loop.add(v)
+                    q_loop.append((v, path + [v]))
+
+        sig_interior = [n for n in interior_path if n in sig_by_node]
+        if len(sig_interior) >= 2:
+            n_from, n_to = sig_interior[0], sig_interior[-1]
+        elif len(interior_path) >= 2:
+            n_from, n_to = interior_path[0], interior_path[-1]
+        else:
+            n_from, n_to = n_start_b, n_end_b
+
+        from_lim = _asset_limit_for_node(n_from, sig_by_node, "at")
+        to_lim = _asset_limit_for_node(n_to, sig_by_node, "at")
+        line_name = _friendly_track_label(st_rows, "Isolated Loop / Platform")
+        pkey = (from_lim["asset_id"], to_lim["asset_id"])
+        seen_pairs.add(pkey)
+        suggestions.append(
+            {
+                "line_name": line_name,
+                "is_isolated": True,
+                "limit_mode": "signal_points",
+                "from_limits": [from_lim],
+                "to_limits": [to_lim],
+                "reason": "All connections to this line are under possession",
+            }
+        )
+
+    # 2. Trapped dead-end bays / sidings terminating at buffer stops inside the component
+    for buf_nid, buf_sig in buffer_sigs:
+        # Walk BFS inside comp to nearest junction points asset or touch_blocked node
+        q: deque[tuple[int, list[int]]] = deque([(buf_nid, [buf_nid])])
+        seen_walk = {buf_nid}
+        anchor_nid: Optional[int] = None
+        spur_nodes: list[int] = [buf_nid]
+        while q:
+            u, path = q.popleft()
+            if u != buf_nid and (u in touch_blocked or (u in sig_by_node and sig_by_node[u].get("interlocking_sys_id") in (15, 16))):
+                anchor_nid = u
+                spur_nodes = path
+                break
+            for v in adj.get(u, {}):
+                if v not in seen_walk and (v in comp or v in touch_blocked):
+                    seen_walk.add(v)
+                    q.append((v, path + [v]))
+
+        if anchor_nid is None and touch_sorted:
+            anchor_nid = touch_sorted[0]
+        if anchor_nid is None:
+            continue
+
+        from_lim = _asset_limit_for_node(anchor_nid, sig_by_node, "at")
+        buf_label = (buf_sig.get("name") or buf_sig.get("master_name") or f"Buffer #{buf_nid}").strip()
+        to_lim = {
+            "asset_type": "signal",
+            "asset_id": int(buf_sig["pk"]),
+            "label": buf_label,
+            "qualifier": "buffer",
+            "distance_meters": None,
+        }
+        pkey = (from_lim["asset_id"], to_lim["asset_id"])
+        if pkey in seen_pairs:
+            continue
+        seen_pairs.add(pkey)
+
+        spur_set = {n for n in spur_nodes if n != anchor_nid}
+        spur_sts = [r for r in st_rows if spur_set & set(r.get("node_ids") or [])]
+        if "UBS" in buf_label.upper():
+            default_name = "Up Bay Siding"
+        elif "DBS" in buf_label.upper():
+            default_name = "Down Bay Siding"
+        else:
+            default_name = "Bay Siding"
+        line_name = _friendly_track_label(spur_sts, default_name)
+        suggestions.append(
+            {
+                "line_name": line_name,
+                "is_isolated": True,
+                "limit_mode": "signal_points",
+                "from_limits": [from_lim],
+                "to_limits": [to_lim],
+                "reason": "Dead-end siding/bay isolated by this possession",
+            }
+        )
+
+    return suggestions
+
+
+def detect_isolated_possession_tracks(
+    cur: Any,
+    blocked_tps_ways: list[dict[str, Any]],
+    max_comp_nodes: int = 120,
+    max_comp_len_m: float = 5000.0,
+) -> list[dict[str, Any]]:
+    """Detect tracks (bays, sidings, platforms, loops) completely isolated by a possession.
+
+    Removes the possession's blocked TPS nodes from the local corridor graph and
+    flood-fills each adjacent unblocked component. Any bounded component whose
+    entire boundary connects only to ``blocked_nodes`` (no escape to the open
+    network) is converted into ready-to-add line suggestions.
+    """
+    if not blocked_tps_ways:
+        return []
+
+    blocked_xy: set[tuple[float, float]] = set()
+    min_x, min_y = float("inf"), float("inf")
+    max_x, max_y = float("-inf"), float("-inf")
+    for w in blocked_tps_ways:
+        for pt in w.get("coords") or []:
+            if len(pt) < 2:
+                continue
+            rx, ry = round(float(pt[0]), 1), round(float(pt[1]), 1)
+            blocked_xy.add((rx, ry))
+            min_x, max_x = min(min_x, rx), max(max_x, rx)
+            min_y, max_y = min(min_y, ry), max(max_y, ry)
+
+    if len(blocked_xy) < 2 or min_x == float("inf"):
+        return []
+
+    pad = 250.0
+    cur.execute(
+        """
+        SELECT start_node_id, end_node_id, x0, y0, x1, y1, length
+        FROM edges
+        WHERE max_x >= %s AND min_x <= %s AND max_y >= %s AND min_y <= %s
+        """,
+        (min_x - pad, max_x + pad, min_y - pad, max_y + pad),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    adj: dict[int, dict[int, float]] = {}
+    node_xy: dict[int, tuple[float, float]] = {}
+    blocked_nodes: set[int] = set()
+    for r in rows:
+        a, b = r.get("start_node_id"), r.get("end_node_id")
+        if a is None or b is None or r.get("x0") is None or r.get("x1") is None:
+            continue
+        ia, ib = int(a), int(b)
+        p0 = (round(float(r["x0"]), 1), round(float(r["y0"]), 1))
+        p1 = (round(float(r["x1"]), 1), round(float(r["y1"]), 1))
+        elen = float(r.get("length") or 0.0)
+        adj.setdefault(ia, {})[ib] = elen
+        adj.setdefault(ib, {})[ia] = elen
+        node_xy[ia] = p0
+        node_xy[ib] = p1
+        if p0 in blocked_xy:
+            blocked_nodes.add(ia)
+        if p1 in blocked_xy:
+            blocked_nodes.add(ib)
+
+    if not blocked_nodes:
+        return []
+
+    visited: set[int] = set(blocked_nodes)
+    suggestions: list[dict[str, Any]] = []
+    esc_min_x, esc_max_x = min_x - pad + 20.0, max_x + pad - 20.0
+    esc_min_y, esc_max_y = min_y - pad + 20.0, max_y + pad - 20.0
+
+    for bn in sorted(blocked_nodes):
+        for nb in adj.get(bn, {}):
+            if nb in visited:
+                continue
+            comp: set[int] = {nb}
+            q: deque[int] = deque([nb])
+            visited.add(nb)
+            touch_blocked: set[int] = {bn}
+            escaped = False
+            total_len = 0.0
+            seen_e: set[tuple[int, int]] = set()
+
+            while q:
+                u = q.popleft()
+                if len(comp) > max_comp_nodes:
+                    escaped = True
+                    break
+                for v, el in adj.get(u, {}).items():
+                    ek = (u, v) if u <= v else (v, u)
+                    if ek not in seen_e:
+                        seen_e.add(ek)
+                        total_len += el
+                    if v in blocked_nodes:
+                        touch_blocked.add(v)
+                    elif v not in comp:
+                        vx, vy = node_xy[v]
+                        if vx < esc_min_x or vx > esc_max_x or vy < esc_min_y or vy > esc_max_y:
+                            escaped = True
+                            break
+                        comp.add(v)
+                        visited.add(v)
+                        q.append(v)
+                if escaped:
+                    break
+
+            if not escaped and total_len <= max_comp_len_m and len(comp) >= 2:
+                suggestions.extend(_extract_trapped_component_suggestions(cur, comp, touch_blocked, adj))
+
+    return suggestions
+

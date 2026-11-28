@@ -60,6 +60,10 @@ async function initApp() {
     fitTpsNetwork();
   }
 
+  if (typeof loadPossessions === "function") {
+    loadPossessions();
+  }
+
   // Pre-fetch NWR Overview for dual view coordinate camera calibration
   try {
     const nwrRes = await fetch("/api/nwr/overview");

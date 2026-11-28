@@ -588,7 +588,7 @@ if (nwrCanvas) {
       const [wxBefore, wyBefore] = screenToWorld(sx, sy, "nwr");
 
       const factor = e.deltaY < 0 ? 1.25 : 0.8;
-      STATE.nwrCam.zoom = Math.max(0.0004, Math.min(5.0, STATE.nwrCam.zoom * factor));
+      STATE.nwrCam.zoom = Math.max(0.0004, Math.min(20.0, STATE.nwrCam.zoom * factor));
       if (STATE.activeView === "nwr") STATE.zoom = STATE.nwrCam.zoom;
 
       const [wxAfter, wyAfter] = screenToWorld(sx, sy, "nwr");

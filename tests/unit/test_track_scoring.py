@@ -158,7 +158,7 @@ def test_score_line_class_all_branches():
 
     # Bay / Terminal
     f_bay = ts.extract_hint_flags("Platform 1 Bay")
-    assert ts.score_line_class("3601", f_bay, True, 1, False, 0, 100, 50, None)[0] == 60.0
+    assert ts.score_line_class("3601", f_bay, True, 1, False, 0, 100, 50, None)[0] == 140.0
     assert ts.score_line_class("1100", f_bay, False, 1, False, 0, 100, 50, None)[0] == -20.0
     assert ts.score_line_class("1700", f_bay, False, 1, False, 0, 100, 50, None)[0] == -45.0
     assert ts.score_line_class("1900", f_bay, False, 1, False, 0, 100, 50, None)[0] == -25.0

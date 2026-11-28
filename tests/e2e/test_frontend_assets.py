@@ -36,12 +36,13 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
         'id="catalog-modal"',
         'id="timing-modal"',
         'id="profile-drawer"',
+        'id="possessions-drawer"',
     ]:
         assert marker in html
 
     # Fetch every modular CSS and JS asset referenced by base.html
     asset_urls = re.findall(r'(?:href|src)="(/static/[^"]+)"', html)
-    assert len(asset_urls) >= 32
+    assert len(asset_urls) >= 35
 
     for url in asset_urls:
         asset_resp = client.get(url)
@@ -88,4 +89,9 @@ def test_frontend_index_and_all_modular_static_assets_serve_200(client):
     tb_js = client.get("/static/js/toolbar-controls.js").text
     assert "global-search" in tb_js
     assert "osm-opacity-slider" in tb_js
+    poss_js = client.get("/static/js/possessions-ui.js").text
+    assert "loadPossessions" in poss_js
+    assert "startPossessionMapPick" in poss_js
+    rposs_js = client.get("/static/js/render-possessions.js").text
+    assert "drawPossessionsOverlay" in rposs_js
 
